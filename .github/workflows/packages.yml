@@ -1,0 +1,577 @@
+# Project: FreeBASIC XL
+# ---------------------
+#
+# File: .github/workflows/packages.yml
+#
+# Purpose:
+#
+#     Build installable FreeBASIC XL packages from the repository's existing
+#     package workflows and preserve them as Actions artifacts or release
+#     assets.
+#
+# Responsibilities:
+#
+#     * build Linux, Windows, macOS, BSD, and Haiku package sets
+#     * package a tested master revision after CI qualification succeeds
+#     * audit every Linux package-factory row on the scheduled full matrix
+#     * retain successful package output for manual download
+#     * attach package files to version-tagged GitHub Releases
+#
+# This file intentionally does NOT contain:
+#
+#     * compiler or runtime implementation
+#     * package-format implementation
+#     * publishing credentials other than the scoped GitHub token
+
+name: FreeBASIC XL packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # A normal master push first runs the compiler qualification workflow.
+  # Package creation follows only after that tested source revision has passed
+  # fbctests and Exampleageddon, instead of racing the qualification run.
+  workflow_run:
+    workflows:
+      - FreeBASIC XL CI
+    types:
+      - completed
+    branches:
+      - master
+  schedule:
+    # The full package-factory audit catches distribution image and packaging
+    # drift without making normal source commits wait for every Linux row.
+    - cron: '17 4 * * 4'
+  workflow_dispatch:
+    inputs:
+      full_linux_matrix:
+        description: Build the complete Linux distro and architecture matrix
+        required: true
+        default: false
+        type: boolean
+      linux_matrix_target:
+        description: Build named Linux matrix rows (wildcards allowed), or all rows
+        required: true
+        default: all
+        type: string
+      linux_matrix_parallelism:
+        description: Maximum concurrent Linux package builds
+        required: true
+        default: 6
+        type: number
+
+concurrency:
+  group: fbc-xl-packages-${{ github.ref }}${{ github.event_name == 'workflow_run' && '-workflow-run' || '' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BOOTSTRAP_VERSION: "1.10.1"
+
+jobs:
+  linux-debian:
+    name: Debian package
+    if: ${{ github.event_name != 'workflow_run' && github.event_name != 'schedule' && !startsWith(github.ref, 'refs/tags/v') && !(github.event_name == 'workflow_dispatch' && inputs.full_linux_matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Install package build dependencies
+        run: |
+          set -euo pipefail
+          sudo bash build_scripts/github-actions-apt-update.sh
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl rsync tar xz-utils gzip dos2unix \
+            build-essential pkg-config dpkg-dev debhelper devscripts fakeroot \
+            lintian quilt python3 git
+
+      - name: Seed host compiler bootstrap sources
+        run: bash build_scripts/ci-seed-source-bootstrap.sh linux-x86_64 linux-x86_64
+
+      - name: Build Debian package
+        env:
+          BUILDROOT: ${{ runner.temp }}/debian-build
+          WORKDIR: ${{ runner.temp }}/debian-build/work
+          OUTBASE: ${{ runner.temp }}/packages
+          FBC_PACKAGE_OUTDIR: ${{ runner.temp }}/packages/debian
+          JOBS: 4
+        run: |
+          set -euo pipefail
+          # Sidecar SDKs have dedicated package lanes below. Keep this job
+          # focused on the native Debian/Ubuntu compiler package.
+          bash build_scripts/debianubuntu-build-freebasic.sh \
+            --no-js \
+            --no-android \
+            --no-wii
+
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: fbc-xl-packages-linux-debian
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/packages/debian/
+
+  linux-package-plan:
+    name: Linux package-factory plan
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      run_linux_matrix: ${{ steps.plan.outputs.run_linux_matrix }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 2
+
+      - name: Export the canonical Linux package matrix
+        id: plan
+        env:
+          LINUX_MATRIX_TARGET: ${{ inputs.linux_matrix_target }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import fnmatch
+          import json
+          import os
+          import subprocess
+          import sys
+
+          result = subprocess.run(
+              ["bash", "build_scripts/linux-cross-build-freebasic-matrix.sh", "--list"],
+              check=False,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+              text=True,
+          )
+          if result.returncode != 0:
+              sys.stderr.write(result.stderr)
+              raise SystemExit(result.returncode)
+
+          rows = []
+          # Each package family needs its own runner below. Refuse a new
+          # family until it has an explicit build path instead of skipping it.
+          expected_families = {"deb", "apk", "rpm", "archlinux", "slackware"}
+          seen_families = set()
+
+          for line in result.stdout.splitlines():
+              fields = line.split("|", 6)
+              if len(fields) != 7:
+                  raise SystemExit(f"unexpected package-factory row: {line!r}")
+
+              family, distro, release, arch, _image, _builder, _outdir = fields
+              if family == "vm":
+                  # BSD and Haiku guests are qualified by extended-platforms.
+                  continue
+              if family not in expected_families:
+                  raise SystemExit(f"unexpected Linux package family: {family}")
+
+              row_name = f"{distro}-{release.replace('.', '_')}-{arch}"
+              # ARM64 distribution images can build on the same hosted runner
+              # used by basic CI. Arch uses an x86_64 cross-build container for
+              # ARM64, so keep its host native too.
+              native_arm64 = arch in {"arm64", "aarch64"} and family != "archlinux"
+              rows.append(
+                  {
+                      "name": row_name,
+                      "family": family,
+                      "distro": distro,
+                      "release": release,
+                      "arch": arch,
+                      "runner": "ubuntu-24.04-arm" if native_arm64 else "ubuntu-24.04",
+                      "host_bootstrap": "linux-aarch64" if native_arm64 else "linux-x86_64",
+                  }
+              )
+              seen_families.add(family)
+
+          if not rows:
+              raise SystemExit("the Linux package factory reported no package rows")
+
+          missing_families = expected_families - seen_families
+          if missing_families:
+              names = ", ".join(sorted(missing_families))
+              raise SystemExit(f"the Linux package factory omitted: {names}")
+
+          # Exercise rolling repositories and previously unbuilt architectures first,
+          # keeping every canonical row in the full factory qualification.
+          def row_priority(row):
+              if (row["distro"] == "fedora" and row["release"] == "rawhide") or row["name"] == "opensuse-tumbleweed-aarch64":
+                  return 0
+              if row["family"] == "slackware" or row["name"] == "archlinux-current-armv7h":
+                  return 1
+              return 2
+
+          rows.sort(key=row_priority)
+
+          # Select rows before scheduling jobs. A pattern such as
+          # fedora-rawhide-* qualifies every architecture in one run.
+          selector = os.environ.get("LINUX_MATRIX_TARGET", "")
+          if selector and selector != "all":
+              rows = [row for row in rows if fnmatch.fnmatchcase(row["name"], selector)]
+              if not rows:
+                  raise SystemExit(f"no Linux package rows match: {selector}")
+
+          run_linux_matrix = True
+          if os.environ.get("GITHUB_EVENT_NAME") == "workflow_run":
+              changed = subprocess.run(
+                  ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+                  check=True,
+                  stdout=subprocess.PIPE,
+                  text=True,
+              ).stdout.splitlines()
+              if changed and all(
+                  path == ".github/workflows/packages.yml" for path in changed
+              ):
+                  run_linux_matrix = False
+                  print(
+                      "Skipping the Linux matrix because this commit only changes "
+                      "the package workflow; the tested compiler source is unchanged."
+                  )
+
+          matrix = json.dumps({"include": rows}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"matrix={matrix}", file=output)
+              print(f"run_linux_matrix={str(run_linux_matrix).lower()}", file=output)
+
+          print(f"Prepared {len(rows)} Linux package rows.")
+          PY
+
+  linux-release-matrix:
+    name: Linux ${{ matrix.name }} package
+    needs: linux-package-plan
+    if: ${{ needs.linux-package-plan.outputs.run_linux_matrix == 'true' && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_linux_matrix) || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master')) }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ github.event_name == 'workflow_dispatch' && fromJSON(inputs.linux_matrix_parallelism || '6') || 6 }}
+      matrix: ${{ fromJSON(needs.linux-package-plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Install Linux matrix host dependencies
+        run: |
+          set -euo pipefail
+          sudo bash build_scripts/github-actions-apt-update.sh
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user-static binfmt-support \
+            ca-certificates curl wget git gnupg \
+            build-essential make pkg-config rsync \
+            tar xz-utils gzip zip unzip dos2unix \
+            jq python3 perl bc
+
+          # Hosted runners already provide Docker Engine and containerd.io.
+          # Installing Ubuntu's docker.io package would replace that runtime
+          # and conflicts with the runner's containerd.io package.
+          docker version
+
+      - name: Seed host compiler bootstrap sources
+        run: bash build_scripts/ci-seed-source-bootstrap.sh ${{ matrix.host_bootstrap }} ${{ matrix.host_bootstrap }}
+
+      - name: Build the current host compiler
+        run: |
+          set -euo pipefail
+          host_feature_args=(
+            DISABLE_FFI=YesPlease
+            DISABLE_GPM=YesPlease
+            DISABLE_NCURSES=YesPlease
+            DISABLE_X11=YesPlease
+            DISABLE_OPENGL=YesPlease
+            DISABLE_ALSA=YesPlease
+            DISABLE_PULSE=YesPlease
+          )
+          make -j4 bootstrap-minimal "${host_feature_args[@]}" </dev/null
+          make -j4 compiler \
+            BUILD_FBCFLAGS="-d __FB_BOOTSTRAP_COMPAT__" \
+            "${host_feature_args[@]}" </dev/null
+          make clean-compiler
+          make -j4 compiler "${host_feature_args[@]}" </dev/null
+
+      - name: Build Linux package row
+        env:
+          MATRIX_NAME: ${{ matrix.name }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+          MATRIX_DISTRO: ${{ matrix.distro }}
+          MATRIX_FAMILY: ${{ matrix.family }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+          JOBS: 4
+        run: |
+          set -euo pipefail
+          case "$MATRIX_FAMILY" in
+            deb)
+              matrix_args=(
+                --distro "$MATRIX_DISTRO"
+                --release "$MATRIX_RELEASE"
+                --arch "$MATRIX_ARCH"
+                --jobs 4
+                --skip-host-deps
+              )
+              if [[ "$MATRIX_NAME" == "ubuntu-resolute-amd64" ]]; then
+                matrix_args+=(--required-console-ports)
+              fi
+              bash build_scripts/debianubuntu-build-freebasic-matrix.sh \
+                "${matrix_args[@]}"
+              ;;
+            apk)
+              bash build_scripts/alpine-freebasic-matrix-build.sh \
+                --distro "$MATRIX_DISTRO" \
+                --release "$MATRIX_RELEASE" \
+                --arch "$MATRIX_ARCH" \
+                --jobs 4 \
+                --skip-host-deps
+              ;;
+            rpm)
+              bash build_scripts/rpm-cross-build-freebasic-matrix.sh \
+                --distro "$MATRIX_DISTRO" \
+                --release "$MATRIX_RELEASE" \
+                --arch "$MATRIX_ARCH" \
+                --jobs 4 \
+                --skip-host-deps \
+                --execute
+              ;;
+            archlinux)
+              bash build_scripts/archlinux-cross-build-freebasic-matrix.sh \
+                --distro "$MATRIX_DISTRO" \
+                --release "$MATRIX_RELEASE" \
+                --arch "$MATRIX_ARCH" \
+                --jobs 4 \
+                --skip-host-deps \
+                --execute
+              ;;
+            slackware)
+              bash build_scripts/slackware-cross-build-freebasic-matrix.sh \
+                --distro "$MATRIX_DISTRO" \
+                --release "$MATRIX_RELEASE" \
+                --arch "$MATRIX_ARCH" \
+                --jobs 4 \
+                --skip-host-deps \
+                --execute
+              ;;
+            *)
+              echo "ERROR: unsupported Linux package family: $MATRIX_FAMILY" >&2
+              exit 1
+              ;;
+          esac
+
+          # Build logs are diagnostics, not packages. In particular, a missing
+          # container architecture must not turn into a successful log upload.
+          case "$MATRIX_FAMILY" in
+            deb) package_pattern='*.deb' ;;
+            apk) package_pattern='*.apk' ;;
+            rpm) package_pattern='*.rpm' ;;
+            archlinux) package_pattern='*.pkg.tar.*' ;;
+            slackware) package_pattern='*.txz' ;;
+          esac
+          package_roots=()
+          for package_root in out/linux out/raspbian; do
+            [[ ! -d "$package_root" ]] || package_roots+=("$package_root")
+          done
+          if [[ ${#package_roots[@]} -eq 0 ]] ||
+             ! find "${package_roots[@]}" -type f -name "$package_pattern" -size +0c -print -quit | grep -q .; then
+            echo "ERROR: $MATRIX_NAME produced no $MATRIX_FAMILY package" >&2
+            exit 1
+          fi
+
+      - name: Upload Linux package row
+        uses: actions/upload-artifact@v7
+        with:
+          name: fbc-xl-linux-package-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            out/linux/**/*.deb
+            out/linux/**/*.apk
+            out/linux/**/*.rpm
+            out/linux/**/*.pkg.tar.*
+            out/linux/**/*.txz
+            out/raspbian/**/*.deb
+
+      - name: Upload Linux row diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: fbc-xl-linux-diagnostic-${{ matrix.name }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            out/linux/**/docker_build.log
+            out/raspbian/**/docker_build.log
+
+  extended-platform-packages:
+    name: BSD and Haiku package matrix
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/extended-platforms.yml
+    with:
+      package_guests_only: true
+
+  windows:
+    name: Windows package matrix
+    if: ${{ (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master')) && (github.event_name != 'workflow_dispatch' || inputs.linux_matrix_target == '' || inputs.linux_matrix_target == 'all') }}
+    runs-on: windows-latest
+    timeout-minutes: 240
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            git
+            curl
+            rsync
+            tar
+            xz
+            gzip
+            zip
+            pkgconf
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-libffi
+
+      - name: Seed Windows package bootstrap sources
+        run: |
+          bash build_scripts/ci-seed-source-bootstrap.sh win32 win64
+          bash build_scripts/ci-seed-source-bootstrap.sh win64 win64
+          bash build_scripts/ci-seed-source-bootstrap.sh win32-aarch64 win64
+
+      - name: Build the Windows host compiler
+        run: |
+          make -j"$(nproc)" bootstrap-minimal </dev/null
+          make -j"$(nproc)" compiler BUILD_FBCFLAGS="-d __FB_BOOTSTRAP_COMPAT__" </dev/null
+          make clean-compiler
+          make -j"$(nproc)" compiler </dev/null
+
+      - name: Build Windows, Android, JavaScript, Xbox, and DOS packages
+        env:
+          JOBS: 4
+          HOST_FBC_ROOT: ${{ github.workspace }}
+        run: |
+          # devkitPro asks CI users to consume its Docker images instead of
+          # synchronizing the pacman repositories. The tagged Linux matrix
+          # builds freebasic-wii from the pinned official devkitPPC image.
+          bash build_scripts/msys2-build-freebasic-matrix.sh --no-wii
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: fbc-xl-packages-windows
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            out/mingw32*/
+            out/msdos/
+
+  macos:
+    name: macOS package matrix
+    if: ${{ (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master')) && (github.event_name != 'workflow_dispatch' || inputs.linux_matrix_target == '' || inputs.linux_matrix_target == 'all') }}
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Seed Darwin package bootstrap sources
+        run: |
+          bash build_scripts/ci-seed-source-bootstrap.sh darwin-aarch64 linux-x86_64
+          bash build_scripts/ci-seed-source-bootstrap.sh darwin-x86_64 linux-x86_64
+
+      - name: Build macOS arm64 and x86_64 packages
+        env:
+          BUILDROOT: ${{ runner.temp }}/macos-build
+          OUTBASE: ${{ runner.temp }}/packages/macos
+          JOBS: 4
+        run: bash build_scripts/macos-build-freebasic.sh --arch all
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: fbc-xl-packages-macos
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/packages/macos/
+
+  publish-release:
+    name: Publish tagged release packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - linux-release-matrix
+      - extended-platform-packages
+      - windows
+      - macos
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout publisher
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Download Linux package matrix
+        uses: actions/download-artifact@v8
+        with:
+          pattern: fbc-xl-linux-package-*
+          merge-multiple: true
+          path: release-assets/linux-matrix
+
+      - name: Download Windows packages
+        uses: actions/download-artifact@v8
+        with:
+          name: fbc-xl-packages-windows
+          path: release-assets/windows
+
+      - name: Download BSD and Haiku packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: fbc-xl-platform-package-*
+          path: release-assets/extended-platforms
+
+      - name: Download macOS packages
+        uses: actions/download-artifact@v8
+        with:
+          name: fbc-xl-packages-macos
+          path: release-assets/macos
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash build_scripts/publish-github-release.sh \
+            "$GITHUB_REF_NAME" \
+            release-assets \
+            "$GITHUB_REPOSITORY"
+
+# end of .github/workflows/packages.yml

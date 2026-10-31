@@ -1,0 +1,82 @@
+'' examples/manual/libraries/ffi/closures.bas
+''
+'' Example extracted from the FreeBASIC Manual
+'' from topic 'libffi'
+'' Purpose: Bind a C-style function pointer to a generic closure callback.
+'' Responsibilities: Typed return storage, borrowed call data and cleanup.
+'' This example contains no native trampoline implementation.
+''
+'' See Also: https://www.freebasic.net/wiki/wikka.php?wakka=ExtLibFfi
+'' --------
+
+#include "ffi.bi"
+
+' Acts like puts with the file given at time of enclosure.
+Sub Printer cdecl(ByVal cif As ffi_cif Ptr, ByVal ret As Any Ptr, ByVal args As Any Ptr Ptr, ByVal File As Any Ptr)
+	' libffi supplies ffi_arg storage even for a 32-bit integer return.
+	If ret = 0 Then Exit Sub
+	*CPtr(ffi_arg Ptr, ret) = 0
+	If args = 0 OrElse File = 0 OrElse args[0] = 0 Then Exit Sub
+	Dim s As ZString Ptr = *CPtr(ZString Ptr Ptr, args[0])
+	If s = 0 Then Exit Sub
+	Print #*CPtr(Integer Ptr, File), *s
+	*CPtr(ffi_arg Ptr, ret) = 42
+End Sub
+
+' Allocate the closure and function binding
+Dim status As Integer = 1
+Dim PrinterBinding As Function Cdecl(ByVal s As ZString Ptr) As ULong
+Dim closure As ffi_closure Ptr
+closure = ffi_closure_alloc(SizeOf(ffi_closure), @PrinterBinding)
+
+If closure <> 0 Then
+	' Initialize the argument info vector
+	Dim args(0 To 0) As ffi_type Ptr = {@ffi_type_pointer}
+
+	' Initialize the call interface
+	Dim cif As ffi_cif
+	Dim prep_result As ffi_status = ffi_prep_cif( _
+		@cif,            _ ' call interface object
+		FFI_DEFAULT_ABI, _ ' binary interface type
+		1,               _ ' number of arguments
+		@ffi_type_uint,  _ ' return type
+		@args(0)         _ ' arguments
+	)
+	If prep_result = FFI_OK Then
+		' Open console file to send to PrinterBinding as user data
+		Dim ConsoleFile As Integer = FreeFile()
+		'' CONS is the process console stream, not a disk path.
+		'' FB-LINTER: DISABLE-NEXT-LINE FBL-IO-005
+		Open Cons For Output As ConsoleFile
+		If Err = 0 Then
+			' Initialize the closure, setting user data to the console file
+			prep_result = ffi_prep_closure_loc( _
+				closure,         _ ' closure object
+				@cif,            _ ' call interface object
+				@Printer,        _ ' actual closure function
+				@ConsoleFile,    _ ' user data, our console file #
+				PrinterBinding   _ ' pointer to binding
+			)
+			If prep_result = FFI_OK Then
+				' Call binding as a natural function call
+				Dim Result As ULong
+				Result = PrinterBinding("Hello World!")
+				Print Using "Returned &"; Result
+			If Result = 42 Then status = 0
+			End If
+
+			Close ConsoleFile
+		Else
+			Print "Could not open the console stream"
+		End If
+	End If
+End If
+
+' Clean up
+If closure <> 0 Then
+	ffi_closure_free(closure)
+End If
+
+If status <> 0 Then Print "libffi closure example failed"
+End status
+' end of closures.bas

@@ -1,0 +1,258 @@
+#include "fbcunit.bi"
+
+private function hReadSingleBits( byref f as single ) as ulong
+	dim as ubyte ptr p = cptr( ubyte ptr, @f )
+	dim as ulong bits = 0
+
+#if defined( __FB_BIGENDIAN__ )
+	for i as integer = 0 to 3
+#else
+	for i as integer = 3 to 0 step -1
+#endif
+		bits = (bits shl 8) or p[i]
+	next
+
+	function = bits
+end function
+
+private function hReadDoubleBits( byref d as double ) as ulongint
+	dim as ubyte ptr p = cptr( ubyte ptr, @d )
+	dim as ulongint bits = 0
+
+#if defined( __FB_BIGENDIAN__ )
+	for i as integer = 0 to 7
+#else
+	for i as integer = 7 to 0 step -1
+#endif
+		bits = (bits shl 8) or p[i]
+	next
+
+	function = bits
+end function
+
+private function hIsSingleNan( byval bits as ulong ) as boolean
+	const EXPONENT_MASK = &h7F800000u
+	const FRACTION_MASK = &h007FFFFFu
+
+	function = ((bits and EXPONENT_MASK) = EXPONENT_MASK) andalso _
+	           ((bits and FRACTION_MASK) <> 0)
+end function
+
+private function hIsDoubleNan( byval bits as ulongint ) as boolean
+	const EXPONENT_MASK = &h7FF0000000000000ull
+	const FRACTION_MASK = &h000FFFFFFFFFFFFFull
+
+	function = ((bits and EXPONENT_MASK) = EXPONENT_MASK) andalso _
+	           ((bits and FRACTION_MASK) <> 0)
+end function
+
+SUITE( fbc_tests.numbers.infnan )
+
+	TEST( double_ )
+		''
+		'' Double
+		''
+		const SGNMASK = &h7FFFFFFFFFFFFFFFull
+		const POSINFD = &h7FF0000000000000ull
+		const NEGINFD = &hFFF0000000000000ull
+		const POSNAND = &h7FF8000000000000ull
+		const NEGNAND = &hFFF8000000000000ull
+
+		#macro checkD( d, x )
+			'' The sign bit for NaN results is unspecified by IEEE754,
+			'' and MIPS legacy mode reverses the quiet NaN fraction bit.
+			'' Accept every NaN representation while retaining exact
+			'' checks for infinities and their signs.
+			#if( (x = NEGNAND) or (x = POSNAND) )
+				CU_ASSERT( hIsDoubleNan( hReadDoubleBits( d ) ) )
+			#else
+				CU_ASSERT( hReadDoubleBits( d ) = x )
+			#endif
+		#endmacro
+
+		#macro checkConstD( N, x )
+			scope
+				dim d as double
+				d = N
+				checkD( d, x )
+			end scope
+
+			scope
+				dim d as double = N
+				checkD( d, x )
+			end scope
+
+			scope
+				static d as double
+				d = N
+				checkD( d, x )
+			end scope
+
+			scope
+				static d as double = N
+				checkD( d, x )
+			end scope
+		#endmacro
+
+		checkConstD(  ( 0.0 /  0.0), NEGNAND )
+		checkConstD(  ( 0.0 / -0.0), NEGNAND )
+		checkConstD(  (-0.0 /  0.0), NEGNAND )
+		checkConstD(  (-0.0 / -0.0), NEGNAND )
+		checkConstD(  ( 1.0 /  0.0), POSINFD )
+		checkConstD(  ( 1.0 / -0.0), NEGINFD )
+		checkConstD(  (-1.0 /  0.0), NEGINFD )
+		checkConstD(  (-1.0 / -0.0), POSINFD )
+
+		checkConstD( -( 0.0 /  0.0), POSNAND )
+		checkConstD( -( 0.0 / -0.0), POSNAND )
+		checkConstD( -(-0.0 /  0.0), POSNAND )
+		checkConstD( -(-0.0 / -0.0), POSNAND )
+		checkConstD( -( 1.0 /  0.0), NEGINFD )
+		checkConstD( -( 1.0 / -0.0), POSINFD )
+		checkConstD( -(-1.0 /  0.0), POSINFD )
+		checkConstD( -(-1.0 / -0.0), NEGINFD )
+
+		#macro checkVarDivD( NA, NB, x )
+			scope
+				dim as double a, b, c
+				a = NA
+				b = NB
+				c = a / b
+				checkD( c, x )
+			end scope
+		#endmacro
+
+		checkVarDivD(  0.0,  0.0, NEGNAND )
+		checkVarDivD(  0.0, -0.0, NEGNAND )
+		checkVarDivD( -0.0,  0.0, NEGNAND )
+		checkVarDivD( -0.0, -0.0, NEGNAND )
+		checkVarDivD(  1.0,  0.0, POSINFD )
+		checkVarDivD(  1.0, -0.0, NEGINFD )
+		checkVarDivD( -1.0,  0.0, NEGINFD )
+		checkVarDivD( -1.0, -0.0, POSINFD )
+
+		#macro checkVarDivNegD( NA, NB, x )
+			scope
+				dim as double a, b, c
+				a = NA
+				b = NB
+				c = -(a / b)
+				checkD( c, x )
+			end scope
+		#endmacro
+
+		checkVarDivNegD(  0.0,  0.0, POSNAND )
+		checkVarDivNegD(  0.0, -0.0, POSNAND )
+		checkVarDivNegD( -0.0,  0.0, POSNAND )
+		checkVarDivNegD( -0.0, -0.0, POSNAND )
+		checkVarDivNegD(  1.0,  0.0, NEGINFD )
+		checkVarDivNegD(  1.0, -0.0, POSINFD )
+		checkVarDivNegD( -1.0,  0.0, POSINFD )
+		checkVarDivNegD( -1.0, -0.0, NEGINFD )
+	END_TEST
+
+	TEST( single_ )
+		''
+		'' Single
+		''
+
+		const SGNMASK = &h7FFFFFFFu
+		const POSINFF = &h7F800000u
+		const NEGINFF = &hFF800000u
+		const POSNANF = &h7FC00000u
+		const NEGNANF = &hFFC00000u
+
+		#macro checkF( f, x )
+			'' The sign bit for NaN results is unspecified by IEEE754,
+			'' and MIPS legacy mode reverses the quiet NaN fraction bit.
+			'' Accept every NaN representation while retaining exact
+			'' checks for infinities and their signs.
+			#if( (x = NEGNANF) or (x = POSNANF) )
+				CU_ASSERT( hIsSingleNan( hReadSingleBits( f ) ) )
+			#else
+				CU_ASSERT( hReadSingleBits( f ) = x )
+			#endif
+		#endmacro
+
+		#macro checkConstF( N, x )
+			scope
+				dim f as single
+				f = N
+				checkF( f, x )
+			end scope
+
+			scope
+				dim f as single = N
+				checkF( f, x )
+			end scope
+
+			scope
+				static f as single
+				f = N
+				checkF( f, x )
+			end scope
+
+			scope
+				static f as single = N
+				checkF( f, x )
+			end scope
+		#endmacro
+
+		checkConstF(  ( 0.0f /  0.0f), NEGNANF )
+		checkConstF(  ( 0.0f / -0.0f), NEGNANF )
+		checkConstF(  (-0.0f /  0.0f), NEGNANF )
+		checkConstF(  (-0.0f / -0.0f), NEGNANF )
+		checkConstF(  ( 1.0f /  0.0f), POSINFF )
+		checkConstF(  ( 1.0f / -0.0f), NEGINFF )
+		checkConstF(  (-1.0f /  0.0f), NEGINFF )
+		checkConstF(  (-1.0f / -0.0f), POSINFF )
+
+		checkConstF( -( 0.0f /  0.0f), POSNANF )
+		checkConstF( -( 0.0f / -0.0f), POSNANF )
+		checkConstF( -(-0.0f /  0.0f), POSNANF )
+		checkConstF( -(-0.0f / -0.0f), POSNANF )
+		checkConstF( -( 1.0f /  0.0f), NEGINFF )
+		checkConstF( -( 1.0f / -0.0f), POSINFF )
+		checkConstF( -(-1.0f /  0.0f), POSINFF )
+		checkConstF( -(-1.0f / -0.0f), NEGINFF )
+
+		#macro checkVarDivF( NA, NB, x )
+			scope
+				dim as single a, b, c
+				a = NA
+				b = NB
+				c = a / b
+				checkF( c, x )
+			end scope
+		#endmacro
+
+		checkVarDivF(  0.0f,  0.0f, NEGNANF )
+		checkVarDivF(  0.0f, -0.0f, NEGNANF )
+		checkVarDivF( -0.0f,  0.0f, NEGNANF )
+		checkVarDivF( -0.0f, -0.0f, NEGNANF )
+		checkVarDivF(  1.0f,  0.0f, POSINFF )
+		checkVarDivF(  1.0f, -0.0f, NEGINFF )
+		checkVarDivF( -1.0f,  0.0f, NEGINFF )
+		checkVarDivF( -1.0f, -0.0f, POSINFF )
+
+		#macro checkVarDivNegF( NA, NB, x )
+			scope
+				dim as single a, b, c
+				a = NA
+				b = NB
+				c = -(a / b)
+				checkF( c, x )
+			end scope
+		#endmacro
+
+		checkVarDivNegF(  0.0f,  0.0f, POSNANF )
+		checkVarDivNegF(  0.0f, -0.0f, POSNANF )
+		checkVarDivNegF( -0.0f,  0.0f, POSNANF )
+		checkVarDivNegF( -0.0f, -0.0f, POSNANF )
+		checkVarDivNegF(  1.0f,  0.0f, NEGINFF )
+		checkVarDivNegF(  1.0f, -0.0f, POSINFF )
+		checkVarDivNegF( -1.0f,  0.0f, POSINFF )
+		checkVarDivNegF( -1.0f, -0.0f, NEGINFF )
+	END_TEST
+
+END_SUITE

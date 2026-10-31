@@ -1,0 +1,631 @@
+##############################################################################
+# compiler-config.mk
+#
+# Toolchain configuration and compiler selection
+# Project: FreeBASIC build system
+# Purpose: Select host and target tools without confusing their identities.
+# Responsibilities: Resolve SDK prefixes and a runnable build compiler.
+# This file intentionally does NOT compile sources or define installation paths.
+# (regenerated with layout-safe FBC handling)
+##############################################################################
+
+##############################################################################
+# Host toolchain detection
+##############################################################################
+
+MSYS_VERSION_SORT := $(strip $(shell if printf '2\n10\n' | sort -V >/dev/null 2>&1; then echo 'sort -V'; else echo sort; fi))
+
+LOCAL_GCC_CANDIDATE := $(firstword $(wildcard bin/gcc$(EXEEXT) bin/gcc.exe bin/gcc))
+LOCAL_GXX_CANDIDATE := $(firstword $(wildcard bin/g++$(EXEEXT) bin/g++.exe bin/g++))
+LOCAL_AR_CANDIDATE := $(firstword $(wildcard bin/ar$(EXEEXT) bin/ar.exe bin/ar))
+LOCAL_RANLIB_CANDIDATE := $(firstword $(wildcard bin/ranlib$(EXEEXT) bin/ranlib.exe bin/ranlib))
+LOCAL_AS_CANDIDATE := $(firstword $(wildcard bin/as$(EXEEXT) bin/as.exe bin/as))
+LOCAL_LD_CANDIDATE := $(firstword $(wildcard bin/ld$(EXEEXT) bin/ld.exe bin/ld))
+
+LOCAL_GCC := $(strip $(shell if [ -n "$(LOCAL_GCC_CANDIDATE)" ] && "$(LOCAL_GCC_CANDIDATE)" -dumpmachine >/dev/null 2>&1; then echo "$(LOCAL_GCC_CANDIDATE)"; fi))
+LOCAL_GXX := $(strip $(shell if [ -n "$(LOCAL_GXX_CANDIDATE)" ] && "$(LOCAL_GXX_CANDIDATE)" --version >/dev/null 2>&1; then echo "$(LOCAL_GXX_CANDIDATE)"; fi))
+LOCAL_AR := $(strip $(shell if [ -n "$(LOCAL_AR_CANDIDATE)" ] && "$(LOCAL_AR_CANDIDATE)" --version >/dev/null 2>&1; then echo "$(LOCAL_AR_CANDIDATE)"; fi))
+LOCAL_RANLIB := $(strip $(shell if [ -n "$(LOCAL_RANLIB_CANDIDATE)" ] && "$(LOCAL_RANLIB_CANDIDATE)" --version >/dev/null 2>&1; then echo "$(LOCAL_RANLIB_CANDIDATE)"; fi))
+LOCAL_AS := $(strip $(shell if [ -n "$(LOCAL_AS_CANDIDATE)" ] && "$(LOCAL_AS_CANDIDATE)" --version >/dev/null 2>&1; then echo "$(LOCAL_AS_CANDIDATE)"; fi))
+LOCAL_LD := $(strip $(shell if [ -n "$(LOCAL_LD_CANDIDATE)" ] && "$(LOCAL_LD_CANDIDATE)" --version >/dev/null 2>&1; then echo "$(LOCAL_LD_CANDIDATE)"; fi))
+
+MSYS_ACTIVE_PREFIX := $(strip $(MINGW_PREFIX))
+MSYS_TARGET_PREFIX :=
+MSYS_AARCH64_CROSS :=
+MSYS_AARCH64_SYSROOT := /clangarm64
+MSYS_AARCH64_NATIVE := $(strip $(shell if [ -x /clangarm64/bin/clang.exe ] && /clangarm64/bin/clang.exe -dumpmachine 2>/dev/null | grep -Eq '^(aarch64|arm64)-w64-'; then echo yes; fi))
+MSYS_AARCH64_RESOURCE_DIR :=
+
+ifneq ($(filter aarch64-w64-mingw32 arm64-w64-mingw32 aarch64-w64-windows-gnu arm64-w64-windows-gnu,$(TARGET_TRIPLET_LC)),)
+  MSYS_AARCH64_RESOURCE_DIR := $(strip $(shell find $(MSYS_AARCH64_SYSROOT)/lib/clang -mindepth 1 -maxdepth 1 -type d 2>/dev/null | $(MSYS_VERSION_SORT) | tail -n 1))
+  ifeq ($(MSYS_AARCH64_NATIVE),yes)
+    MSYS_TARGET_PREFIX := /clangarm64
+  else
+    MSYS_TARGET_PREFIX := /mingw64
+    MSYS_AARCH64_CROSS := yes
+  endif
+else ifeq ($(TARGET_TRIPLET_LC),i686-w64-mingw32)
+  MSYS_TARGET_PREFIX := /mingw32
+else ifeq ($(TARGET_TRIPLET_LC),x86_64-w64-mingw32)
+  MSYS_TARGET_PREFIX := /mingw64
+endif
+
+MSYS_AARCH64_CLANG_FLAGS := -Qunused-arguments --target=aarch64-w64-mingw32 --sysroot=$(MSYS_AARCH64_SYSROOT) $(if $(MSYS_AARCH64_RESOURCE_DIR),-resource-dir $(MSYS_AARCH64_RESOURCE_DIR)) -fuse-ld=lld --rtlib=compiler-rt --unwindlib=libunwind
+
+MSYS_HOST_GCC := $(firstword $(wildcard \
+  $(if $(MSYS_AARCH64_NATIVE),/clangarm64/bin/clang.exe /clangarm64/bin/gcc.exe) \
+  $(if $(MSYS_ACTIVE_PREFIX),$(MSYS_ACTIVE_PREFIX)/bin/gcc.exe $(MSYS_ACTIVE_PREFIX)/bin/clang.exe) \
+  /mingw64/bin/gcc.exe /mingw64/bin/clang.exe /ucrt64/bin/gcc.exe /ucrt64/bin/clang.exe /clang64/bin/gcc.exe /clang64/bin/clang.exe))
+
+MSYS_GCC := $(firstword $(wildcard \
+  $(if $(MSYS_TARGET_PREFIX),$(MSYS_TARGET_PREFIX)/bin/gcc.exe $(MSYS_TARGET_PREFIX)/bin/clang.exe) \
+  $(if $(MSYS_ACTIVE_PREFIX),$(MSYS_ACTIVE_PREFIX)/bin/gcc.exe $(MSYS_ACTIVE_PREFIX)/bin/clang.exe) \
+  /mingw64/bin/gcc.exe /mingw64/bin/clang.exe /ucrt64/bin/gcc.exe /ucrt64/bin/clang.exe /clang64/bin/gcc.exe /clang64/bin/clang.exe))
+MSYS_GXX := $(firstword $(wildcard \
+  $(if $(MSYS_TARGET_PREFIX),$(MSYS_TARGET_PREFIX)/bin/g++.exe $(MSYS_TARGET_PREFIX)/bin/clang++.exe) \
+  $(if $(MSYS_ACTIVE_PREFIX),$(MSYS_ACTIVE_PREFIX)/bin/g++.exe $(MSYS_ACTIVE_PREFIX)/bin/clang++.exe) \
+  /mingw64/bin/g++.exe /mingw64/bin/clang++.exe /ucrt64/bin/g++.exe /ucrt64/bin/clang++.exe /clang64/bin/g++.exe /clang64/bin/clang++.exe))
+MSYS_AR := $(firstword $(wildcard \
+  $(if $(MSYS_TARGET_PREFIX),$(MSYS_TARGET_PREFIX)/bin/ar.exe $(MSYS_TARGET_PREFIX)/bin/llvm-ar.exe) \
+  $(if $(MSYS_ACTIVE_PREFIX),$(MSYS_ACTIVE_PREFIX)/bin/ar.exe $(MSYS_ACTIVE_PREFIX)/bin/llvm-ar.exe) \
+  /mingw64/bin/ar.exe /mingw64/bin/llvm-ar.exe /ucrt64/bin/ar.exe /ucrt64/bin/llvm-ar.exe /clang64/bin/ar.exe /clang64/bin/llvm-ar.exe))
+MSYS_RANLIB := $(firstword $(wildcard \
+  $(if $(MSYS_TARGET_PREFIX),$(MSYS_TARGET_PREFIX)/bin/ranlib.exe $(MSYS_TARGET_PREFIX)/bin/llvm-ranlib.exe) \
+  $(if $(MSYS_ACTIVE_PREFIX),$(MSYS_ACTIVE_PREFIX)/bin/ranlib.exe $(MSYS_ACTIVE_PREFIX)/bin/llvm-ranlib.exe) \
+  /mingw64/bin/ranlib.exe /mingw64/bin/llvm-ranlib.exe /ucrt64/bin/ranlib.exe /ucrt64/bin/llvm-ranlib.exe /clang64/bin/ranlib.exe /clang64/bin/llvm-ranlib.exe))
+MSYS_AS := $(firstword $(wildcard \
+  $(if $(MSYS_TARGET_PREFIX),$(MSYS_TARGET_PREFIX)/bin/as.exe $(MSYS_TARGET_PREFIX)/bin/clang.exe) \
+  $(if $(MSYS_ACTIVE_PREFIX),$(MSYS_ACTIVE_PREFIX)/bin/as.exe $(MSYS_ACTIVE_PREFIX)/bin/clang.exe) \
+  /mingw64/bin/as.exe /mingw64/bin/clang.exe /ucrt64/bin/as.exe /ucrt64/bin/clang.exe /clang64/bin/as.exe /clang64/bin/clang.exe))
+MSYS_LD := $(firstword $(wildcard \
+  $(if $(MSYS_TARGET_PREFIX),$(MSYS_TARGET_PREFIX)/bin/ld.exe $(MSYS_TARGET_PREFIX)/bin/ld.lld.exe) \
+  $(if $(MSYS_ACTIVE_PREFIX),$(MSYS_ACTIVE_PREFIX)/bin/ld.exe $(MSYS_ACTIVE_PREFIX)/bin/ld.lld.exe) \
+  /mingw64/bin/ld.exe /mingw64/bin/ld.lld.exe /ucrt64/bin/ld.exe /ucrt64/bin/ld.lld.exe /clang64/bin/ld.exe /clang64/bin/ld.lld.exe))
+
+ifeq ($(MSYS_AARCH64_CROSS),yes)
+  MSYS_GCC := $(firstword $(wildcard /mingw64/bin/clang.exe /ucrt64/bin/clang.exe /clang64/bin/clang.exe))
+  MSYS_GXX := $(firstword $(wildcard /mingw64/bin/clang++.exe /ucrt64/bin/clang++.exe /clang64/bin/clang++.exe))
+  MSYS_AR := $(firstword $(wildcard /mingw64/bin/llvm-ar.exe /ucrt64/bin/llvm-ar.exe /clang64/bin/llvm-ar.exe))
+  MSYS_RANLIB := $(firstword $(wildcard /mingw64/bin/llvm-ranlib.exe /ucrt64/bin/llvm-ranlib.exe /clang64/bin/llvm-ranlib.exe))
+  MSYS_AS := $(firstword $(wildcard /mingw64/bin/clang.exe /ucrt64/bin/clang.exe /clang64/bin/clang.exe))
+  MSYS_LD := $(firstword $(wildcard $(MSYS_AARCH64_SYSROOT)/bin/ld.exe $(MSYS_AARCH64_SYSROOT)/bin/ld.lld.exe /mingw64/bin/ld.lld.exe /ucrt64/bin/ld.lld.exe /clang64/bin/ld.lld.exe))
+endif
+
+HOST_VERSION_SORT := $(MSYS_VERSION_SORT)
+HOST_UNAME_S := $(strip $(shell uname -s 2>/dev/null || echo unknown))
+HOMEBREW_GCC :=
+HOMEBREW_GXX :=
+ifeq ($(HOST_UNAME_S),Darwin)
+  HOMEBREW_GCC := $(strip $(shell find /opt/homebrew/bin /usr/local/bin -maxdepth 1 \( -type f -o -type l \) -name 'gcc-*' 2>/dev/null | grep -E '/gcc-[0-9]+$$' | $(HOST_VERSION_SORT) | tail -n1))
+  HOMEBREW_GXX := $(strip $(shell find /opt/homebrew/bin /usr/local/bin -maxdepth 1 \( -type f -o -type l \) -name 'g++-*' 2>/dev/null | grep -E '/g[+][+]-[0-9]+$$' | $(HOST_VERSION_SORT) | tail -n1))
+endif
+
+# CC may already be a cross compiler. Identify the build machine through an
+# independent native driver, or an explicit HOST_CC, before deciding which
+# FreeBASIC executable can run during compilation.
+HOST_CC_FOR_PROBE := $(strip $(or $(HOST_CC),$(LOCAL_GCC),$(MSYS_HOST_GCC),$(HOMEBREW_GCC),\
+$(if $(shell command -v gcc 2>/dev/null),gcc),\
+$(if $(shell command -v clang 2>/dev/null),clang),$(CC),cc))
+HOST_TRIPLET := $(shell $(HOST_CC_FOR_PROBE) -dumpmachine 2>/dev/null || echo unknown)
+HOST_TRIPLET_LC := $(strip $(shell printf '%s' "$(HOST_TRIPLET)" | tr 'A-Z' 'a-z'))
+HOST_UNAME_OS := $(strip $(shell uname -o 2>/dev/null | tr 'A-Z' 'a-z'))
+HOST_TRIPLET_TOKENS := $(subst -, ,$(HOST_TRIPLET_LC))
+HOST_ARCH_RAW := $(word 1,$(HOST_TRIPLET_TOKENS))
+HOST_ARCH := $(HOST_ARCH_RAW)
+HOST_OS :=
+
+ifneq ($(filter 386 486 586 686 i386 i486 i586 i686 x86,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := x86
+endif
+
+ifneq ($(filter x86_64 amd64 x86-64,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := x86_64
+endif
+
+ifneq ($(filter m68k m68000 m68010 m68020 m68030 m68040 m68060,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := m68k
+endif
+
+ifneq ($(filter arm%,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := arm
+endif
+ifneq ($(filter armhf armel,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := arm
+endif
+
+ifneq ($(filter aarch64 arm64,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := aarch64
+endif
+
+ifneq ($(filter ppc powerpc,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := powerpc
+endif
+
+ifneq ($(filter ppc64 powerpc64,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := powerpc64
+endif
+
+ifneq ($(filter ppc64le powerpc64le ppc64el,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := powerpc64le
+endif
+
+ifneq ($(filter riscv64,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := riscv64
+endif
+
+ifneq ($(filter s390x,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := s390x
+endif
+
+ifneq ($(filter loongarch64 loong64,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := loongarch64
+endif
+
+ifneq ($(filter mips,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := mips32
+endif
+
+ifneq ($(filter mipsel,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := mips32el
+endif
+
+ifneq ($(filter mips64,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := mips64
+endif
+
+ifneq ($(filter mips64el,$(HOST_ARCH_RAW)),)
+  HOST_ARCH := mips64el
+endif
+
+ifneq ($(findstring linux,$(HOST_TRIPLET_LC)),)
+  HOST_OS := linux
+endif
+ifneq ($(findstring android,$(HOST_TRIPLET_LC)),)
+  HOST_OS := android
+endif
+ifneq ($(findstring aros,$(HOST_TRIPLET_LC)),)
+  HOST_OS := aros
+endif
+ifneq ($(or $(findstring darwin,$(HOST_TRIPLET_LC)),$(findstring apple,$(HOST_TRIPLET_LC))),)
+  HOST_OS := darwin
+endif
+ifneq ($(findstring freebsd,$(HOST_TRIPLET_LC)),)
+  HOST_OS := freebsd
+endif
+ifneq ($(findstring netbsd,$(HOST_TRIPLET_LC)),)
+  HOST_OS := netbsd
+endif
+ifneq ($(findstring openbsd,$(HOST_TRIPLET_LC)),)
+  HOST_OS := openbsd
+endif
+ifneq ($(findstring dragonfly,$(HOST_TRIPLET_LC)),)
+  HOST_OS := dragonfly
+endif
+ifneq ($(findstring haiku,$(HOST_TRIPLET_LC)),)
+  HOST_OS := haiku
+endif
+ifneq ($(or $(findstring illumos,$(HOST_TRIPLET_LC)),$(findstring illumos,$(HOST_UNAME_OS))),)
+  HOST_OS := illumos
+endif
+ifeq ($(strip $(HOST_OS)),)
+  ifneq ($(or $(findstring solaris,$(HOST_TRIPLET_LC)),$(findstring sunos,$(HOST_TRIPLET_LC))),)
+    HOST_OS := solaris
+  endif
+endif
+ifneq ($(findstring cygwin,$(HOST_TRIPLET_LC)),)
+  HOST_OS := cygwin
+endif
+ifneq ($(or $(findstring mingw,$(HOST_TRIPLET_LC)),$(findstring w64,$(HOST_TRIPLET_LC)),$(findstring msys,$(HOST_TRIPLET_LC))),)
+  HOST_OS := win32
+endif
+ifneq ($(or $(findstring djgpp,$(HOST_TRIPLET_LC)),$(findstring msdosdjgpp,$(HOST_TRIPLET_LC))),)
+  HOST_OS := dos
+endif
+
+# Determine whether we are cross-compiling
+CROSS_BUILD :=
+
+ifneq ($(strip $(TARGET_TRIPLET)),)
+  ifneq ($(strip $(HOST_OS)),)
+    ifneq ($(TARGET_OS),$(HOST_OS))
+      CROSS_BUILD := yes
+    else ifneq ($(TARGET_ARCH),$(HOST_ARCH))
+      CROSS_BUILD := yes
+    endif
+  else ifneq ($(TARGET_TRIPLET),$(HOST_TRIPLET))
+    CROSS_BUILD := yes
+  endif
+endif
+
+
+##############################################################################
+# Toolchain prefix
+##############################################################################
+
+BUILD_PREFIX ?=
+
+# A same-OS x86 multilib build uses its native driver with -m32/-m64. It
+# needs the requested SDK width, but does not require another triplet prefix.
+MULTILIB_HOST_TOOLS :=
+ifneq ($(filter 32 64,$(MULTILIB)),)
+ifeq ($(TARGET_OS),$(HOST_OS))
+ifneq ($(filter x86 x86_64,$(HOST_ARCH)),)
+MULTILIB_HOST_TOOLS := yes
+endif
+endif
+endif
+
+ifeq ($(CROSS_BUILD),yes)
+
+  ifeq ($(strip $(BUILD_PREFIX)),)
+  ifeq ($(MULTILIB_HOST_TOOLS),)
+    BUILD_PREFIX := $(TARGET_TRIPLET)-
+  endif
+  endif
+
+endif
+
+ifeq ($(TARGET_OS),js)
+  BUILD_PREFIX :=
+endif
+ifeq ($(TARGET_OS),android)
+  BUILD_PREFIX :=
+endif
+
+##############################################################################
+# Verify cross compiler exists
+##############################################################################
+
+# These workflows only emit or archive sources with a runnable host compiler.
+# A target SDK is needed when those sources are compiled in the target guest.
+# Keep SDK checks enabled if the invocation also requests any concrete build.
+BOOTSTRAP_EMIT_GOALS := bootstrap-emit bootstrap-emit-matrix bootstrap-emit-source-response \
+bootstrap-dist-target bootstrap-dist bootstrap-dist-arm bootstrap-dist-all
+BOOTSTRAP_EMIT_GOAL := $(if $(strip $(MAKECMDGOALS)),$(if $(filter-out $(BOOTSTRAP_EMIT_GOALS),$(MAKECMDGOALS)),,$(MAKECMDGOALS)))
+MISSING_CROSS_CC :=
+
+ifneq ($(strip $(BUILD_PREFIX)),)
+
+PREFIXED_GCC := $(BUILD_PREFIX)gcc
+
+ifeq ($(shell command -v $(PREFIXED_GCC) 2>/dev/null),)
+
+ifneq ($(strip $(MSYS_TARGET_PREFIX)),)
+ifneq ($(wildcard $(MSYS_TARGET_PREFIX)/bin/gcc.exe $(MSYS_TARGET_PREFIX)/bin/clang.exe),)
+BUILD_PREFIX :=
+else ifeq ($(strip $(BOOTSTRAP_EMIT_GOAL)),)
+$(warning Requested cross toolchain '$(PREFIXED_GCC)' not found)
+MISSING_CROSS_CC := $(PREFIXED_GCC)
+
+# fallback to host compiler
+BUILD_PREFIX :=
+
+endif
+else ifeq ($(strip $(BOOTSTRAP_EMIT_GOAL)),)
+$(warning Requested cross toolchain '$(PREFIXED_GCC)' not found)
+MISSING_CROSS_CC := $(PREFIXED_GCC)
+
+# fallback to host compiler
+BUILD_PREFIX :=
+
+endif
+
+endif
+
+ifneq ($(strip $(BUILD_PREFIX)),)
+ifneq ($(strip $(MSYS_TARGET_PREFIX)),)
+ifneq ($(wildcard $(MSYS_TARGET_PREFIX)/bin/gcc.exe $(MSYS_TARGET_PREFIX)/bin/clang.exe),)
+MSYS_PREFIXED_BINUTILS_COMPLETE := $(strip $(shell for tool in ar ranlib as ld; do command -v $(BUILD_PREFIX)$$tool >/dev/null 2>&1 || exit 1; done; echo yes))
+ifeq ($(MSYS_PREFIXED_BINUTILS_COMPLETE),)
+BUILD_PREFIX :=
+endif
+endif
+endif
+endif
+
+ifeq ($(TARGET_OS),js)
+  CC      ?= emcc
+  CXX     ?= em++
+  AR      ?= emar
+  RANLIB  ?= emranlib
+  LD      ?= emcc
+endif
+
+endif
+
+##############################################################################
+# Base tools
+##############################################################################
+
+# C compiler
+ifneq ($(filter default file,$(origin CC)),)
+  ifeq ($(TARGET_OS),js)
+    CC := emcc
+  else ifeq ($(CROSS_BUILD),yes)
+    ifneq ($(strip $(BUILD_PREFIX)),)
+      CC := $(BUILD_PREFIX)gcc
+    else ifneq ($(strip $(MSYS_GCC)),)
+      CC := $(strip $(MSYS_GCC) $(if $(MSYS_AARCH64_CROSS),$(MSYS_AARCH64_CLANG_FLAGS)))
+    else
+      CC := gcc
+    endif
+  else ifneq ($(strip $(LOCAL_GCC)),)
+    CC := $(LOCAL_GCC)
+  else ifneq ($(strip $(MSYS_GCC)),)
+    CC := $(MSYS_GCC)
+  else ifneq ($(strip $(HOMEBREW_GCC)),)
+    CC := $(HOMEBREW_GCC)
+  else
+    CC := gcc
+  endif
+endif
+
+CC_TOOL := $(firstword $(CC))
+ifeq ($(strip $(CLANG)),)
+  ifneq ($(filter %clang %clang.exe,$(CC_TOOL)),)
+    CLANG := $(CC_TOOL)
+  else ifneq ($(strip $(MSYS_TARGET_PREFIX)),)
+    CLANG := $(firstword $(wildcard $(MSYS_TARGET_PREFIX)/bin/clang.exe))
+  else ifneq ($(strip $(MSYS_ACTIVE_PREFIX)),)
+    CLANG := $(firstword $(wildcard $(MSYS_ACTIVE_PREFIX)/bin/clang.exe))
+  endif
+endif
+
+
+# C++ compiler
+ifneq ($(filter default file,$(origin CXX)),)
+  ifeq ($(TARGET_OS),js)
+    CXX := em++
+  else ifeq ($(CROSS_BUILD),yes)
+    ifneq ($(strip $(BUILD_PREFIX)),)
+      CXX := $(BUILD_PREFIX)g++
+    else ifneq ($(strip $(MSYS_GXX)),)
+      CXX := $(strip $(MSYS_GXX) $(if $(MSYS_AARCH64_CROSS),$(MSYS_AARCH64_CLANG_FLAGS) -stdlib=libc++))
+    else
+      CXX := g++
+    endif
+  else ifneq ($(strip $(LOCAL_GXX)),)
+    CXX := $(LOCAL_GXX)
+  else ifneq ($(strip $(MSYS_GXX)),)
+    CXX := $(MSYS_GXX)
+  else ifneq ($(strip $(HOMEBREW_GXX)),)
+    CXX := $(HOMEBREW_GXX)
+  else
+    CXX := g++
+  endif
+endif
+
+
+# Archiver
+ifneq ($(filter undefined default file,$(origin AR)),)
+  ifeq ($(TARGET_OS),js)
+    AR := emar
+  else ifeq ($(CROSS_BUILD),yes)
+    ifneq ($(strip $(BUILD_PREFIX)),)
+      AR := $(BUILD_PREFIX)ar
+    else ifneq ($(strip $(MSYS_AR)),)
+      AR := $(MSYS_AR)
+    else
+      AR := ar
+    endif
+  else ifneq ($(strip $(LOCAL_AR)),)
+    AR := $(LOCAL_AR)
+  else ifneq ($(strip $(MSYS_AR)),)
+    AR := $(MSYS_AR)
+  else
+    AR := ar
+  endif
+endif
+
+
+# Ranlib
+ifneq ($(filter undefined default file,$(origin RANLIB)),)
+  ifeq ($(TARGET_OS),js)
+    RANLIB := emranlib
+  else ifeq ($(CROSS_BUILD),yes)
+    ifneq ($(strip $(BUILD_PREFIX)),)
+      RANLIB := $(BUILD_PREFIX)ranlib
+    else ifneq ($(strip $(MSYS_RANLIB)),)
+      RANLIB := $(MSYS_RANLIB)
+    else
+      RANLIB := ranlib
+    endif
+  else ifneq ($(strip $(LOCAL_RANLIB)),)
+    RANLIB := $(LOCAL_RANLIB)
+  else ifneq ($(strip $(MSYS_RANLIB)),)
+    RANLIB := $(MSYS_RANLIB)
+  else
+    RANLIB := ranlib
+  endif
+endif
+
+
+# Assembler
+ifneq ($(filter undefined default file,$(origin AS)),)
+  ifeq ($(CROSS_BUILD),yes)
+    ifneq ($(strip $(BUILD_PREFIX)),)
+      AS := $(BUILD_PREFIX)as
+    else ifneq ($(strip $(MSYS_AS)),)
+      AS := $(strip $(MSYS_AS) $(if $(MSYS_AARCH64_CROSS),$(MSYS_AARCH64_CLANG_FLAGS)))
+    else
+      AS := as
+    endif
+  else ifneq ($(strip $(LOCAL_AS)),)
+    AS := $(LOCAL_AS)
+  else ifneq ($(strip $(MSYS_AS)),)
+    AS := $(MSYS_AS)
+  else
+    AS := as
+  endif
+endif
+
+
+##############################################################################
+# Linker selection
+##############################################################################
+
+ifneq ($(filter undefined default file,$(origin LD)),)
+
+  ifeq ($(TARGET_OS),js)
+    LD := emcc
+  else ifeq ($(TARGET_OS),darwin)
+    # fbc's Darwin linker path intentionally uses the compiler driver so it
+    # can choose native startup/runtime defaults. ELF-like targets need a real
+    # linker because fbc passes ld-style options such as "-m elf_x86_64".
+    LD := $(CC)
+  else
+    ifeq ($(CROSS_BUILD),yes)
+      ifneq ($(strip $(BUILD_PREFIX)),)
+        LD := $(BUILD_PREFIX)ld
+      else ifneq ($(strip $(MSYS_LD)),)
+        LD := $(MSYS_LD)
+      else
+        LD := ld
+      endif
+    else ifneq ($(strip $(LOCAL_LD)),)
+      LD := $(LOCAL_LD)
+    else ifneq ($(strip $(MSYS_LD)),)
+      LD := $(MSYS_LD)
+    else
+      LD := ld
+    endif
+  endif
+
+endif
+
+
+##############################################################################
+# FreeBASIC compiler used during the build
+#
+# IMPORTANT:
+# Do NOT overwrite FBC_EXE defined by build-layout.mk
+##############################################################################
+
+FBC_EXE    ?= bin/fbc$(EXEEXT)
+FBCNEW_EXE ?= bin/fbc-new$(EXEEXT)
+
+# Prefer the locally built compiler when it exists, otherwise fall back to a
+# system fbc for bootstrap/emission flows.
+LOCAL_FBC := $(firstword $(wildcard $(FBC_EXE)))
+SYSTEM_FBC := $(strip $(shell command -v fbc 2>/dev/null))
+AVAILABLE_FBC := $(strip $(or $(LOCAL_FBC),$(SYSTEM_FBC)))
+
+# Keep FBC pointing at the in-tree compiler path for root build/install flows.
+# Standalone test-suite makefiles include this tool-selection layer too, but
+# they must preserve the caller's FBC command because it may carry wrappers,
+# include paths, or package-local environment variables.
+ifndef PRESERVE_FBC
+FBC := $(FBC_EXE)
+endif
+
+# Compiler that is executed during the build. In cross-builds this may need to
+# stay host-runnable even while FBC_EXE is being produced for the target.
+ifndef BUILD_FBC
+  ifeq ($(CROSS_BUILD),yes)
+    ifneq ($(strip $(BOOT_FBC)),)
+      BUILD_FBC := $(BOOT_FBC)
+    else ifneq ($(strip $(AVAILABLE_FBC)),)
+      BUILD_FBC := $(AVAILABLE_FBC)
+    else
+      BUILD_FBC := $(FBC)
+    endif
+  else ifneq ($(strip $(AVAILABLE_FBC)),)
+    BUILD_FBC := $(AVAILABLE_FBC)
+  else
+    BUILD_FBC := $(FBC)
+  endif
+endif
+
+ifeq ($(CROSS_BUILD),yes)
+  BUILD_FBC_TARGET ?= $(FBC_TARGET)
+  ifneq ($(strip $(BUILD_PREFIX)),)
+    BUILD_FBC_BUILDPREFIX ?= $(BUILD_PREFIX)
+  else ifneq ($(strip $(MSYS_TARGET_PREFIX)),)
+    BUILD_FBC_BUILDPREFIX ?= $(MSYS_TARGET_PREFIX)/bin/
+  endif
+endif
+
+
+##############################################################################
+# Safety guard
+##############################################################################
+
+ifeq ($(notdir $(FBC_EXE)),fbc)
+ifneq ($(dir $(FBC_EXE)),./)
+ifneq ($(dir $(FBC_EXE)),)
+endif
+endif
+endif
+
+
+##############################################################################
+# Compiler flags
+##############################################################################
+
+CFLAGS ?= -O2 -Wall
+CFLAGS += -Wfatal-errors
+
+CXXFLAGS ?= -O2 -Wall
+
+
+##############################################################################
+# FreeBASIC compiler flags
+##############################################################################
+
+FBFLAGS ?= -maxerr 1
+
+
+##############################################################################
+# Link flags
+##############################################################################
+
+LDFLAGS ?=
+
+
+##############################################################################
+# Thread flags
+##############################################################################
+
+THREAD_FLAGS :=
+
+ifeq ($(THREAD_MODEL),posix)
+  THREAD_FLAGS := -pthread
+endif
+
+ifeq ($(THREAD_MODEL),win32)
+  THREAD_FLAGS := -mthreads
+endif
+
+ifeq ($(THREAD_MODEL),aros)
+  THREAD_FLAGS := -lpthread
+endif
+
+ifdef DISABLE_MT
+  THREAD_FLAGS :=
+endif
+
+
+##############################################################################
+# Debugging output helpers
+##############################################################################
+
+TOOLCHAIN_VARS := \
+  HOST_TRIPLET \
+  TARGET_TRIPLET \
+  CROSS_BUILD \
+  BUILD_PREFIX \
+  CC \
+  CXX \
+  AR \
+  RANLIB \
+  AS \
+  LD \
+  LOCAL_FBC \
+  SYSTEM_FBC \
+  AVAILABLE_FBC \
+  FBC_EXE \
+  BUILD_FBC
+
+##############################################################################
+# End compiler-config.mk
+##############################################################################

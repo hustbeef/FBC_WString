@@ -1,0 +1,81 @@
+﻿{{fbdoc item="title" value="WSTRING"}}----
+Standard data type: wide character string
+
+{{fbdoc item="syntax"}}##
+	[[KeyPgDim|dim]] //variable// [[KeyPgAs|as]] **Wstring** * //size//
+	[[KeyPgDim|dim]] //variable// [[KeyPgAs|as]] **Wstring** [[KeyPgPtr|ptr]]
+##
+{{fbdoc item="desc"}}
+	A ##**Wstring**## is a fixed-size array of wide-character elements. It has no descriptor and does not resize automatically. If a ##**Wstring**## value is declared with a fixed ##//size//##, that size includes the terminating zero element, so the usable text capacity is ##//size// - 1## elements. When assigning to a fixed-size ##**Wstring**##, ##""FreeBASIC""## truncates the assigned text as needed so that the terminator still fits.
+	
+	A ##**Wstring Ptr**## points at a zero-terminated wide-character buffer. Pointer-based ##**Wstring**## storage must be allocated, reallocated, and freed explicitly with ##[[KeyPgAllocate|Allocate]]##, ##[[KeyPgCallocate|Callocate]]##, ##[[KeyPgReallocate|Reallocate]]##, and ##[[KeyPgDeallocate|Deallocate]]##.
+	
+	The end of a ##**Wstring**## is marked by element value 0. The ##""FreeBASIC""## string handling routines append that terminator when creating or assigning ##**Wstring**## data, and they calculate the length by scanning for the first zero element. Embedded zero elements therefore terminate the visible string for the normal ##**Wstring**## operations.
+	
+	For a ##**Wstring**##, ##[[KeyPgLen|Len]]## returns the number of stored wide-character elements before the first zero terminator. ##[[KeyPgSizeof|Sizeof]]## returns the number of bytes reserved by the variable when that storage size is known by the compiler, such as a fixed-size ##**Wstring**## variable. ##[[KeyPgSizeof|Sizeof]]## cannot recover the original allocation size from a dereferenced pointer or from a ##[[KeyPgByref|Byref]]## argument.
+	
+	The size and meaning of one ##**Wstring**## element depends on the target. Do not assume that ##**Wstring**## is always UTF-16, always UTF-32, or always a complete Unicode scalar value per element. On targets with 16-bit wide characters, values outside the Basic Multilingual Plane are represented as UTF-16 surrogate pairs where the compiler or conversion routines support them, and string indexing still sees two 16-bit elements.
+	
+	##[[KeyPgSizeof|Sizeof]]##( ##**Wstring**## ) returns the number of bytes used by one ##**Wstring**## element for the current target.
+	
+	##**Wstring**## is useful for calling wide-character APIs and for text that should be processed with ##""FreeBASIC""## wide-string routines. For portable file formats, network protocols, and stored data, prefer an explicit encoding such as UTF-8 and convert at the boundary where needed.
+	
+	When processing source files, ##""FreeBASIC""## can parse ASCII source with Unicode escape sequences (##\u## or ##\U##), or source files saved as UTF-8, UTF-16LE, UTF-16BE, UTF-32LE, or UTF-32BE when the file has a Byte Order Mark (BOM). For broad portability, plain ASCII or UTF-8 source without relying on target-specific wide-character width is usually the safest choice.
+	
+	The ##""FreeBASIC""## text file functions can read and write Unicode files in different encodings when ##[[KeyPgEncoding|Encoding]]## is specified when the file is opened. The data is converted between the file encoding and the target's internal ##**Wstring**## representation.
+	
+	When allocating dynamic memory for a ##**Wstring**##, prefer ##[[KeyPgCallocate|Callocate]]## or otherwise make sure the buffer is initialized or assigned immediately. A manually allocated ##**Wstring**## buffer without a zero terminator is not a valid zero-terminated string.
+	
+	**Pointer note:** ##*pw##, where ##pw## is a ##**Wstring Ptr**##, can be interpreted either as a ##**Wstring**## expression or as a reference to one wide-character element depending on context. If the other operand is numeric, ##*pw## is treated as the element pointed to by ##pw##. Use parentheses when the intent matters. For example, ##(*pw)[n]## indexes the pointed-to string, while ##pw[n]## indexes the pointer as an array of ##**Wstring**## elements.
+
+{{fbdoc item="ex"}}
+{{fbdoc item="filename" value="examples/manual/datatype/wstring.bas"}}%%(freebasic)
+dim as wstring * 13 str1 => "hello, world"
+print str1
+print len(str1)    'returns 12, the number of stored Wstring elements
+print sizeof(str1) 'returns 13 * sizeof(wstring), the bytes reserved by str1
+%%
+
+{{fbdoc item="filename" value="examples/manual/datatype/wstring2.bas"}}%%(freebasic)
+dim as wstring ptr str2
+
+str2 = callocate( 13 * sizeof(wstring) )
+if str2 = 0 then end 1
+
+*str2 = "hello, world"
+print *str2
+print len(*str2)   'returns 12, the number of stored Wstring elements
+
+deallocate str2
+%%
+
+{{fbdoc item="target"}}
+	##**Wstring**## follows the target wide-character model used by the runtime and C/CRT declarations.
+		- On DOS, ##**Wstring**## elements are byte-sized. The DOS port does not provide a full Unicode wide-character environment, so portable Unicode code should not rely on DOS ##**Wstring**## storage.
+		- On Android in this tree, ##wchar_t## and ##**Wstring**## elements are 32-bit UTF-32 code units. Android string conversion paths use UTF-8 explicitly, but portable Android text should still prefer UTF-8 ##[[KeyPgString|String]]## or ##[[KeyPgZstring|Zstring]]## storage unless a specific API requires ##**Wstring**##.
+		- On Windows targets, including Win32, Win64, and Windows ARM64, ##**Wstring**## elements are 16-bit UTF-16 code units. Xbox and Cygwin also use 16-bit wide-character elements in this tree. ##[[KeyPgLen|Len]]## and indexing count code units, not user-perceived characters.
+		- On other 32-bit wide-character targets, including Linux, JavaScript, the BSD targets, macOS/Darwin, Solaris/illumos, Haiku, Wii, NuttX, RISC OS, and AROS, ##**Wstring**## elements are 32-bit code units. The C ##wchar_t## signedness and the completeness of locale-aware conversion remain target-specific.
+		- For C interop, include the appropriate CRT headers and use the target's ##wchar_t## declarations instead of assuming a fixed width.
+
+{{fbdoc item="lang"}}
+	- Not available in the //[[CompilerOptlang|-lang qb]]// dialect unless referenced with the alias ##**""__Wstring""**##.
+
+{{fbdoc item="diff"}}
+	- New to ##""FreeBASIC""##
+
+{{fbdoc item="see"}}
+	- ##[[KeyPgString|String]]## (data type)
+	- ##[[KeyPgZstring|Zstring]]## (data type)
+	- ##[[KeyPgStringFunction|String]]## (function)
+	- ##[[KeyPgWstringFunction|Wstring]]## (function)
+	- ##[[KeyPgWspace|Wspace]]##
+	- ##[[KeyPgWstr|Wstr]]##
+	- ##[[KeyPgWchr|Wchr]]##
+	- ##[[KeyPgWbin|Wbin]]##
+	- ##[[KeyPgWhex|Whex]]##
+	- ##[[KeyPgWoct|Woct]]##
+	- ##[[KeyPgWinput|Winput()]]##
+	- ##[[TblVarTypes|Standard Data Type Limits]]##
+	- ##[[KeyPgExtendsWstring|Extends Wstring]]##
+
+{{fbdoc item="back" value="CatPgStdDataTypes|Standard Data Types"}}{{fbdoc item="back" value="CatPgString|String Functions"}}

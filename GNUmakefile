@@ -1,0 +1,438 @@
+############
+# Makefile #
+############
+# Project: FreeBASIC build system
+# File: GNUmakefile
+# Purpose: Compose platform policy, artifact graphs, and public workflows.
+# Responsibilities: Load layers in order and gate object builds on prerequisites.
+# This file intentionally does NOT select individual subsystem sources.
+
+#!/usr/bin/make -f
+
+.DEFAULT_GOAL := all
+
+##############################################################################
+# Root discovery
+##############################################################################
+
+rootdir := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+srcdir  := $(rootdir)/src
+mkpath  := $(rootdir)/mk
+
+##############################################################################
+# Recursive make hardening
+##############################################################################
+
+MAKEFLAGS += --no-print-directory
+
+##############################################################################
+# Toolchain defaults
+##############################################################################
+
+FBC    ?= fbc
+prefix ?= /usr/local
+
+CFLAGS  ?= -Wfatal-errors -O2
+CFLAGS  += -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables
+FBFLAGS ?= -maxerr 1
+
+##############################################################################
+# Version
+##############################################################################
+
+include $(mkpath)/version.mk
+
+##############################################################################
+# Platform identity
+##############################################################################
+
+include $(mkpath)/platform.mk
+
+ifdef TARGET
+  ifeq ($(strip $(TARGET_TRIPLET)),)
+    TARGET_TRIPLET := $(TARGET)
+  endif
+  override TARGET :=
+endif
+
+##############################################################################
+# CPU normalization
+##############################################################################
+
+include $(mkpath)/cpu.mk
+
+##############################################################################
+# Platform policy
+##############################################################################
+
+include $(mkpath)/platform-features.mk
+include $(mkpath)/feature-policy.mk
+
+##############################################################################
+# Toolchain selection and realization
+##############################################################################
+
+include $(mkpath)/compiler-config.mk
+include $(mkpath)/toolchain-flags.mk
+include $(mkpath)/host-tools.mk
+include $(mkpath)/os-flags.mk
+
+##############################################################################
+# Naming + layout
+##############################################################################
+
+include $(mkpath)/naming.mk
+include $(mkpath)/layout.mk
+include $(mkpath)/build-layout.mk
+ifneq ($(strip $(BUILD_ROOT)),)
+ifneq ($(filter quick-test full-test unit-tests log-tests tests-test install install-% uninstall uninstall-% dist dist-% bootstrap-dist% clean-tests clean-example-artifacts,$(MAKECMDGOALS)),)
+$(error This workflow uses shared source paths; use a separate worktree instead of BUILD_ROOT)
+endif
+endif
+include $(mkpath)/multilib.mk
+
+##############################################################################
+# Optional prerequisites module
+##############################################################################
+
+-include $(mkpath)/prereqs.mk
+
+##############################################################################
+# Source graph
+##############################################################################
+
+include $(mkpath)/source-graph.mk
+
+##############################################################################
+# Artifact graph
+##############################################################################
+
+include $(mkpath)/archives.mk
+
+##############################################################################
+# Build mechanics
+##############################################################################
+
+include $(mkpath)/build/build-dirs.mk
+include $(mkpath)/build/compile-rules.mk
+include $(mkpath)/build/dependency-rules.mk
+include $(mkpath)/build/archive-rules.mk
+include $(mkpath)/build/build-targets.mk
+include $(mkpath)/build/clean-rules.mk
+
+##############################################################################
+# Bootstrap system
+##############################################################################
+
+include $(mkpath)/bootstrap/bootstrap-core.mk
+include $(mkpath)/bootstrap/bootstrap-emit.mk
+include $(mkpath)/bootstrap/bootstrap-dist.mk
+
+##############################################################################
+# Distribution / installation / tests
+##############################################################################
+
+include $(mkpath)/dist.mk
+include $(mkpath)/tests.mk
+include $(mkpath)/maketests.mk
+include $(mkpath)/inst_uninst.mk
+
+# Effective commands are now complete. Configuration records belong to each
+# successfully published artifact, keeping failed and unbuilt variants retryable.
+include $(mkpath)/build/config-rules.mk
+
+##############################################################################
+# Prerequisite gating
+##############################################################################
+
+.PHONY: maybe-prereqs
+
+ifdef HAVE_PREREQS_MK
+maybe-prereqs: prereqs
+else
+maybe-prereqs:
+endif
+
+.PHONY: maybe-build-fbc
+
+ifdef HAVE_PREREQS_MK
+maybe-build-fbc: prereqs-fbc
+else
+maybe-build-fbc:
+endif
+
+# A prerequisite on an aggregate target is a sibling of its object graph.
+# Under -j it does not hold back those objects. Attach the checks to the
+# concrete compile inputs as well, including the standalone runtime startup.
+$(ALL_RUNTIME_OBJS) $(RTL_LIBS): | maybe-prereqs
+$(FBC_OBJS) $(FBC_JS_OBJS) $(FBC_ANDROID_OBJS) $(FBC_WII_OBJS) \
+$(FBRT_OBJ) $(FBRT_PIC_OBJ) $(FBRT_MT_OBJ) $(FBRT_MT_PIC_OBJ): | maybe-prereqs maybe-build-fbc
+
+##############################################################################
+# Targets that require prereqs
+##############################################################################
+
+libs: | maybe-prereqs
+compiler-stage: | maybe-prereqs
+compiler: | maybe-prereqs
+compiler-js: | maybe-prereqs
+compiler-android: | maybe-prereqs
+compiler-wii: | maybe-prereqs
+rtlib: | maybe-prereqs
+fbrt: | maybe-prereqs
+gfxlib2: | maybe-prereqs
+gfxlib3: | maybe-prereqs
+sfxlib: | maybe-prereqs
+
+bootstrap: | maybe-prereqs
+bootstrap-minimal: | maybe-prereqs
+bootstrap-dist-target: | maybe-prereqs
+bootstrap-dist: | maybe-prereqs
+bootstrap-dist-arm: | maybe-prereqs
+bootstrap-dist-all: | maybe-prereqs
+
+dist: | maybe-prereqs
+dist-zip: | maybe-prereqs
+pkg-tar: | maybe-prereqs
+pkg-zip: | maybe-prereqs
+
+install: | maybe-prereqs
+uninstall: | maybe-prereqs
+
+quick-test: | maybe-prereqs
+full-test: | maybe-prereqs
+bootstrap-test: | maybe-prereqs
+bootstrap-emit-test: | maybe-prereqs
+bootstrap-emit-matrix-test: | maybe-prereqs
+bootstrap-dist-test: | maybe-prereqs
+bootstrap-dist-matrix-test: | maybe-prereqs
+bootstrap-rebuild-test: | maybe-prereqs
+bootstrap-stage-test: | maybe-prereqs
+packaging-test: | maybe-prereqs
+pkg-test: | maybe-prereqs
+install-test: | maybe-prereqs
+uninstall-test: | maybe-prereqs
+matrix-test: | maybe-prereqs
+tests-test: | maybe-prereqs
+
+compiler-stage: | maybe-build-fbc
+compiler: | maybe-build-fbc
+compiler-js: | maybe-build-fbc
+compiler-android: | maybe-build-fbc
+compiler-wii: | maybe-build-fbc
+fbrt: | maybe-build-fbc
+
+# Source emission only needs a runnable FreeBASIC compiler.  The emitted C is
+# written for the requested target, but no target C compiler is invoked here.
+bootstrap-emit: | maybe-build-fbc
+bootstrap-emit-matrix: | maybe-build-fbc
+unit-tests: | maybe-build-fbc
+log-tests: | maybe-build-fbc
+warning-tests: | maybe-build-fbc
+tests-test: | maybe-build-fbc
+compiler-smoke: | maybe-build-fbc
+compiler-semantic-model-smoke: | maybe-build-fbc
+compiler-riscv32-smoke: | maybe-build-fbc
+compiler-riscv64-smoke: | maybe-build-fbc
+compiler-s390x-smoke: | maybe-build-fbc
+compiler-loongarch64-smoke: | maybe-build-fbc
+compiler-mips-smoke: | maybe-build-fbc
+compiler-ppc64le-smoke: | maybe-build-fbc
+compiler-riscos-smoke: | maybe-build-fbc
+
+##############################################################################
+# Build ordering
+##############################################################################
+
+libs: rtlib fbrt gfxlib2 gfxlib3 sfxlib
+compiler-stage: rtlib compiler
+
+##############################################################################
+# Default target
+##############################################################################
+
+.PHONY: all compiler-stage
+all: libs compiler-stage
+
+.PHONY: wii
+wii:
+	$(MAKE) -f "$(rootdir)/GNUmakefile" DISABLE_FFI=YesPlease DISABLE_NCURSES=YesPlease BUILD_PREFIX= AS=as AR=ar LD=ld compiler-wii
+	$(MAKE) -f "$(rootdir)/GNUmakefile" TARGET_OS=wii TARGET_TRIPLET=powerpc-eabi BUILD_PREFIX=powerpc-eabi- libs
+
+##############################################################################
+# Debug configuration
+##############################################################################
+
+.PHONY: print-config
+
+print-config:
+	@echo "rootdir=$(rootdir)"
+	@echo "srcdir=$(srcdir)"
+	@echo "mkpath=$(mkpath)"
+	@echo "TARGET_TRIPLET=$(TARGET_TRIPLET)"
+	@echo "TARGET_OS=$(TARGET_OS)"
+	@echo "TARGET_ARCH=$(TARGET_ARCH)"
+	@echo "HOST_TRIPLET=$(HOST_TRIPLET)"
+	@echo "HOST_CC_FOR_PROBE=$(HOST_CC_FOR_PROBE)"
+	@echo "CROSS_BUILD=$(CROSS_BUILD)"
+	@echo "BUILD_PREFIX=$(BUILD_PREFIX)"
+	@echo "CC=$(CC)"
+	@echo "CXX=$(CXX)"
+	@echo "AR=$(AR)"
+	@echo "RANLIB=$(RANLIB)"
+	@echo "AS=$(AS)"
+	@echo "LD=$(LD)"
+	@echo "BUILD_FBC=$(BUILD_FBC)"
+	@echo "BUILD_FBC_TARGET=$(BUILD_FBC_TARGET)"
+	@echo "ISA_FAMILY=$(ISA_FAMILY)"
+	@echo "ARM_VER=$(ARM_VER)"
+	@echo "ARM_FLOAT_ABI=$(ARM_FLOAT_ABI)"
+	@echo "DEFAULT_CPUTYPE_ARM=$(DEFAULT_CPUTYPE_ARM)"
+	@echo "FBC_TARGET=$(FBC_TARGET)"
+	@echo "FBTARGET=$(FBTARGET)"
+	@echo "FBPACK_DIR=$(FBPACK_DIR)"
+	@echo "FBINSTALL_RUNTIME_DIR=$(FBINSTALL_RUNTIME_DIR)"
+	@echo "ENABLE_PIC=$(ENABLE_PIC)"
+	@echo "ENABLE_NONPIC=$(ENABLE_NONPIC)"
+	@echo "DISABLE_MT=$(DISABLE_MT)"
+	@echo "THREAD_MODEL=$(THREAD_MODEL)"
+	@echo "DOS_THREAD_PROVIDER=$(DOS_THREAD_PROVIDER)"
+	@echo "DOS_TCP_PROVIDER=$(DOS_TCP_PROVIDER)"
+	@echo "ENABLE_DOS_WATT32=$(ENABLE_DOS_WATT32)"
+	@echo "DOS_DPMI_YIELD=$(DOS_DPMI_YIELD)"
+	@echo "ENABLE_DOS_DPMI_YIELD=$(ENABLE_DOS_DPMI_YIELD)"
+	@echo "DOS_GFX_LOW_POWER=$(DOS_GFX_LOW_POWER)"
+	@echo "ENABLE_DOS_GFX_LOW_POWER=$(ENABLE_DOS_GFX_LOW_POWER)"
+	@echo "USE_RUNTIME_CXX=$(USE_RUNTIME_CXX)"
+	@echo "ALLCFLAGS=$(ALLCFLAGS)"
+	@echo "ALLCXXFLAGS=$(ALLCXXFLAGS)"
+	@echo "ALLFBCFLAGS=$(ALLFBCFLAGS)"
+	@echo "ALLFBRTCFLAGS=$(ALLFBRTCFLAGS)"
+	@echo "ALLLDFLAGS=$(ALLLDFLAGS)"
+	@echo "FBC_EXE=$(FBC_EXE)"
+	@echo "FBCNEW_EXE=$(FBCNEW_EXE)"
+	@echo "libdir=$(libdir)"
+	@echo "prefixlibdir=$(prefixlibdir)"
+	@echo "FB_JS_TARGET=$(FB_JS_TARGET)"
+	@echo "JS_BUILD_LIBDIR=$(JS_BUILD_LIBDIR)"
+	@echo "FB_ANDROID_TARGET=$(FB_ANDROID_TARGET)"
+	@echo "ANDROID_BUILD_LIBDIR=$(ANDROID_BUILD_LIBDIR)"
+	@echo "FB_WII_TARGET=$(FB_WII_TARGET)"
+	@echo "WII_BUILD_LIBDIR=$(WII_BUILD_LIBDIR)"
+	@echo "DEVKITPRO=$(DEVKITPRO)"
+	@echo "DEVKITPPC=$(DEVKITPPC)"
+	@echo "ELF2DOL=$(ELF2DOL)"
+
+##############################################################################
+# Help
+##############################################################################
+
+.PHONY: help
+
+help:
+	@echo "FreeBASIC Build System"
+	@echo ""
+	@echo "Primary targets:"
+	@echo "  all                     Build native libraries and native compiler"
+	@echo "  libs                    Build rtlib + fbrt + gfxlib2 + gfxlib3 + sfxlib"
+	@echo "  runtime                 Build all runtime archives"
+	@echo "  compiler                Build native fbc"
+	@echo "  compiler-js             Build fbc-js driver/compiler"
+	@echo "  compiler-android        Build fbc-android compiler backend"
+	@echo "  compiler-wii            Build fbc-wii compiler backend"
+	@echo "  wii                     Build fbc-wii and Wii runtime libraries"
+	@echo ""
+	@echo "Libraries:"
+	@echo "  rtlib                   Build core runtime library"
+	@echo "  fbrt                    Build startup/runtime objects"
+	@echo "  gfxlib2                 Build graphics library"
+	@echo "  gfxlib3                 Build experimental GPU graphics core"
+	@echo "  sfxlib                  Build sound library"
+	@echo ""
+	@echo "Bootstrap:"
+	@echo "  bootstrap               Build compiler using bootstrap sources"
+	@echo "  bootstrap-minimal       Build only the minimal bootstrap compiler"
+	@echo "  bootstrap-emit          Generate bootstrap sources"
+	@echo "  bootstrap-emit-matrix   Generate bootstrap sources for the target matrix"
+	@echo "  bootstrap-dist-target   Create bootstrap tarball for current target"
+	@echo "  bootstrap-dist          Alias for bootstrap-dist-target"
+	@echo "  bootstrap-dist-arm      Create ARM bootstrap tarball"
+	@echo "  bootstrap-dist-all      Create all configured bootstrap tarballs"
+	@echo "  bootstrap-seed-peer     Last resort: seed bootstrap from a peer target"
+	@echo ""
+	@echo "Distribution / packaging:"
+	@echo "  dist                    Stage and tar native distribution"
+	@echo "  dist-zip                Zip staged native distribution"
+	@echo "  pkg-tar                 Install to pkgroot and tar it"
+	@echo "  pkg-zip                 Install to pkgroot and zip it"
+	@echo "  build_scripts/debianubuntu-build-freebasic-aros.sh"
+	@echo "                          Build AROS SDKs, compiler packages, and boot media"
+	@echo ""
+	@echo "Install:"
+	@echo "  install                 Install native compiler, headers, and runtime"
+	@echo "  install-js              Install fbc-js, fbc-js-app, JS headers, runtime, and assets"
+	@echo "  install-android         Install fbc-android, Android headers, runtime, and templates"
+	@echo "  install-wii             Install fbc-wii, Wii headers, runtime, and bundle wrapper"
+	@echo "  uninstall               Remove installed files"
+	@echo ""
+	@echo "Testing:"
+	@echo "  quick-test              Fast build-system/compiler smoke verification"
+	@echo "  full-test               Full make-level test harness"
+	@echo "  unit-tests              Run compiler unit tests"
+	@echo "  log-tests               Run compiler log tests"
+	@echo "  warning-tests           Run warning tests"
+	@echo "  compiler-smoke          Build and run a small compiler smoke test"
+	@echo "  compiler-semantic-model-smoke Validate compiler semantic model output"
+	@echo "  compiler-riscv32-smoke  Check linux-riscv32 target codegen/compile"
+	@echo "  compiler-riscv64-smoke  Check linux-riscv64 target codegen/compile"
+	@echo "  compiler-s390x-smoke    Check linux-s390x target codegen/compile"
+	@echo "  compiler-loongarch64-smoke Check linux-loongarch64 target codegen/compile"
+	@echo "  compiler-ppc64le-smoke  Check linux-powerpc64le target codegen/compile"
+	@echo "  compiler-riscos-smoke   Check RISC OS ARMv4 target codegen/compile"
+	@echo "  tests-test              Run compiler language tests through tests/"
+	@echo "  bootstrap-*-test        Run bootstrap-specific test targets"
+	@echo "  packaging-test          Check packaging target behavior"
+	@echo "  install-test            Check install target behavior"
+	@echo "  uninstall-test          Check uninstall target behavior"
+	@echo "  matrix-test             Check target matrix behavior"
+	@echo ""
+	@echo "Maintenance:"
+	@echo "  clean                   Remove normal build artifacts"
+	@echo "  distclean               Remove build/dist artifacts"
+	@echo "  clean-compiler          Remove compiler objects"
+	@echo "  clean-libs              Remove library objects and archives"
+	@echo "  clean-tests             Remove test artifacts"
+	@echo "  clean-dist              Remove distribution archives"
+	@echo "  clean-bootstrap         Remove bootstrap compiler binary/objects"
+	@echo "  clean-bootstrap-src     Remove emitted bootstrap sources"
+	@echo "  clean-example-artifacts Remove compiled example outputs"
+	@echo "  list-example-artifacts  List compiled example outputs"
+	@echo ""
+	@echo "Configuration:"
+	@echo "  print-config            Show resolved configuration"
+	@echo ""
+	@echo "Common variables:"
+	@echo "  TARGET_TRIPLET=...      Target GNU-style triplet (or use TARGET=...)"
+	@echo "  FBC=...                 Bootstrap compiler command"
+	@echo "  prefix=...              Install prefix (default: /usr/local)"
+	@echo "  DESTDIR=...             Staging root for install/pkg targets"
+	@echo "  -jN                     Parallel build jobs"
+	@echo ""
+	@echo "Package build scripts:"
+	@echo "  build_scripts/debianubuntu-build-freebasic.sh [--no-js] [--no-android]"
+	@echo "  build_scripts/debianubuntu-build-freebasic-xbox.sh [--nxdk-dir DIR]"
+	@echo "  build_scripts/msys2-build-freebasic.sh"
+	@echo "  build_scripts/msys2-build-freebasic-js.sh"
+	@echo "  build_scripts/msys2-build-freebasic-android.sh"
+	@echo "  build_scripts/msys2-build-freebasic-wii.sh"
+	@echo "  build_scripts/msys2-build-freebasic-xbox.sh"
+	@echo "  build_scripts/debianubuntu-build-freebasic-matrix.sh [--distro NAME] [--arch ARCH]"
+	@echo "  build_scripts/linux-cross-build-freebasic-matrix.sh [--list]"
+	@echo "  build_scripts/debianubuntu-cross-build-freebasic-matrix.sh [--list]"
+	@echo "  build_scripts/apk-cross-build-freebasic-matrix.sh [--list]"
+	@echo "  build_scripts/rpm-cross-build-freebasic-matrix.sh [--list]"
+	@echo "  build_scripts/slackware-cross-build-freebasic-matrix.sh [--list]"
+
+###################
+# End of Makefile #
+###################

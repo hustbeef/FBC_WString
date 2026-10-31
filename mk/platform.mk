@@ -1,0 +1,513 @@
+##############################################################################
+# platform.mk
+#
+# Canonical platform identity layer
+# Project: FreeBASIC build system
+# Purpose: Resolve a consistent target ABI before source and layout selection.
+# This file intentionally does NOT select SDK tools or filesystem paths.
+#
+# Responsibilities:
+#   - resolve host / target triplet
+#   - detect TARGET_OS
+#   - normalize TARGET_ARCH
+#   - compute FBC_TARGET (FreeBASIC runtime/target key)
+#   - define runtime directory identity (canonical) vs packaging identity
+#
+# Non-responsibilities:
+#   - toolchain prefix handling  → compiler-config.mk
+#   - filesystem layout	  → layout.mk / build-layout.mk
+##############################################################################
+
+
+##############################################################################
+# 0) Canonical triplet resolution
+##############################################################################
+
+# Consume TARGET once (triplet input only), then clear it (main Makefile may do
+# this already; keeping it here makes platform.mk self-contained & robust).
+TARGET_TRIPLET ?= $(TARGET)
+ifdef TARGET
+  ifeq ($(strip $(TARGET_TRIPLET)),)
+    TARGET_TRIPLET := $(TARGET)
+  endif
+  override TARGET :=
+endif
+
+# Determine host triplet via compiler driver; do NOT assume gcc exists.
+#
+# In MSYS2 it is common to invoke /usr/bin/make from an environment where the
+# active MinGW compiler is not on PATH yet.  That is especially visible on
+# Windows ARM64: the MSYS runtime can be x86_64 while the selected MinGW
+# subsystem is CLANGARM64.  Infer the subsystem triplet as a fallback so early
+# platform parsing does not abort before compiler-config.mk can select tools.
+_msys2_env_triplet := $(strip $(shell \
+  msystem="$${MSYSTEM:-}"; \
+  if [ "$$msystem" = CLANGARM64 ]; then \
+    echo aarch64-w64-mingw32; \
+  elif [ "$$msystem" = MINGW32 ]; then \
+    echo i686-w64-mingw32; \
+  elif [ "$$msystem" = MINGW64 ] || [ "$$msystem" = UCRT64 ] || [ "$$msystem" = CLANG64 ]; then \
+    echo x86_64-w64-mingw32; \
+  else \
+    uname_s="$$(uname -s 2>/dev/null || true)"; \
+    if printf '%s\n' "$$uname_s" | grep -Eq '^(MINGW|MSYS|CYGWIN).*_NT'; then \
+      if [ -x /mingw64/bin/gcc.exe ] || [ -x /mingw64/bin/clang.exe ]; then \
+        echo x86_64-w64-mingw32; \
+      elif [ -x /mingw32/bin/gcc.exe ] || [ -x /mingw32/bin/clang.exe ]; then \
+        echo i686-w64-mingw32; \
+      fi; \
+    fi; \
+  fi \
+))
+
+# Try known GNU-style compilers in order.  Prefer the active MSYS2 subsystem
+# when one is selected; non-active MinGW prefixes are handled by the fallback
+# above to avoid accidentally turning CLANGARM64 shells into x86_64 builds.
+_cc_for_dump := $(firstword \
+  $(foreach c, \
+    $(CC) \
+    $(if $(MINGW_PREFIX),$(MINGW_PREFIX)/bin/gcc $(MINGW_PREFIX)/bin/clang) \
+    gcc egcc clang, \
+    $(if $(shell command -v $(c) 2>/dev/null),$(c)) \
+  ) \
+)
+
+# Final fallback (last resort only)
+ifeq ($(_cc_for_dump),)
+  _cc_for_dump := cc
+endif
+
+HOST_TRIPLET := $(strip $(shell $(_cc_for_dump) -dumpmachine 2>/dev/null || echo unknown-unknown-unknown))
+ifeq ($(HOST_TRIPLET),unknown-unknown-unknown)
+  ifneq ($(strip $(_msys2_env_triplet)),)
+    HOST_TRIPLET := $(_msys2_env_triplet)
+  endif
+endif
+
+# Fallback to host if no explicit target
+TARGET_TRIPLET := $(strip $(if $(TARGET_TRIPLET),$(TARGET_TRIPLET),$(HOST_TRIPLET)))
+
+# Normalized lowercase form
+TARGET_TRIPLET_LC := $(strip $(shell printf '%s' "$(TARGET_TRIPLET)" | tr 'A-Z' 'a-z'))
+
+TRIPLET_TOKENS := $(subst -, ,$(TARGET_TRIPLET_LC))
+TRIPLET_ARCH   := $(word 1,$(TRIPLET_TOKENS))
+
+
+##############################################################################
+# 1) TARGET_OS detection
+##############################################################################
+
+ifndef TARGET_OS
+
+TARGET_OS :=
+
+define _set_os_if_token
+  ifeq ($(strip $(TARGET_OS)),)
+    ifneq ($(filter $(1)%,$(TRIPLET_TOKENS)),)
+      TARGET_OS := $(2)
+    endif
+  endif
+endef
+
+$(eval $(call _set_os_if_token,android,android))
+$(eval $(call _set_os_if_token,nuttx,nuttx))
+$(eval $(call _set_os_if_token,riscos,riscos))
+$(eval $(call _set_os_if_token,aros,aros))
+$(eval $(call _set_os_if_token,amigaos,amiga))
+$(eval $(call _set_os_if_token,amiga,amiga))
+$(eval $(call _set_os_if_token,linux,linux))
+$(eval $(call _set_os_if_token,emscripten,js))
+$(eval $(call _set_os_if_token,js,js))
+$(eval $(call _set_os_if_token,wii,wii))
+$(eval $(call _set_os_if_token,darwin,darwin))
+$(eval $(call _set_os_if_token,apple,darwin))
+$(eval $(call _set_os_if_token,freebsd,freebsd))
+$(eval $(call _set_os_if_token,netbsd,netbsd))
+$(eval $(call _set_os_if_token,openbsd,openbsd))
+$(eval $(call _set_os_if_token,dragonfly,dragonfly))
+$(eval $(call _set_os_if_token,haiku,haiku))
+$(eval $(call _set_os_if_token,illumos,illumos))
+$(eval $(call _set_os_if_token,solaris,solaris))
+$(eval $(call _set_os_if_token,sunos,solaris))
+$(eval $(call _set_os_if_token,cygwin,cygwin))
+$(eval $(call _set_os_if_token,wince,wince))
+$(eval $(call _set_os_if_token,msdosdjgpp,dos))
+$(eval $(call _set_os_if_token,djgpp,dos))
+
+# MinGW-like triplets show up in a bunch of forms
+ifneq ($(findstring mingw32ce,$(TARGET_TRIPLET_LC)),)
+  TARGET_OS := wince
+endif
+$(eval $(call _set_os_if_token,mingw,win32))
+$(eval $(call _set_os_if_token,mingw32,win32))
+$(eval $(call _set_os_if_token,mingw64,win32))
+$(eval $(call _set_os_if_token,w64,win32))
+$(eval $(call _set_os_if_token,msys,win32))
+
+ifeq ($(strip $(TARGET_OS)),)
+  $(error Unable to determine TARGET_OS from TARGET_TRIPLET='$(TARGET_TRIPLET)')
+endif
+
+endif
+
+
+##############################################################################
+# 2) Architecture normalization
+##############################################################################
+
+# Keep the raw arch token for sub-arch parsing (armv6l/armv7l/etc)
+TARGET_ARCH_RAW := $(TRIPLET_ARCH)
+TARGET_ARCH     := $(TARGET_ARCH_RAW)
+
+# x86 32-bit (various spellings)
+ifneq ($(filter 386 486 586 686 i386 i486 i586 i686 x86,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := x86
+endif
+
+# x86_64
+ifneq ($(filter x86_64 amd64 x86-64,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := x86_64
+endif
+
+# Motorola 68000 family
+ifneq ($(filter m68k m68000 m68010 m68020 m68030 m68040 m68060,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := m68k
+endif
+
+# MIPS O32 and N64 ABIs. Endianness is part of the architecture identity so
+# runtime directories cannot accidentally mix incompatible object files.
+ifneq ($(filter mips,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := mips32
+endif
+ifneq ($(filter mipsel,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := mips32el
+endif
+ifneq ($(filter mips64,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := mips64
+endif
+ifneq ($(filter mips64el,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := mips64el
+endif
+
+# ARM 32-bit (arm, armv6l, armv7l, armhf/armel sometimes appear in non-GNU ids)
+ifneq ($(filter arm%,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := arm
+endif
+ifneq ($(filter armhf armel,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := arm
+endif
+
+# AArch64
+ifneq ($(filter aarch64 arm64,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := aarch64
+endif
+
+# PowerPC 32
+ifneq ($(filter ppc powerpc,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := powerpc
+endif
+
+ifeq ($(TARGET_OS),wii)
+  TARGET_ARCH := powerpc
+endif
+
+# PowerPC 64 (be)
+ifneq ($(filter ppc64 powerpc64,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := powerpc64
+endif
+
+# PowerPC 64 little-endian:
+# Debian packaging calls this "ppc64el", GNU triplets usually use "powerpc64le"
+ifneq ($(filter ppc64le powerpc64le ppc64el,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := powerpc64le
+endif
+
+# RISC-V 64
+ifneq ($(filter riscv64,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := riscv64
+endif
+
+# RISC-V 32
+ifneq ($(filter riscv32 rv32%,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := riscv32
+endif
+
+# IBM z
+ifneq ($(filter s390x,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := s390x
+endif
+
+# LoongArch 64
+ifneq ($(filter loongarch64 loong64,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := loongarch64
+endif
+
+# Emscripten/JS target
+ifneq ($(filter asmjs wasm32,$(TARGET_ARCH_RAW)),)
+  TARGET_ARCH := asmjs
+endif
+
+# A multilib width changes the ABI, not just a compiler option. Resolve it
+# before source selection and layout so 32-bit objects cannot enter a 64-bit
+# runtime directory. The triplet still identifies the selected SDK driver.
+ifneq ($(strip $(MULTILIB)),)
+ifeq ($(filter 32 64,$(MULTILIB)),)
+$(error MULTILIB must be 32 or 64)
+endif
+ifneq ($(words $(MULTILIB)),1)
+$(error MULTILIB must contain one width)
+endif
+ifeq ($(filter x86 x86_64,$(TARGET_ARCH)),)
+$(error MULTILIB supports only x86 targets; select another architecture with TARGET_TRIPLET)
+endif
+ifeq ($(MULTILIB),64)
+ifneq ($(filter dos wince xbox,$(TARGET_OS)),)
+$(error $(TARGET_OS) does not support a 64-bit MULTILIB build)
+endif
+TARGET_ARCH := x86_64
+else
+TARGET_ARCH := x86
+endif
+endif
+
+
+##############################################################################
+# 3) ISA family (directory key for src/*/<family>)
+##############################################################################
+
+ISA_FAMILY := $(TARGET_ARCH)
+
+# aarch64 shares arm sources
+ifeq ($(TARGET_ARCH),aarch64)
+  ISA_FAMILY := arm
+endif
+
+# powerpc64 variants share powerpc sources
+ifneq ($(filter powerpc powerpc64 powerpc64le,$(TARGET_ARCH)),)
+  ISA_FAMILY := powerpc
+endif
+
+# riscv32/riscv64 use riscv directory
+ifneq ($(filter riscv32 riscv64,$(TARGET_ARCH)),)
+  ISA_FAMILY := riscv
+endif
+
+# All ABI and endian variants share reusable MIPS architecture sources.
+ifneq ($(filter mips32 mips32el mips64 mips64el,$(TARGET_ARCH)),)
+  ISA_FAMILY := mips
+endif
+
+# s390x uses s390 directory
+ifeq ($(TARGET_ARCH),s390x)
+  ISA_FAMILY := s390
+endif
+
+# loongarch64 uses loongarch directory
+ifeq ($(TARGET_ARCH),loongarch64)
+  ISA_FAMILY := loongarch
+endif
+
+
+##############################################################################
+# 4) ARM float ABI detection (needed for packaging name decisions)
+##############################################################################
+
+ARM_FLOAT_ABI :=
+ifeq ($(TARGET_ARCH),arm)
+  # AROS names its hard-float Raspberry Pi toolchain arm-aros.  Unlike GNU
+  # Linux triplets, the ABI is carried by the target configuration rather
+  # than an eabihf suffix.
+  ifeq ($(TARGET_OS),aros)
+    ARM_FLOAT_ABI := hf
+  else ifneq ($(findstring eabihf,$(TARGET_TRIPLET_LC)),)
+    ARM_FLOAT_ABI := hf
+  else
+    ARM_FLOAT_ABI := sf
+  endif
+endif
+
+
+##############################################################################
+# 5) FreeBASIC lowering target (FBC_TARGET)
+#
+# This is the canonical runtime/layout identity:
+#   lib/freebasic/<FBC_TARGET>/
+#
+# IMPORTANT HARDENING:
+# Some build environments export FBC_TARGET as a GNU triplet (e.g.
+# powerpc64le-linux-gnu). That must NOT become the runtime dir key.
+# If FBC_TARGET looks like a triplet, ignore it and compute canonical form.
+##############################################################################
+
+# Detect "looks like a GNU triplet" (>=3 dash-separated tokens, contains "gnu",
+# "musl", "uclibc", or an OS token we already detect).
+_fbc_target_tokens := $(subst -, ,$(strip $(FBC_TARGET)))
+_fbc_target_ntok   := $(words $(_fbc_target_tokens))
+_fbc_target_smells_like_triplet := \
+  $(if $(filter gnu gnueabi gnueabihf musl uclibc uclibceabi,$(_fbc_target_tokens)),yes,)
+
+ifdef FBC_TARGET
+  ifneq ($(strip $(_fbc_target_smells_like_triplet)),)
+    override FBC_TARGET :=
+  else ifneq ($(filter 3 4 5 6,$(_fbc_target_ntok)),)
+    # If it’s multi-token and not a known fbc target family, treat as suspicious
+    # (this catches powerpc64le-linux-gnu, arm-linux-gnueabihf, etc.)
+    ifeq ($(filter win32 win64 wince-% dos cygwin wii,$(FBC_TARGET)),)
+      override FBC_TARGET :=
+    endif
+  endif
+endif
+
+ifndef FBC_TARGET
+  ifeq ($(TARGET_OS),win32)
+    ifeq ($(TARGET_ARCH),x86_64)
+      FBC_TARGET := win64
+    else ifeq ($(TARGET_ARCH),aarch64)
+      FBC_TARGET := win32-aarch64
+    else
+      FBC_TARGET := win32
+    endif
+  else ifeq ($(TARGET_OS),dos)
+    FBC_TARGET := dos
+  else ifeq ($(TARGET_OS),wii)
+    FBC_TARGET := wii
+  else
+    FBC_TARGET := $(TARGET_OS)-$(TARGET_ARCH)
+  endif
+endif
+
+
+##############################################################################
+# 6) Runtime directory identity (CANONICAL)
+##############################################################################
+
+ifneq ($(strip $(MULTILIB)),)
+MULTILIB_FBC_TARGET := $(TARGET_OS)-$(TARGET_ARCH)
+ifeq ($(TARGET_OS),win32)
+MULTILIB_FBC_TARGET := $(if $(filter 32,$(MULTILIB)),win32,win64)
+else ifeq ($(TARGET_OS),dos)
+MULTILIB_FBC_TARGET := dos
+endif
+ifneq ($(FBC_TARGET),$(MULTILIB_FBC_TARGET))
+$(error FBC_TARGET=$(FBC_TARGET) conflicts with MULTILIB=$(MULTILIB); expected $(MULTILIB_FBC_TARGET))
+endif
+endif
+
+ifdef FBTARGET_DIR_OVERRIDE
+  FBTARGET_DIR := $(FBTARGET_DIR_OVERRIDE)
+else
+  FBTARGET_DIR := $(FBC_TARGET)
+endif
+
+# Canonical build identity: MUST match runtime layout key
+FBTARGET := $(FBTARGET_DIR)
+
+
+##############################################################################
+# 7) Packaging directory names (OPTIONAL / NOT CANONICAL)
+##############################################################################
+
+FBPACK_DIR := $(FBTARGET_DIR)
+
+ifeq ($(TARGET_OS),linux)
+
+  ifeq ($(TARGET_ARCH),x86_64)
+    FBPACK_DIR := linux-amd64
+
+  else ifeq ($(TARGET_ARCH),x86)
+    FBPACK_DIR := linux-i386
+
+  else ifeq ($(TARGET_ARCH),aarch64)
+    FBPACK_DIR := linux-arm64
+
+  else ifeq ($(TARGET_ARCH),arm)
+    ifeq ($(ARM_FLOAT_ABI),hf)
+      FBPACK_DIR := linux-armhf
+    else
+      FBPACK_DIR := linux-armel
+    endif
+
+  else ifeq ($(TARGET_ARCH),powerpc64le)
+    FBPACK_DIR := linux-ppc64el
+
+  else ifeq ($(TARGET_ARCH),riscv64)
+    FBPACK_DIR := linux-riscv64
+
+  else ifeq ($(TARGET_ARCH),riscv32)
+    FBPACK_DIR := linux-riscv32
+
+  else ifeq ($(TARGET_ARCH),s390x)
+    FBPACK_DIR := linux-s390x
+
+  else ifeq ($(TARGET_ARCH),loongarch64)
+    FBPACK_DIR := linux-loongarch64
+
+  else ifeq ($(TARGET_ARCH),mips32)
+    FBPACK_DIR := linux-mips
+
+  else ifeq ($(TARGET_ARCH),mips32el)
+    FBPACK_DIR := linux-mipsel
+
+  else ifeq ($(TARGET_ARCH),mips64)
+    FBPACK_DIR := linux-mips64
+
+  else ifeq ($(TARGET_ARCH),mips64el)
+    FBPACK_DIR := linux-mips64el
+
+  else
+    FBPACK_DIR := linux-$(TARGET_ARCH)
+  endif
+
+else ifeq ($(TARGET_OS),win32)
+
+  ifeq ($(TARGET_ARCH),x86_64)
+    FBPACK_DIR := mingw-x86_64
+  else ifeq ($(TARGET_ARCH),aarch64)
+    FBPACK_DIR := mingw-aarch64
+  else
+    FBPACK_DIR := mingw-x86
+  endif
+
+else ifeq ($(TARGET_OS),wince)
+
+  FBPACK_DIR := wince-$(TARGET_ARCH)
+
+else
+  FBPACK_DIR := $(TARGET_OS)-$(TARGET_ARCH)
+endif
+
+
+##############################################################################
+# 8) Executable suffix
+##############################################################################
+
+EXEEXT :=
+ifneq ($(filter win32 win64 wince cygwin dos,$(TARGET_OS)),)
+  EXEEXT := .exe
+endif
+
+
+##############################################################################
+# 9) Debug helper
+##############################################################################
+
+.PHONY: platform-print
+platform-print:
+	@echo "TARGET_TRIPLET=$(TARGET_TRIPLET)"
+	@echo "HOST_TRIPLET=$(HOST_TRIPLET)"
+	@echo "TARGET_OS=$(TARGET_OS)"
+	@echo "TARGET_ARCH_RAW=$(TARGET_ARCH_RAW)"
+	@echo "TARGET_ARCH=$(TARGET_ARCH)"
+	@echo "ISA_FAMILY=$(ISA_FAMILY)"
+	@echo "ARM_FLOAT_ABI=$(ARM_FLOAT_ABI)"
+	@echo "FBC_TARGET=$(FBC_TARGET)"
+	@echo "FBTARGET_DIR=$(FBTARGET_DIR)"
+	@echo "FBTARGET=$(FBTARGET)"
+	@echo "FBPACK_DIR=$(FBPACK_DIR)"
+	@echo "EXEEXT=$(EXEEXT)"
+
+
+##############################################################################
+# End platform.mk
+##############################################################################

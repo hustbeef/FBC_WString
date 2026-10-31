@@ -1,0 +1,36 @@
+﻿{{fbdoc item="title" value="Building on Windows/MSYS2"}}
+
+The main Windows development environment for this tree is MSYS2. The Windows
+build scripts handle the details that are easy to get wrong by hand: shell path
+conversion, package naming, compiler architecture, installer layout, and NSIS
+lookup.
+
+{{fbdoc item="subsect" value="Native Windows builds"}}
+
+Use the MSYS2 scripts for repeatable package builds:
+
+%%(sh)
+./build_scripts/msys2-build-freebasic.sh
+./build_scripts/msys2-test-freebasic.sh
+%%
+
+The tree has support for the usual Win32 and Win64 x86 targets and for Windows
+ARM64 work where the required toolchain is installed.
+
+{{fbdoc item="subsect" value="Cross-target Windows packages"}}
+
+Several non-Windows targets are packaged from Windows because the required tools
+are easiest to stage there or because the release artifact is a Windows-hosted
+compiler for another platform. Examples include Android, JavaScript, Wii, and
+Xbox package scripts.
+
+%%(sh)
+./build_scripts/msys2-build-freebasic-android.sh
+./build_scripts/msys2-build-freebasic-js.sh
+./build_scripts/msys2-build-freebasic-wii.sh
+./build_scripts/msys2-build-freebasic-xbox.sh
+%%
+
+Keep MSYS2, Cygwin, and plain Windows command prompts separate when debugging a
+build. Many Windows failures come from crossing those path and shell models in
+one command line.

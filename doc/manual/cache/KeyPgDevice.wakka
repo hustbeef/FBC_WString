@@ -1,0 +1,41 @@
+﻿{{fbdoc item="title" value="DEVICE"}}----
+Lists, selects, and queries sfxlib output devices.
+
+{{fbdoc item="syntax"}}##
+	Device List
+	result = Device Select(device)
+	Device Info
+	Device Info()
+	Device Info device
+	Device Info(device)
+##
+{{fbdoc item="desc"}}
+	DEVICE is the command family for the audio output path. In sfxlib, a device usually means a compiled backend such as PulseAudio, ALSA, WASAPI, CoreAudio, WebAudio, or the null driver, depending on the platform.
+	Device List prints the available output choices. Device Select asks sfxlib to use one of those choices by index. Device Info prints diagnostic information about either the current device or a specific device.
+	Most programs can let sfxlib pick the default device automatically. DEVICE is mainly useful for setup screens, diagnostics, tests, and situations where the default backend fails but another backend might work.
+	For automated tests, servers, and systems without speakers, the null driver is useful because it lets sound commands run without producing audible output.
+
+{{fbdoc item="ex"}}
+%%(freebasic)
+device list
+
+if device select(0) < 0 then
+    print "could not select device"
+end if
+
+device info
+%%
+
+{{fbdoc item="target"}}
+	- Set SFXLIB_DRIVER=null before program startup to force the null output driver when available.
+	- Device numbers are backend-list indexes, not operating-system device ids.
+
+{{fbdoc item="diff"}}
+`t- New to ""FreeBASIC"".
+
+{{fbdoc item="see"}}
+	- ##[[KeyPgSfxBackends|sfxlib backends]]##
+	- ##[[KeyPgCapture|CAPTURE]]##
+	- ##[[CatPgSfx|Sound Library Reference]]##
+
+{{fbdoc item="back" value="CatPgSfx|Sound Library Reference"}}

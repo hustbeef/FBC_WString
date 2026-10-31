@@ -1,0 +1,186 @@
+﻿{{fbdoc item="title" value="FreeBASIC build configuration"}}----
+
+The FreeBASIC build has two layers of configuration:
+
+	- ##GNUmakefile## and the modules under ##mk/## build the compiler, runtime libraries, support libraries, bootstrap sources, install tree, and tests.
+	- ##build_scripts/## contains the platform and release workflows that call the make system with the right target, staging, dependency, package, VM, emulator, or installer settings.
+
+For a normal developer rebuild, call ##make## directly. For release packages, cross builds, Windows/MSYS2 installers, Android, JavaScript, Xbox, Wii, BSD VM builds, Solaris/illumos builds, or package validation, start with the appropriate script in ##build_scripts/##.
+
+The old approach of compiling source files by hand is not a normal build path. It can still be useful while bringing up a new platform, but then you are responsible for matching the compiler, runtime, headers, libraries, layout, and feature policy yourself.
+
+{{fbdoc item="section" value="Where configuration lives"}}
+
+Configuration is intentionally split by responsibility:
+
+	- ##config.mk## and make command-line variables hold local build choices.
+	- ##mk/platform.mk## resolves host and target identity.
+	- ##mk/cpu.mk## normalizes CPU family details.
+	- ##mk/platform-features.mk## and ##mk/feature-policy.mk## decide which features are enabled for the target.
+	- ##mk/compiler-config.mk##, ##mk/toolchain-flags.mk##, ##mk/host-tools.mk##, and ##mk/os-flags.mk## choose tools and flags.
+	- ##mk/layout.mk## and ##mk/build-layout.mk## define install-tree and in-tree paths.
+	- ##mk/source-graph.mk## and ##mk/archives.mk## decide what gets built.
+	- ##mk/build/*.mk## contains the compile, archive, dependency, target, and clean rules.
+	- ##mk/bootstrap/*.mk## owns compiler recovery and bootstrap source emission.
+	- ##mk/tests*.mk## and ##mk/tests/**/*.mk## own build-system tests.
+	- ##mk/inst_uninst.mk## owns install, uninstall, and simple package payload layout.
+
+For a detailed map of those modules, read ##mk/README.md## and ##mk/File-Map.md## in the source tree.
+
+{{fbdoc item="section" value="Inspecting the resolved configuration"}}
+
+Before guessing which variable is wrong, ask the build what it resolved:
+
+%%make print-config
+make prereqs-fbc
+%%
+
+##make print-config## shows the selected host, target, tools, feature policy, runtime layout, and install layout. ##make prereqs-fbc## checks whether the build has a usable compiler or bootstrap path.
+
+Normal compiler and runtime builds track effective commands and flags through ##mk/build/config-rules.mk##. Compile changes rebuild the affected variants; archive/link changes republish their outputs. Each variant records its configuration only after successful output, so a failed build retries the pending configuration. Unchanged builds and dry runs do not rewrite these records.
+
+An artifact's ##.pending## marker is created before recompilation and cleared after successful publication. Reverting flags after a failed attempt also forces recompilation, so partially changed objects cannot be mistaken for the previous successful configuration.
+
+Compiler records live in their object directories; runtime records live under ##lib/[target]/.build-config## and are excluded from installed packages. POSIX ##cksum## fingerprints selected tool contents as well as commands, so replacing an executable or visible wrapper at the same path invalidates affected output. Private wrapper dependencies and changing SDK headers/libraries still need explicit component cleanup when absent from the graph.
+
+Bootstrap compiler records track compile, assembler and link options. Fresh emission copies compiler sources into owned temporary storage, leaving maintained-source intermediates intact. Its successful configuration record identifies the producing configuration; consumers may use different host tools and paths. Unfinished emission is rejected before compiling bootstrap sources. Run ##make bootstrap-emit## to regenerate sources after changing emission options. Pre-generated bundles without such a record remain supported.
+
+Independent compiler/library builds can use ##BUILD_ROOT=build/debug## and ##BUILD_ROOT=build/release##. Each root must be below the checkout's ##build/## directory and contain no spaces. Objects, binaries, libraries and bootstrap output stay inside that root, including component cleanup. Run one build process per output root. Tests, installation and packaging still require separate worktrees because they use shared source paths.
+
+Use verbose output when you need the exact compiler and linker command lines:
+
+%%make V=1
+%%
+
+{{fbdoc item="section" value="Setting variables"}}
+
+You can pass variables on the make command line:
+
+%%make -j4 CFLAGS='-O2 -g'
+%%
+
+Or put persistent local choices in ##config.mk## beside ##GNUmakefile##:
+
+%%CFLAGS = -O2 -g
+FBFLAGS = -maxerr 1 -g
+prefix = /usr/local
+%%
+
+Do not commit machine-local ##config.mk## files unless the tree specifically needs a documented example. Release and package settings should usually live in ##build_scripts/## instead.
+
+{{fbdoc item="section" value="Common make targets"}}
+
+Useful high-level targets include:
+
+	- ##all## builds the normal compiler and libraries. This is the default target.
+	- ##libs## builds the runtime/support libraries.
+	- ##compiler-stage## builds the compiler after the libraries it needs are available.
+	- ##compiler##, ##rtlib##, ##fbrt##, ##gfxlib2##, and ##sfxlib## build individual pieces.
+	- ##install## and ##uninstall## install or remove the configured tree.
+	- ##clean## removes normal build outputs.
+	- ##bootstrap-minimal## builds a minimal compiler from current-target bootstrap sources.
+	- ##bootstrap-seed-peer## is a manual recovery path for bring-up work, not a normal default step.
+	- ##sanity##, ##quick-test##, ##compiler-smoke##, and ##bootstrap-emit-test## run useful build-system checks.
+
+Some non-GNU systems use ##gmake## instead of ##make##. The platform scripts choose the right command where practical.
+
+{{fbdoc item="section" value="Important variables"}}
+
+The most useful variables are grouped by purpose below. Most of these can be set on the make command line or in ##config.mk##.
+
+Target and toolchain identity:
+
+	- ##TARGET_TRIPLET## selects the toolchain triplet used by the build identity layer.
+	- ##FBC_TARGET## selects the FreeBASIC runtime target name, such as ##linux-x86_64##, ##win64##, or ##dos##.
+	- ##TARGET## is kept as a compatibility alias for older command lines. New build code should prefer ##TARGET_TRIPLET##.
+	- ##FBC## can name the FreeBASIC compiler used by the build when a system or local compiler is being supplied directly.
+	- ##CC##, ##CXX##, ##AR##, ##LD##, and related tool variables override the C/C++ and binutils programs.
+
+Build flags:
+
+	- ##FBFLAGS## adds options used when compiling FreeBASIC compiler sources.
+	- ##CFLAGS## and ##CXXFLAGS## add C/C++ compile flags.
+	- ##CPPFLAGS## adds preprocessor flags.
+	- ##LDFLAGS## adds linker flags.
+	- ##V=1## prints full command lines.
+
+Layout and installation:
+
+	- ##prefix## selects the install prefix. It defaults to a platform-appropriate location such as ##/usr/local## on many Unix-like targets.
+	- ##DESTDIR## stages installation under a packaging root without changing the final configured prefix.
+	- ##ENABLE_STANDALONE=1## selects the standalone layout and compiler behavior.
+	- ##ENABLE_PREFIX=1## hard-codes ##prefix## into the compiler. Use this only when the compiler should not be relocatable.
+	- ##ENABLE_SUFFIX=name## appends a suffix to installed compiler/runtime names so multiple builds can share a prefix.
+	- ##ENABLE_LIB64=1## selects the ##lib64## runtime layout where that policy applies.
+	- ##MULTILIB## applies a multilib mode to the FreeBASIC and C toolchains.
+
+Feature policy and hardening:
+
+	- ##ENABLE_PIC## and ##ENABLE_NONPIC## control which runtime library variants are built when the target supports that distinction.
+	- ##DISABLE_MT## disables multithreaded runtime variants.
+	- ##ENABLE_PIE## controls position-independent executable policy.
+	- Hardening toggles such as ##ENABLE_STACK_PROTECTOR##, ##ENABLE_FORTIFY##, ##ENABLE_RELRO##, ##ENABLE_NOW##, ##ENABLE_NOEXECSTACK##, ##ENABLE_SEPARATE_CODE##, ##ENABLE_CET##, ##ENABLE_NO_PLT##, and ##ENABLE_AUTO_VAR_INIT## are translated by ##mk/toolchain-flags.mk## where supported.
+	- ##ENABLE_REPRODUCIBLE## asks the build to avoid avoidable timestamp and path noise where the target/toolchain supports it.
+
+Optional library and platform features:
+
+	- ##DISABLE_X11## disables X11-dependent graphics and input pieces.
+	- ##DISABLE_XPM## disables XPM-dependent support.
+	- ##DISABLE_OPENGL## disables OpenGL graphics support.
+	- ##DISABLE_FBDEV## disables the Linux framebuffer driver.
+	- ##GFXLIB_NEVERSCALE## disables centered integer presentation scaling in gfxlib2 drivers that support it.  Low-resolution screens remain physically small instead of being scaled up inside larger windows or displays.
+	- ##DISABLE_D3D10## disables the Direct3D 10/D2D Windows graphics path.
+	- ##DISABLE_TCP## disables TCP support in targets where that switch is honored.
+	- ##DISABLE_FFI## disables libffi-dependent runtime support such as ##[[KeyPgThreadCall|ThreadCall]]##.
+	- ##DISABLE_NCURSES## disables ncurses/libtinfo-dependent console support.
+
+Compiler identity defaults:
+
+	- ##FBFORKID=name## sets the value reported by ##[[KeyPgDdfbbuildforkid|__FB_BUILD_FORK_ID__]]##.
+	- ##FBSHA1=value## sets the value reported by ##[[KeyPgDdfbbuildsha1|__FB_BUILD_SHA1__]]##.
+	- ##DEFAULT_CPUTYPE_X86## and ##DEFAULT_CPUTYPE_ARM## can override the compiler's default CPU choice for those families.
+	- ##DISABLE_GAS64_DEBUG## disables gas64 debug comments in generated assembly even when debug info is enabled.
+	- ##DISABLE_STDCXX_PATH## prevents the compiler from adding some target-specific C++ runtime library search paths.
+
+{{fbdoc item="section" value="Build scripts"}}
+
+The scripts under ##build_scripts/## are part of the build system now. They are not just examples.
+
+Use them for work that involves dependency setup, package layout, cross builds, release artifacts, installers, VM images, emulators, browser tests, or target-specific smoke tests.
+
+Examples:
+
+%%./build_scripts/debianubuntu-build-freebasic.sh --help
+./build_scripts/msys2-build-freebasic.sh --help
+./build_scripts/msys2-build-freebasic-android.sh --help
+./build_scripts/msys2-build-freebasic-js.sh --help
+./build_scripts/freebsd-vm-build-freebasic.sh --help
+./build_scripts/illumos-vm-build-freebasic.sh --help
+%%
+
+Many scripts accept environment variables such as ##JOBS## and ##OUT##. The exact options are script-specific, so use ##--help## before assuming two platform scripts take the same arguments.
+
+{{fbdoc item="section" value="Cross-build notes"}}
+
+For direct make use, prefer the explicit target variables:
+
+%%make print-config TARGET_TRIPLET=x86_64-w64-mingw32 FBC_TARGET=win64
+make TARGET_TRIPLET=x86_64-w64-mingw32 FBC_TARGET=win64
+%%
+
+For release packages and tested target bundles, prefer the matching script instead. The scripts know the expected bootstrap archive names, staging directories, package names, and post-build smoke checks.
+
+{{fbdoc item="section" value="Low-level source defines"}}
+
+The compiler and runtime still contain low-level conditional code controlled by defines such as ##ENABLE_STANDALONE##, ##DISABLE_FFI##, or ##DISABLE_WCHAR##. In normal builds, those should be driven through the make modules or platform scripts so the compiler, runtime libraries, installed layout, and package metadata agree with each other.
+
+Only pass raw ##-d...## or ##-D...## options directly when you are doing bring-up work and have checked the matching make policy. A compiler built with one idea of the layout or feature set can easily fail against runtime libraries built with another.
+
+{{fbdoc item="see"}}
+	- [[DevToc|Developer pages]]
+	- [[DevRebuildAfterUpdates|Getting source code updates and rebuilding FreeBASIC]]
+	- [[DevBuildOptions|FreeBASIC Build Options]]
+	- [[DevNormalVsStandalone|Normal vs. standalone builds]]
+
+{{fbdoc item="back" value="DevToc|FreeBASIC Developer Information"}}
+{{fbdoc item="back" value="DocToc|Table of Contents"}}

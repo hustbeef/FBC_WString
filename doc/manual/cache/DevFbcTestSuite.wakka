@@ -1,0 +1,31 @@
+﻿{{fbdoc item="title" value="The FreeBASIC test suite"}}
+
+The test suite is used to catch compiler, runtime, library, and target
+regressions. It is also used by the packaging scripts to prove that an installed
+compiler can compile and run basic programs from a clean layout.
+
+{{fbdoc item="subsect" value="Common make targets"}}
+
+%%(sh)
+make sanity
+make quick-test
+make full-test
+make compiler-smoke
+make bootstrap-emit-test
+%%
+
+Use the smaller targets while developing a focused change and the broader suite
+before release or after changes to parser, code generation, runtime startup,
+string handling, graphics, sound, or cross-target support.
+
+{{fbdoc item="subsect" value="Package and platform smoke tests"}}
+
+The ##build_scripts/## directory contains installer and platform smoke tests for
+supported package families and target ports. Those scripts are the preferred way
+to test an installed package because they catch missing files, wrong paths, wrong
+compiler names, and packaging-only problems that an in-tree build can hide.
+
+Graphics and sound work should be tested explicitly on the affected platform.
+SCREEN modes, SCREENSET behavior, input scaling, audio playback, and backend
+startup/shutdown have enough platform-specific behavior that compiler-only tests
+are not enough.

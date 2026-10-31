@@ -1,0 +1,29 @@
+'' Wrapper header to select API version
+'' Copyright © 2015 FreeBASIC development team
+''
+'' This library is free software; you can redistribute it and/or
+'' modify it under the terms of the GNU Lesser General Public
+'' License as published by the Free Software Foundation; either
+'' version 2.1 of the License, or (at your option) any later version.
+''
+'' This library is distributed in the hope that it will be useful,
+'' but WITHOUT ANY WARRANTY; without even the implied warranty of
+'' MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+'' Lesser General Public License for more details.
+''
+'' You should have received a copy of the GNU Lesser General Public
+'' License along with this library; if not, write to the Free Software
+'' Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+
+#pragma once
+
+#if defined(__FB_LINUX__) or defined(__FB_CYGWIN__) or defined(__FB_FREEBSD__) or _
+	defined(__FB_DRAGONFLY__) or defined(__FB_OPENBSD__) or defined(__FB_NETBSD__) or _
+	defined(__FB_DARWIN__) or defined(__FB_HAIKU__) or defined(__FB_SOLARIS__) or _
+	defined(USE_NCURSES)
+	#include once "curses/ncurses.bi"
+#else
+	#include once "curses/pdcurses.bi"
+#endif
+
+'' end of curses.bi

@@ -1,0 +1,101 @@
+{{fbdoc item="title" value="-target"}}----
+
+{{fbdoc item="syntax"}}
+	##-target <target>##
+
+{{fbdoc item="desc"}}
+	Selects the target platform used by the compiler.
+
+	The target controls the predefined platform symbols, default object format,
+	library search paths, runtime startup code, and platform-specific compiler
+	behavior.
+
+	Common target names include:
+
+		##dos##
+		##dos-hx##
+		##win32##
+		##win64##
+		##win32-aarch64##
+		##wince-arm##
+		##wince-mips##
+		##cygwin##
+		##linux##
+		##haiku##
+		##freebsd##
+		##dragonfly##
+		##netbsd##
+		##openbsd##
+		##darwin##
+		##solaris##
+		##illumos##
+		##android##
+		##js-asmjs##
+		##xbox##
+		##wii##
+		##nuttx##
+		##riscos##
+		##aros##
+
+	Some targets may also be selected through a GNU-style target triplet such
+	as ##linux-x86_64##, ##linux-arm##, ##android-aarch64##, or
+	##freebsd-x86_64##.
+
+	For some cross targets, helper commands may be installed alongside the
+	compiler.  Those helpers are usually the best entry point:
+
+		##fbc-js##
+		##fbc-android##
+		##fbc-wii##
+		##fbc-xbox##
+
+	Those commands supply the SDK, linker, runtime, and packaging options
+	expected by their platform.
+
+	##dos-hx## selects the x86 Win32 ABI for a 32-bit PE program intended for
+	the HX DOS extender.  It uses the normal Win32 runtime, including its
+	preemptive thread and Winsock calls; it is not the DJGPP DOS ABI.  Build the
+	program with an x86 Win32 toolchain, then apply HX's ##PatchPE## packaging
+	step before running it under DOS.
+
+{{fbdoc item="ex"}}
+%%(sh)
+fbc -target linux hello.bas
+fbc -target haiku hello.bas
+fbc -target android hello.bas
+fbc -target js-asmjs hello.bas
+fbc -target xbox hello.bas
+fbc -target wii hello.bas
+fbc -target nuttx hello.bas
+fbc -target riscos hello.bas
+fbc -target aros-m68k hello.bas
+%%
+
+==Predefined target symbols==
+
+	The compiler defines ##__FB_<TARGET>__## for the selected target.  For
+	example:
+
+		##-target android## defines ##__FB_ANDROID__##
+		##-target haiku## defines ##__FB_HAIKU__##
+		##-target dragonfly## defines ##__FB_DRAGONFLY__##
+		##-target solaris## defines ##__FB_SOLARIS__##
+		##-target illumos## defines ##__FB_ILLUMOS__##
+		##-target js-asmjs## defines ##__FB_JS__##
+		##-target xbox## defines ##__FB_XBOX__##
+		##-target wii## defines ##__FB_WII__##
+		##-target nuttx## defines ##__FB_NUTTX__##
+		##-target riscos## defines ##__FB_RISCOS__##
+		##-target aros## defines ##__FB_AROS__##
+
+	Portable programs should use these predefined symbols when platform-specific
+	code is required.
+
+{{fbdoc item="back" value="CompilerOptlist|Compiler Options"}}
+{{fbdoc item="see"}}
+	[[DevBuildEmscripten|Compiling FB for JavaScript]]
+	[[DevBuildAndroid|Compiling FB for Android]]
+	[[DevBuildWii|Compiling FB for Wii]]
+	[[DevBuildXbox|Compiling FB for Xbox]]
+----
+{{fbdoc item="back" value="CatPgCompiler|Compiler Meta-Commands"}}

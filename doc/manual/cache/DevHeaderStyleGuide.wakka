@@ -1,0 +1,20 @@
+﻿{{fbdoc item="title" value="Header style guide"}}
+
+FreeBASIC headers should be accurate first and pleasant to read second. They are
+part of the public interface, so small ABI mistakes can become real program
+bugs.
+
+{{fbdoc item="subsect" value="Style rules"}}
+
+	Use normal FreeBASIC declarations and keep formatting close to nearby headers.
+	Prefer explicit types from the translated C ABI over convenient guesses.
+	Keep platform conditionals obvious and local to the declarations they affect.
+	Document non-obvious ABI choices, packing rules, callback ownership, and string
+	encoding expectations.
+	Avoid clever macro translations when a clear FreeBASIC declaration works.
+
+{{fbdoc item="subsect" value="Testing"}}
+
+A translated header should be tested by compiling small programs that include
+it, call representative functions, and inspect important structure sizes when
+binary layout matters.

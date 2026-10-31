@@ -1,0 +1,362 @@
+##############################################################################
+# bootstrap-core.mk
+#
+# Deterministic bootstrap workflow
+#
+# Responsibilities
+#   - build stage0 bootstrap compiler
+#   - emit bootstrap sources
+#   - construct minimal compiler using emitted sources
+##############################################################################
+
+BOOTSTRAP_FBC := $(BUILD_OUTPUT_PREFIX)bootstrap/fbc$(EXEEXT)
+
+.PHONY: \
+ bootstrap \
+ bootstrap-check \
+ bootstrap-minimal \
+ bootstrap-seed-peer \
+ bootstrap-emit \
+ clean-bootstrap-minimal-runtime \
+ clean-bootstrap \
+ clean-bootstrap-sources
+
+##############################################################################
+# Bootstrap directory identity
+##############################################################################
+
+BOOTSTRAP_DIR := $(if $(strip $(FBTARGET_DIR_OVERRIDE)),$(FBTARGET_DIR_OVERRIDE),$(FBTARGET))
+BOOTSTRAP_PATH := $(BUILD_OUTPUT_PREFIX)bootstrap/$(BOOTSTRAP_DIR)
+BOOTSTRAP_OBJDIR := $(BUILD_OUTPUT_PREFIX)bootstrap/obj/$(BOOTSTRAP_DIR)
+
+##############################################################################
+# Bootstrap compiler selection
+##############################################################################
+
+BOOT_FBC := $(AVAILABLE_FBC)
+
+##############################################################################
+# Derive bootstrap OS
+##############################################################################
+
+BOOTSTRAP_OS := $(word 1,$(subst -, ,$(BOOTSTRAP_DIR)))
+
+ifeq ($(BOOTSTRAP_OS),mingw)
+BOOTSTRAP_OS := win32
+endif
+
+##############################################################################
+# Canonical arch
+##############################################################################
+
+BOOTSTRAP_ARCH := $(TARGET_ARCH)
+
+BOOTSTRAP_TERM_LIB := -lncurses
+
+ifeq ($(TARGET_OS),haiku)
+BOOTSTRAP_TERM_LIB := -lncursesw
+endif
+
+ifeq ($(TARGET_OS),dos)
+BOOTSTRAP_TERM_LIB :=
+endif
+
+# Native Windows console support does not use the Unix ncurses library.
+ifneq ($(filter win32 wince,$(TARGET_OS)),)
+BOOTSTRAP_TERM_LIB :=
+endif
+
+# UnixLib contains the termcap entry points used by the console layer.
+ifeq ($(TARGET_OS),riscos)
+BOOTSTRAP_TERM_LIB :=
+endif
+
+# AROS console support is native and does not use ncurses.
+ifeq ($(TARGET_OS),aros)
+BOOTSTRAP_TERM_LIB :=
+endif
+
+ifneq ($(strip $(DISABLE_NCURSES)),)
+BOOTSTRAP_TERM_LIB :=
+endif
+
+##############################################################################
+# Bootstrap emission target
+##############################################################################
+
+BOOT_EMIT_TARGET := \
+$(if $(strip $(FBC_TARGET)), \
+ $(firstword $(subst -, ,$(FBC_TARGET))), \
+ $(BOOTSTRAP_OS) \
+)
+
+##############################################################################
+# Bootstrap workflow
+##############################################################################
+
+bootstrap: bootstrap-check rtlib bootstrap-minimal gfxlib2
+
+$(BOOTSTRAP_PATH):
+	mkdir -p "$@"
+
+##############################################################################
+# Bootstrap capability check
+##############################################################################
+
+bootstrap-check:
+	@echo "==> Verifying bootstrap capability"
+	@if [ -d "$(BOOTSTRAP_PATH)" ] && find "$(BOOTSTRAP_PATH)" -maxdepth 1 -type f \( -name '*.c' -o -name '*.asm' \) -print | sed -n '1p' | grep -q .; then \
+		echo "==> Bootstrap sources detected"; \
+	elif [ -n "$(BOOT_FBC)" ]; then \
+		echo "==> Using available compiler: $(BOOT_FBC)"; \
+	else \
+		echo ""; \
+		echo "ERROR: cannot run bootstrap."; \
+		echo "No bootstrap sources or FreeBASIC compiler available."; \
+		echo ""; \
+		exit 1; \
+	fi
+
+##############################################################################
+# Minimal bootstrap build
+##############################################################################
+
+.PHONY: bootstrap-emission-ready
+# Emission records describe the producing compiler and its host tools. Native
+# bootstrap consumers may run on another OS, with different paths and tools,
+# so only an unfinished emission prevents consumption. Explicit bootstrap-emit
+# always regenerates sources; its saved signature still invalidates objects.
+bootstrap-emission-ready:
+	@test ! -f "$(BOOTSTRAP_PATH)/.emit-config.pending" || { \
+		echo "ERROR: unfinished bootstrap emission; run make bootstrap-emit"; exit 1; }
+
+bootstrap-minimal: bootstrap-emission-ready
+
+	@echo "==> Checking bootstrap sources"
+
+	@if ! [ -d "$(BOOTSTRAP_PATH)" ] || ! find "$(BOOTSTRAP_PATH)" -maxdepth 1 -type f \( -name '*.c' -o -name '*.asm' \) -print | sed -n '1p' | grep -q .; then \
+		echo ""; \
+		echo "ERROR: bootstrap sources missing"; \
+		echo "Run: make bootstrap-emit"; \
+		echo ""; \
+		exit 1; \
+	fi
+
+	@echo "==> Building bootstrap compiler"
+
+	# Bootstrap-minimal uses different feature flags from the normal runtime.
+	# Remove regular objects first so Make cannot reuse an incompatible archive.
+	$(MAKE) clean-libs
+
+	$(MAKE) BOOTSTRAP_MINIMAL=YesPlease $(BOOTSTRAP_FBC)
+
+	@echo "==> Installing bootstrap compiler"
+
+	mkdir -p "$(dir $(FBC_EXE))"
+	cp $(BOOTSTRAP_FBC) $(FBC_EXE).new
+	mv -f $(FBC_EXE).new $(FBC_EXE)
+
+	mkdir -p "$(libdir)"
+
+	@echo "==> Removing bootstrap-minimal runtime byproducts"
+
+	$(MAKE) clean-bootstrap-minimal-runtime
+
+#
+# bootstrap-minimal deliberately builds a stripped runtime so the compiler can
+# be constructed with the smallest possible host dependency set.
+#
+# Those runtime objects are written to the normal target object/archive paths.
+# Normal builds track command-line feature-policy changes, but bootstrap
+# recovery also promises to leave no stripped-runtime artifacts behind.
+# Keep that explicit ownership boundary rather than leaving DISABLE_FFI,
+# DISABLE_GFX, DISABLE_SFX, or similar bootstrap-only output in normal paths.
+#
+# Remove the minimal runtime artifacts immediately after the bootstrap compiler
+# is installed.  The compiler remains available, and any later all/libs build
+# will rebuild the runtime with the ordinary feature policy.
+#
+clean-bootstrap-minimal-runtime: clean-libs
+
+##############################################################################
+# Last-resort peer bootstrap seeding
+##############################################################################
+
+BOOTSTRAP_DIRS := $(patsubst bootstrap/%/,%,$(wildcard bootstrap/*/))
+BOOTSTRAP_BSD_DONORS := $(filter openbsd-$(TARGET_ARCH) netbsd-$(TARGET_ARCH) freebsd-$(TARGET_ARCH) dragonfly-$(TARGET_ARCH),$(BOOTSTRAP_DIRS))
+ifeq ($(TARGET_ARCH),x86_64)
+BOOTSTRAP_BSD_DONORS += $(filter openbsd-amd64 netbsd-amd64 freebsd-amd64 dragonfly-amd64,$(BOOTSTRAP_DIRS))
+endif
+BOOTSTRAP_PREFERRED_DONORS :=
+ifneq ($(filter $(TARGET_OS),openbsd netbsd freebsd dragonfly),)
+BOOTSTRAP_PREFERRED_DONORS := $(BOOTSTRAP_BSD_DONORS)
+endif
+ifneq ($(filter $(TARGET_OS),solaris illumos),)
+BOOTSTRAP_PREFERRED_DONORS := $(filter linux-$(TARGET_ARCH),$(BOOTSTRAP_DIRS))
+ifeq ($(TARGET_ARCH),x86_64)
+BOOTSTRAP_PREFERRED_DONORS += $(filter linux-amd64,$(BOOTSTRAP_DIRS))
+endif
+endif
+BOOTSTRAP_SAME_ARCH_DONORS := $(filter %-$(TARGET_ARCH),$(BOOTSTRAP_DIRS))
+ifeq ($(TARGET_ARCH),x86_64)
+BOOTSTRAP_SAME_ARCH_DONORS += $(filter %-amd64,$(BOOTSTRAP_DIRS))
+endif
+BOOTSTRAP_DONOR_CANDIDATES := $(filter-out $(BOOTSTRAP_DIR),$(BOOTSTRAP_PREFERRED_DONORS) $(filter-out $(BOOTSTRAP_PREFERRED_DONORS),$(BOOTSTRAP_SAME_ARCH_DONORS)))
+
+bootstrap-seed-peer:
+	@echo "==> Last-resort bootstrap seeding for $(BOOTSTRAP_DIR)"
+	@set -e; \
+	if [ -d "$(BOOTSTRAP_PATH)" ] && find "$(BOOTSTRAP_PATH)" -maxdepth 1 -type f \( -name '*.c' -o -name '*.asm' \) -print | sed -n '1p' | grep -q .; then \
+		echo ""; \
+		echo "ERROR: bootstrap sources already exist for $(BOOTSTRAP_DIR)"; \
+		echo "Refusing to overwrite existing sources."; \
+		echo ""; \
+		exit 1; \
+	fi; \
+	donor=""; \
+	for cand in $(BOOTSTRAP_DONOR_CANDIDATES); do \
+		if [ -d "bootstrap/$$cand" ] && find "bootstrap/$$cand" -maxdepth 1 -type f \( -name '*.c' -o -name '*.asm' \) -print | sed -n '1p' | grep -q .; then \
+			donor="$$cand"; \
+			break; \
+		fi; \
+	done; \
+	if [ -z "$$donor" ]; then \
+		echo ""; \
+		echo "ERROR: no peer bootstrap sources available for $(BOOTSTRAP_DIR)"; \
+		echo "Candidates searched: $(BOOTSTRAP_DONOR_CANDIDATES)"; \
+		echo ""; \
+		exit 1; \
+	fi; \
+	echo "==> Using donor bootstrap: $$donor"; \
+	mkdir -p "$(BOOTSTRAP_PATH)"; \
+	for ext in c asm; do \
+		for f in bootstrap/$$donor/*.$$ext; do \
+			[ -e "$$f" ] || continue; \
+			cp -f "$$f" "$(BOOTSTRAP_PATH)/"; \
+		done; \
+	done
+	@$(MAKE) bootstrap-minimal
+	@$(MAKE) bootstrap-emit
+	@$(MAKE) bootstrap-minimal
+
+##############################################################################
+# Bootstrap object discovery
+##############################################################################
+
+BOOTSTRAP_C_SRC  := $(wildcard $(BOOTSTRAP_PATH)/*.c)
+BOOTSTRAP_ASM_SRC := $(wildcard $(BOOTSTRAP_PATH)/*.asm)
+
+BOOTSTRAP_OBJ := \
+$(patsubst $(BOOTSTRAP_PATH)/%.c,$(BOOTSTRAP_OBJDIR)/%.o,$(BOOTSTRAP_C_SRC)) \
+$(patsubst $(BOOTSTRAP_PATH)/%.asm,$(BOOTSTRAP_OBJDIR)/%.o,$(BOOTSTRAP_ASM_SRC))
+
+# A check on the final executable is a sibling of object compilation under
+# parallel Make. Hold the concrete objects back as well, so stale/partial
+# emission cannot change them before this check fails.
+$(BOOTSTRAP_OBJ): | bootstrap-emission-ready
+
+##############################################################################
+# Bootstrap object compilation
+##############################################################################
+
+#
+# Emitted bootstrap C is machine-generated compiler output.
+#
+# It should still compile with the normal optimization, portability,
+# feature, and hardening flags where practical, but the ordinary warning
+# profile is too noisy for generated code and can turn benign emitter
+# patterns into build failures on newer compilers.
+#
+# Keep this warning relaxation scoped to bootstrap-minimal so that normal
+# source builds continue using the project's full warning policy.
+#
+BOOTSTRAP_CFLAGS := \
+ $(filter-out \
+  -Wall \
+  -Wextra \
+  -Werror=implicit-function-declaration \
+  -Wfatal-errors \
+  -Wformat \
+  -Werror=format-security, \
+  $(ALLCFLAGS))
+
+BOOTSTRAP_WARN_SUPPRESS := \
+ -Wno-format \
+ -Wno-sign-compare \
+ -Wno-parentheses \
+ -Wno-unused-parameter \
+ -Wno-unused-label \
+ -Wno-unused-variable \
+ -Wno-unused-function
+
+BOOTSTRAP_ASM_SYNTAX_CFLAGS :=
+ifneq ($(filter x86 x86_64,$(TARGET_ARCH)),)
+ifneq ($(TARGET_OS),darwin)
+# Non-Darwin x86 bootstrap C is emitted with Intel-style inline asm.
+BOOTSTRAP_ASM_SYNTAX_CFLAGS := -masm=intel
+endif
+endif
+
+# IMPORTANT: build bootstrap objects with PIC (required for PIE on OpenBSD)
+$(BOOTSTRAP_OBJDIR)/%.o: $(BOOTSTRAP_PATH)/%.c
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(BOOTSTRAP_CFLAGS) $(BOOTSTRAP_WARN_SUPPRESS) $(BOOTSTRAP_ASM_SYNTAX_CFLAGS) $(PIC_CFLAGS) -c $< -o $@
+
+$(BOOTSTRAP_OBJDIR)/%.o: $(BOOTSTRAP_PATH)/%.asm
+	@mkdir -p "$(dir $@)"
+	$(AS) $(ASFLAGS) --strip-local-absolute $< -o $@
+
+##############################################################################
+# Bootstrap compiler link
+##############################################################################
+
+# Use PIC runtime when PIE is enabled
+ifeq ($(ENABLE_PIE),YesPlease)
+  BOOTSTRAP_RT0 := $(libdir)/fbrt0pic.o
+  BOOTSTRAP_RTL := $(libdir)/libfbpic.a
+else
+  BOOTSTRAP_RT0 := $(libdir)/fbrt0.o
+  BOOTSTRAP_RTL := $(libdir)/libfb.a
+endif
+
+#
+# The bootstrap compiler links one runtime variant.  Depending on the rtlib
+# aggregate here also builds the unused PIC/non-PIC and multithreaded archives,
+# only for bootstrap-minimal to delete them immediately after the link.
+#
+BOOTSTRAP_EARLY_LIBS :=
+BOOTSTRAP_PLATFORM_LIBS :=
+BOOTSTRAP_PLATFORM_ARCHIVES :=
+ifeq ($(TARGET_OS),amiga)
+# Hunk linking must select CPU floating-point helpers before newlib aliases.
+# Use the same providers as the BASIC driver, including its pthread repairs.
+BOOTSTRAP_EARLY_LIBS := -L$(libdir) -Wl,--whole-archive -lfbsoftfloat -Wl,--no-whole-archive
+BOOTSTRAP_PLATFORM_LIBS := -lamiga -lffi
+BOOTSTRAP_PLATFORM_ARCHIVES := $(libdir)/libfbsoftfloat.a $(libdir)/libpthread.a $(libdir)/libffi.a
+endif
+
+# The DOS bootstrap pulls in runtime objects that reference the optional
+# Watt-32 adapter. Keep the same provider archive and duplicate strerror
+# policy used by the DOS compiler driver.
+ifeq ($(TARGET_OS),dos)
+ifdef ENABLE_DOS_WATT32
+BOOTSTRAP_PLATFORM_LIBS += $(DOS_WATT32_LIBS) -Wl,--allow-multiple-definition -lm
+endif
+endif
+
+$(BOOTSTRAP_FBC): $(BOOTSTRAP_RT0) $(BOOTSTRAP_RTL) $(BOOTSTRAP_OBJ) $(BOOTSTRAP_PLATFORM_ARCHIVES) | $(BOOTSTRAP_PATH) bootstrap-emission-ready
+
+	@set -e; temporary="$(basename $@).tmp$(suffix $@)"; \
+	trap 'rm -f "$$temporary"' 0; \
+	$(RUN_CC) $(ALLLDFLAGS) -o "$$temporary" \
+	$(BOOTSTRAP_EARLY_LIBS) \
+	$(BOOTSTRAP_RT0) \
+	$(BOOTSTRAP_OBJ) \
+	$(BOOTSTRAP_RTL) \
+	-lm $(THREAD_FLAGS) $(BOOTSTRAP_TERM_LIB) $(BOOTSTRAP_PLATFORM_LIBS); \
+	mv -f "$$temporary" "$@"
+	$(publish_build_config)
+
+##############################################################################
+# End bootstrap-core.mk
+##############################################################################

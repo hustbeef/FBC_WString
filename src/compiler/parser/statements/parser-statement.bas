@@ -1,0 +1,100 @@
+'' Project: FreeBASIC compiler - BASIC statement grammar
+'' -----------------------------------------
+''
+'' File: parser/statements/parser-statement.bas
+''
+'' Purpose:
+''
+''     Dispatch statement syntax and consume statement separators.
+''
+'' Responsibilities:
+''
+''     - parse statement syntax and track compound statement nesting
+''     - build control flow and preserve source-level diagnostics
+''
+'' This file intentionally does NOT contain:
+''
+''     - symbol storage allocation or machine instruction encoding
+''
+
+'' statements top-level parsing
+''
+'' chng: sep/2004 written [v1ctor]
+
+
+#include once "core/fb.bi"
+#include once "core/fbint.bi"
+#include once "parser/parser.bi"
+#include once "tooling/semantic-constructs.bi"
+
+'':::::
+''Statement       =   STT_SEPARATOR? ( Declaration
+''                                   | ProcCallOrAssign
+''                                   | CompoundStmt
+''                                   | QuirkStmt
+''                                   | AsmBlock
+''                                   | AssignmentOrPtrCall )?
+''                    (STT_SEPARATOR Statement)* .
+''
+sub cStatement()
+	'' ':'?
+	if( lexGetToken( ) = FB_TK_STMTSEP ) then
+		parser.stmt.cnt += 1  '' end-of-statement seen
+		lexSkipToken( )
+	end if
+
+	do
+		dim as integer saved_call_parsed = parser.stmt.call_parsed
+		parser.stmt.call_parsed = FALSE
+		dim as LEX_LOCATION source = lexGetCurrentLocation( )
+		dim as integer errors_before = errGetCount( )
+		dim as longint statement = fbSemanticModelStatementBegin(source, lexGetToken( ), lexGetClass( ))
+		dim as string route = "unmatched"
+		if( cDeclaration( ) ) then
+			route = "declaration"
+		elseif( cCompoundStmt( ) ) then
+			route = "compound"
+		elseif( cProcCallOrAssign( ) ) then
+			route = "call-or-assignment"
+		elseif( cQuirkStmt( ) ) then
+			route = "intrinsic"
+		elseif( cAsmBlock( ) ) then
+			route = "assembly"
+		elseif( cAssignmentOrPtrCall( ) ) then
+			route = "pointer-or-assignment"
+		end if
+		dim as LEX_LOCATION ending = lexGetLastLocation( )
+		fbSemanticModelStatementEnd(statement, route, ending, errors_before)
+		parser.stmt.call_parsed = saved_call_parsed
+
+		'' ':'?
+		if( lexGetToken( ) <> FB_TK_STMTSEP ) then
+			exit do
+		end if
+		parser.stmt.cnt += 1  '' end-of-statement seen
+		lexSkipToken( )
+	loop
+end sub
+
+'' StmtSeparator  =  (':' | EOL | EOF)+ .
+function cStmtSeparator( byval lexflags as LEXCHECK ) as integer
+	function = FALSE
+
+	do
+		select case lexGetToken( lexflags )
+		case FB_TK_STMTSEP, FB_TK_EOL
+			parser.stmt.cnt += 1
+			lexSkipToken( lexflags )
+			function = TRUE
+
+		case FB_TK_EOF
+			function = TRUE
+			exit do
+
+		case else
+			exit do
+		end select
+	loop
+end function
+
+'' end of parser/statements/parser-statement.bas

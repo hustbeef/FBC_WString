@@ -1,0 +1,135 @@
+/*
+    FreeBASIC Sound Library (sfxlib)
+    --------------------------------
+
+    File: sfx_music_status.c
+
+    Purpose:
+
+        Implement the MUSIC STATUS command.
+
+        This allows applications to query the current
+        music playback state.
+
+    Responsibilities:
+
+        • report whether music is playing, paused, or stopped
+        • provide helper queries for internal subsystems
+
+    This file intentionally does NOT contain:
+
+        • music playback logic
+        • mixer processing
+        • audio driver interaction
+        • file loading
+
+    Architectural overview:
+
+        MUSIC STATUS
+             │
+             ▼
+        playback state query
+*/
+
+#include "fb_sfx.h"
+#include "fb_sfx_internal.h"
+
+
+/* ------------------------------------------------------------------------- */
+/* Status values                                                             */
+/* ------------------------------------------------------------------------- */
+
+#define FB_SFX_MUSIC_STOPPED 0
+#define FB_SFX_MUSIC_PLAYING 1
+#define FB_SFX_MUSIC_PAUSED  2
+
+
+/* ------------------------------------------------------------------------- */
+/* MUSIC STATUS                                                              */
+/* ------------------------------------------------------------------------- */
+
+/*
+    fb_sfxMusicStatus()
+
+    Return the current music playback status.
+
+    Returns:
+
+        FB_SFX_MUSIC_STOPPED
+        FB_SFX_MUSIC_PLAYING
+        FB_SFX_MUSIC_PAUSED
+*/
+
+int fb_sfxMusicStatus(void)
+{
+    int i;
+    int status;
+
+    if (!__fb_sfx)
+        return FB_SFX_MUSIC_STOPPED;
+
+    fb_sfxRuntimeLock();
+
+    if (__fb_sfx->music_playing >= 0)
+    {
+        for (i = 0; i < FB_SFX_MAX_VOICES; ++i)
+        {
+            FB_SFXVOICE *voice = &__fb_sfx->voices[i];
+
+            if (voice->active &&
+                voice->type == FB_SFX_VOICE_MUSIC)
+                break;
+        }
+
+        if (i >= FB_SFX_MAX_VOICES)
+        {
+            __fb_sfx->music_playing = -1;
+            __fb_sfx->music_paused = 0;
+            __fb_sfx->music_loop = 0;
+            __fb_sfx->music_pos = 0;
+            fb_sfxRuntimeUnlock();
+            return FB_SFX_MUSIC_STOPPED;
+        }
+    }
+
+    if (__fb_sfx->music_playing < 0)
+        status = FB_SFX_MUSIC_STOPPED;
+    else if (__fb_sfx->music_paused)
+        status = FB_SFX_MUSIC_PAUSED;
+    else
+        status = FB_SFX_MUSIC_PLAYING;
+
+    fb_sfxRuntimeUnlock();
+    return status;
+}
+
+
+/* ------------------------------------------------------------------------- */
+/* MUSIC POSITION                                                            */
+/* ------------------------------------------------------------------------- */
+
+/*
+    fb_sfxMusicPosition()
+
+    Return the current playback position.
+
+    The interpretation of this value depends on the
+    music decoder implementation.
+*/
+
+long fb_sfxMusicPosition(void)
+{
+    long result;
+
+    if (!__fb_sfx)
+        return 0;
+
+    fb_sfxRuntimeLock();
+    result = __fb_sfx->music_pos;
+    fb_sfxRuntimeUnlock();
+
+    return result;
+}
+
+
+/* end of sfx_music_status.c */

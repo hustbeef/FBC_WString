@@ -1,0 +1,34 @@
+{{fbdoc item="title" value="UNLOCK"}}----
+Releases a file range lock
+
+{{fbdoc item="syntax"}}##
+	**Unlock** #//filenum//, //record//
+	**Unlock** #//filenum//, //start// To //end//
+##
+{{fbdoc item="param"}}
+	##//filenum//##
+		The file number used to ##[[KeyPgOpen|Open]]## the file.
+	##//record//##
+		The record (##[[KeyPgRandom|Random]]## files) to unlock.
+	##//start//##
+		The first byte position (##[[KeyPgBinary|Binary]]## files) in a range to unlock.
+	##//end//##
+		The last byte position (##[[KeyPgBinary|Binary]]## files) in a range to unlock.
+
+{{fbdoc item="desc"}}
+	##**Unlock**## releases the byte or record range locked by ##[[KeyPgLock|Lock]]##. The first and final positions are inclusive.
+	
+	Use the same arguments as the matching ##[[KeyPgLock|Lock]]##. On Unix-like systems, file locks are advisory. Native unlock failures set a file I/O error, and targets without native byte-range locking report the operation as unsupported.
+
+{{fbdoc item="ex"}}
+		 For an example see ##[[KeyPgLock|Lock]]##.
+
+{{fbdoc item="diff"}}
+	- A single position or explicit range is required; the entire file cannot be unlocked implicitly
+
+{{fbdoc item="see"}}
+	- ##[[KeyPgLock|Lock]]##
+	- ##[[KeyPgOpen|Open]]##
+	- ##[[KeyPgScreenunlock|ScreenUnlock]]##
+
+{{fbdoc item="back" value="CatPgFile|File I/O Functions"}}

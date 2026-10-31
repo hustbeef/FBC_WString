@@ -1,0 +1,9 @@
+# Generated build and test output. These should not be synced.
+out/
+out/*
+.build-*/
+.build-*/*
+generated/fbctests-*/
+generated/fbctests-*/*
+.semantic-cache/
+.semantic-cache/*

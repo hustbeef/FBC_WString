@@ -1,0 +1,3 @@
+freebasic-android: binary-from-other-architecture [usr/lib/freebasic-android/android-*/fbrt*.o]
+freebasic-android: static-library-has-unneeded-sections * [usr/lib/freebasic-android/android-*/*.a]
+freebasic-android: executable-in-usr-lib [usr/lib/freebasic-android/bin/fbc-android-compiler]

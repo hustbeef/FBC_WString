@@ -1,0 +1,40 @@
+﻿{{fbdoc item="title" value="Building FreeBASIC from source"}}
+
+FreeBASIC is built through the top-level ##GNUmakefile## and the modular make
+files in ##mk/##. Older notes may refer to a single monolithic makefile or to
+manual platform setup. The current tree is intentionally split into platform,
+CPU, toolchain, feature policy, bootstrap, packaging, and install-layout
+modules.
+
+{{fbdoc item="subsect" value="Normal local build"}}
+
+A typical native build starts with these commands:
+
+%%(sh)
+make print-config
+make prereqs-fbc
+make -j4
+%%
+
+Use a job count that fits the machine. The important point is that
+##print-config## shows what the make system thinks the host, target, compiler,
+layout, and tools are before a long build starts.
+
+The default build includes the compiler stage and the core libraries. The
+library group includes the runtime library, graphics library, sound library, and
+other shipped libraries used by installed FreeBASIC programs.
+
+{{fbdoc item="subsect" value="Build scripts"}}
+
+The ##build_scripts/## directory contains the repeatable build, package, and
+smoke-test entry points used for platform work. Prefer those scripts when
+building release packages or exercising a target-specific port. Direct ##make##
+commands are still useful while developing a focused compiler or runtime change.
+
+{{fbdoc item="subsect" value="Useful follow-up pages"}}
+
+	::DevBuildConfig|Build configuration::
+	::DevRebuildAfterUpdates|Getting updates and rebuilding::
+	::DevFbcTestSuite|The test suite::
+	::DevCrossCompiling|Cross-compiling::
+	::DevBootstrap|Bootstrapping::

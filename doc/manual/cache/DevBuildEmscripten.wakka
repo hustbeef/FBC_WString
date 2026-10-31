@@ -1,0 +1,22 @@
+﻿{{fbdoc item="title" value="Building for JavaScript"}}
+
+The JavaScript target is built through the Emscripten toolchain. In this tree,
+the target is normally exercised through the package and test scripts rather
+than by manually assembling an Emscripten command line.
+
+{{fbdoc item="subsect" value="Build scripts"}}
+
+%%(sh)
+./build_scripts/msys2-build-freebasic-js.sh
+./build_scripts/debianubuntu-test-freebasic-js.sh
+%%
+
+Use the matching script for the host environment. The scripts set the expected
+compiler target, runtime layout, Emscripten tools, and package names.
+
+{{fbdoc item="subsect" value="Runtime limits"}}
+
+JavaScript output is useful for many programs, but it is not identical to a
+native hosted target. Thread support and TCP support are not available in the
+same way as on the main desktop/server targets, so programs depending on those
+features need a different target or a target-specific design.

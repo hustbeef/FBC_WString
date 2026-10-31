@@ -1,0 +1,120 @@
+# FreeBASIC 1.20.5 documentation
+
+This directory collects the documentation added or substantially revised from
+the 1.10.0 release through the current 1.20.5 tree. The generated language
+manual remains under `doc/manual`; these guides cover source architecture,
+release, package, port, and runtime subjects that do not fit naturally in the
+language reference.
+
+## Start here
+
+- [Source code guide](source-code/README.md) explains the source trees,
+  compiler phases, runtime libraries, graphics, sound, target tools and tests.
+  The manual's matching pages start at
+  [DevSourceCode.wakka](../doc/manual/cache/DevSourceCode.wakka) and are linked
+  from its main and developer tables of contents.
+- [Graphics maintenance guide](gfx-maintenance.md) maps gfxlib2 and gfxlib3
+  ownership, locking, image contracts, backend modules and validation workflows.
+- [Graphics restructuring verification](gfx-restructure-verification.md)
+  records native regression gates and their scope.
+- [Runtime and graphics locking](gfx-locking.md) explains input callbacks,
+  allocation and mode shutdown, with a native lock-order regression.
+- [Runtime maintenance guide](../src/rtlib/README.md) maps runtime subsystems,
+  platform drivers, source selection, ABI contracts, ownership and regression workflows.
+- [Runtime restructuring verification](rtlib-restructure-verification.md)
+  records the refactor inputs and native qualification scope.
+- [Current changelog](../changelog.txt) records the 1.20.5 changes.
+- [1.20.4 release notes](release-1.20.4.md) summarize the user-visible work
+  completed since the 1.20.2 development baseline.
+- [1.10 to 1.20 development history](release-history-1.10-to-1.20.md) records
+  the actual version boundaries and groups the work from all 804 audited
+  commits after the 1.10.0 tag.
+- [Package repository and installation](packages.md) explains the packages at
+  `deb.fbxl.net`, installation choices, target packages, and checksums.
+- [NuttX and RISC-V](nuttx.md) describes the QEMU, ESP32-P4, and RP2350-PiZero
+  development workflows.
+- [Portable serial control](serial.md) documents the `fbcom.bi` API layered on
+  top of `OPEN COM`.
+- [Compatibility runtime and compiler services](compatibility-services.md)
+  documents the byte-string, pathname-attribute, bitmap-font measurement,
+  packed-fill, file-copy, indexed-readback, and concurrent-build work.
+- [Platform services and native graphics drops](../doc/platform-services.md)
+  describes checked notifications, cooperative idle polling, Windows and X11
+  file/text drops, examples, and their platform qualification limits.
+- [Checked secure randomness](../doc/secure-random.md)
+  documents the caller-owned API contract, provider and refusal behavior, DOS
+  device protocol, and focused verification boundaries.
+- [gfxlib3](gfxlib3/README.md) describes the opt-in render-threaded GPU graphics
+  runtime and links to its architecture, parity, performance, and verification
+  records.
+- [sfxlib examples](../examples/sfxlib/README.md) introduces generated sound,
+  sample playback, MIDI, output capture, diagnostics, and stress examples.
+
+The complete per-change record is in [changelog.txt](../changelog.txt). The
+generated manual is the authoritative reference for established language
+keywords and the built-in graphics and sound command syntax.
+
+## Platform guides
+
+- [AROS](aros.md)
+- [Classic AmigaOS](amiga.md)
+- [RISC OS](riscos.md)
+- [Windows CE](wince.md)
+- [Linux MIPS](mips.md)
+- [NuttX](nuttx.md)
+
+Cross-target example results and known external-library limitations are kept
+beside the examples:
+
+- [JavaScript, Android, and Xbox notes](../examples/cross-target-notes.md)
+- [Cygwin notes](../examples/cygwin-example-notes.md)
+- [Windows notes](../examples/windows-example-notes.md)
+
+## Build and qualification records
+
+- [Make system review](make-system-review.md) tracks the full build-system
+  audit, confirmed defects, corrections, and remaining review coverage.
+- [Build consolidation](build-consolidation.md) records native integration,
+  configuration tracking, source hygiene and compiler publication checks.
+- [Compiler log tests and retries](compiler-test-harness.md) documents failure
+  details, retry artifact ownership, and the focused harness regression.
+- [Compiler semantic model](../doc/compiler-semantic-model.md) defines the
+  schema 27 sidecar, source and macro origins, bounded observations, and the
+  binary/text reader contract, including direct native field reads without an
+  intermediate TSV record. It also documents requested source-observation
+  groups, native/stable datatype IDs and the dedicated semantic-build default. Generated
+  unnamed parameters without source ownership are excluded from hint closure.
+- [Cross-build matrix](../build_scripts/cross-build-matrix/README.md)
+- [Emulated native matrix](../build_scripts/emulated-native-matrix/README.md)
+- [gfxlib3 test plan](gfxlib3/test-plan.md)
+- [gfxlib3 verification record](gfxlib3/verification.md)
+
+The build records are evidence for maintainers. They are not a promise that
+every optional target or external dependency is available on every host.
+
+The [1.20.5 external library audit](external-library-qualification-1.20.5.md)
+records fresh Windows, DOS, Linux, Haiku and FreeBSD Exampleageddon results,
+focused library executions and the evidence for retaining the bindings.
+
+The [library repair follow-up](external-library-repairs-1.20.5.md) records
+native ABI fixes, QuickLZ qualification on FreeBSD and Haiku, and complete
+Debian optional SDK coverage with an automatic packaging guard.
+
+## Building the generated manual
+
+Build the FreeBASIC documentation tools first, then generate every manual
+format from the checked-in Wakka cache:
+
+```sh
+make -C doc
+make -C doc/manual clean
+make -C doc/manual all
+```
+
+The complete build requires `zip`, `gzip`, and Microsoft's HTML Help Compiler.
+Pass the compiler location as `HHC=/path/to/hhc` if it is not on `PATH`. The
+resulting versioned CHM, HTML, text, fbhelp, and Wakka archives are written to
+`doc/manual/`. A release build is not complete until each archive exists and
+the generated `html/00index.html` links to the new manual pages.
+
+<!-- end of README.md -->

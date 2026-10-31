@@ -1,0 +1,222 @@
+'' Project: FreeBASIC compiler - BASIC declaration grammar
+'' -----------------------------------------
+''
+'' File: parser/declarations/parser-decl-option.bas
+''
+'' Purpose:
+''
+''     Parse option (OPTION) declarations.
+''
+'' Responsibilities:
+''
+''     - parse the declaration family described below
+''     - resolve types and symbols and build typed initializers
+''
+'' This file intentionally does NOT contain:
+''
+''     - symbol table allocation or target instruction selection
+''
+
+'' option (OPTION) declarations
+''
+'' chng: sep/2004 written [v1ctor]
+
+#include once "core/fb.bi"
+#include once "core/fbint.bi"
+#include once "parser/parser.bi"
+
+declare sub hUndefSymbol()
+declare sub fbSemanticModelOptionDeclaration( byval is_base as integer, byval value as longint, byval route as integer )
+declare sub fbSemanticModelKeywordRemoved( byval tokenid as integer )
+
+'' OptDecl  =  OPTION (BYVAL|DYNAMIC|STATIC|GOSUB|EXPLICIT|PRIVATE|ESCAPE|BASE NUM_LIT|NOKEYWORD ...|NOGOSUB)
+sub cOptDecl( )
+	if( fbLangOptIsSet( FB_LANG_OPT_OPTION ) = FALSE ) then
+		errReportNotAllowed( FB_LANG_OPT_OPTION )
+		hSkipStmt( )
+		exit sub
+	end if
+
+	if( cCompStmtIsAllowed( FB_CMPSTMT_MASK_DECL ) = FALSE ) then
+		hSkipStmt( )
+		exit sub
+	end if
+
+	'' OPTION
+	lexSkipToken( LEXCHECK_POST_SUFFIX )
+	dim as integer is_base = FALSE
+	'' Stable receipt codes describe the accepted grammar route, independently
+	'' of whether it changes a default. The semantic format documents the codes.
+	dim as integer route = 0
+
+	select case as const lexGetToken( )
+	case FB_TK_BYVAL
+		route = 1
+		lexSkipToken( LEXCHECK_POST_SUFFIX )
+		env.opt.parammode = FB_PARAMMODE_BYVAL
+
+	case FB_TK_DYNAMIC
+		route = 2
+		lexSkipToken( LEXCHECK_POST_SUFFIX )
+		env.opt.dynamic = TRUE
+
+	case FB_TK_STATIC
+		route = 3
+		lexSkipToken( LEXCHECK_POST_SUFFIX )
+		env.opt.dynamic = FALSE
+
+	case FB_TK_GOSUB
+		route = 4
+		if( fbLangOptIsSet( FB_LANG_OPT_GOSUB ) = FALSE ) then
+			errReportNotAllowed( FB_LANG_OPT_GOSUB )
+		else
+			env.opt.gosub = TRUE
+		end if
+
+		lexSkipToken( LEXCHECK_POST_SUFFIX )
+
+	case else
+
+		'' Search for text match with non-keywords - this
+		'' prevents us from having to add them to the namespace
+
+		select case ucase( *lexGetText( ) )
+		'' EXPLICIT: Not a keyword in lang qb
+		case "EXPLICIT"
+			route = 5
+			env.opt.explicit = TRUE
+			lexSkipToken( LEXCHECK_POST_SUFFIX )
+
+		'' PRIVATE: Ditto
+		case "PRIVATE"
+			route = 6
+			lexSkipToken( LEXCHECK_POST_SUFFIX )
+			env.opt.procpublic = FALSE
+
+		case "ESCAPE"
+			route = 7
+			lexSkipToken( LEXCHECK_POST_SUFFIX )
+			env.opt.escapestr = TRUE
+
+		case "BASE"
+			route = 8
+			is_base = TRUE
+			lexSkipToken( LEXCHECK_POST_SUFFIX )
+
+			if( lexGetClass( ) <> FB_TKCLASS_NUMLITERAL ) then
+				errReport( FB_ERRMSG_SYNTAXERROR )
+				'' error recovery: skip stmt
+				hSkipStmt( )
+			else
+				env.opt.base = clng( *lexGetText( ) )
+				'' Observe the value actually consumed by this grammar route.
+				'' In particular, this preserves CLng's existing text conversion
+				'' instead of treating the token as an arithmetic expression.
+				lexSkipToken( )
+			end if
+
+		case "NOKEYWORD"
+			route = 9
+			lexSkipToken( LEXCHECK_NODEFINE or LEXCHECK_POST_SUFFIX )
+
+			do
+				hUndefSymbol()
+
+				'' ','?
+				if( lexGetToken( ) <> CHAR_COMMA ) then
+					exit do
+				end if
+
+				lexSkipToken( LEXCHECK_NODEFINE )
+			loop
+
+		case "NOGOSUB"
+			route = 10
+			if( fbLangOptIsSet( FB_LANG_OPT_GOSUB ) = FALSE ) then
+				errReportNotAllowed( FB_LANG_OPT_GOSUB )
+			else
+				env.opt.gosub = FALSE
+			end if
+
+			lexSkipToken( LEXCHECK_POST_SUFFIX )
+
+		case else
+			errReport( FB_ERRMSG_SYNTAXERROR )
+		end select
+
+	end select
+	'' Preserve every accepted OPTION route, including repeated defaults and
+	'' non-BASE declarations. Consumers can then detect a missing BASE receipt
+	'' without interpreting the source operands as another grammar.
+	fbSemanticModelOptionDeclaration( is_base, env.opt.base, route )
+end sub
+
+private sub hUndefSymbol()
+	dim s as FBSYMBOL ptr
+
+	select case as const lexGetClass( LEXCHECK_NODEFINE )
+	case FB_TKCLASS_KEYWORD, FB_TKCLASS_QUIRKWD
+		s = lexGetSymChain( )->sym
+		if( s ) then
+			'' Forget the symbol so it's no longer found by lookups,
+			'' but don't fully delete it, since it might already be used somewhere.
+			dim as integer removed_token = 0
+			if( s->class = FB_SYMBCLASS_KEYWORD ) then removed_token = s->key.id
+			symbDelFromHash( s )
+			fbSemanticModelKeywordRemoved( removed_token )
+		else
+			errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
+		end if
+
+		lexSkipToken( )
+
+	case FB_TKCLASS_IDENTIFIER
+		'' proc?
+		s = symbFindByClass( lexGetSymChain( ), FB_SYMBCLASS_PROC )
+		if( s <> NULL ) then
+			'' is it from the rtlib (gfxlib will be listed as part of the rt too)?
+			if( symbGetIsRTL( s ) = FALSE ) then
+				errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
+			else
+				'' don't remove if it was defined inside any namespace (any
+				'' USING ref to that ns would break its linked-list)
+				if( symbGetNamespace( s ) <> @symbGetGlobalNamespc( ) ) then
+					errReport( FB_ERRMSG_CANTREMOVENAMESPCSYMBOLS )
+				else
+					if( symbGetCantUndef( s ) ) then
+						errReport( FB_ERRMSG_CANTUNDEF )
+					else
+						symbDelFromHash( s )
+					end if
+				end if
+			end if
+		else
+			'' macro?
+			s = symbFindByClass( lexGetSymChain( ), FB_SYMBCLASS_DEFINE )
+			if( s = NULL ) then
+				errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
+			else
+				'' don't remove if it was defined inside any namespace (any
+				'' USING ref to that ns would break its linked-list)
+				if( symbGetNamespace( s ) <> @symbGetGlobalNamespc( ) ) then
+					errReport( FB_ERRMSG_CANTREMOVENAMESPCSYMBOLS )
+				else
+					if( symbGetCantUndef( s ) ) then
+						errReport( FB_ERRMSG_CANTUNDEF )
+					else
+						symbDelFromHash( s )
+					end if
+				end if
+			end if
+		end if
+
+		lexSkipToken( )
+
+	case else
+		errReport( FB_ERRMSG_SYNTAXERROR )
+		'' error recovery: skip until next ','
+		hSkipUntil( CHAR_COMMA )
+	end select
+end sub
+
+'' end of parser/declarations/parser-decl-option.bas

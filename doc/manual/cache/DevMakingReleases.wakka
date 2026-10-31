@@ -1,0 +1,32 @@
+﻿{{fbdoc item="title" value="Making releases"}}
+
+Release work is now driven by the modular make system, the package scripts in
+##build_scripts/##, and the repository publishing scripts. Older release notes
+that describe a single ##contrib/release/build.sh## flow are no longer the
+complete process.
+
+{{fbdoc item="subsect" value="Release checklist"}}
+
+	1) Update version metadata in ##mk/version.mk## and any package-specific
+	   changelog files.
+	2) Update the manual, changelog, installer notes, and public package text.
+	3) Build the native compiler packages and the cross-target packages.
+	4) Run package smoke tests from installed layouts, not only from the source
+	   tree.
+	5) Rebuild the HTML and CHM manuals.
+	6) Publish the archives, installers, packages, scripts, and docs to the
+	   repository host.
+
+{{fbdoc item="subsect" value="What to verify"}}
+
+A release should prove the basics on every advertised platform: compiler
+startup, normal compile/link, runtime startup/shutdown, graphics when supported,
+sound when supported, and package manager installation or removal when packages
+are shipped.
+
+{{fbdoc item="subsect" value="Repository publishing"}}
+
+The repository host is fed from the files produced by the build scripts. Keep
+old packages archived when a target depends on a single obvious current file,
+and keep target directories clean enough that users can understand what to
+download without reading the source tree.

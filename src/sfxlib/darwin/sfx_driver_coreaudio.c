@@ -1,0 +1,745 @@
+/*
+    Basic CoreAudio playback driver for macOS.
+*/
+
+#ifndef DISABLE_DARWIN
+
+#include "../fb_sfx.h"
+#include "../fb_sfx_internal.h"
+#include "../fb_sfx_driver.h"
+#include "../fb_sfx_driver_diag.h"
+#include "fb_sfx_darwin.h"
+
+#include <AudioToolbox/AudioToolbox.h>
+#include <CoreAudio/CoreAudio.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#define FB_SFX_DARWIN_QUEUE_BUFFERS 3
+
+typedef struct FB_SFX_DARWIN_QUEUE_BUFFER
+{
+    AudioQueueBufferRef ref;
+    int in_use;
+} FB_SFX_DARWIN_QUEUE_BUFFER;
+
+FB_SFX_DARWIN_STATE fb_sfx_darwin =
+{
+    0,
+    FB_SFX_DEFAULT_RATE,
+    FB_SFX_DEFAULT_CHANNELS,
+    FB_SFX_DEFAULT_BUFFER,
+    0,
+    NULL
+};
+
+static AudioQueueRef g_audio_queue = NULL;
+static AudioStreamBasicDescription g_format;
+static FB_SFX_DARWIN_QUEUE_BUFFER g_buffers[FB_SFX_DARWIN_QUEUE_BUFFERS];
+static int g_buffer_bytes = 0;
+static int g_current_buffer = 0;
+static pthread_mutex_t g_darwin_coreaudio_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_write_debug_count = 0;
+static int g_done_debug_count = 0;
+static int g_darwin_debug_initialized = 0;
+static int g_darwin_debug_enabled = 0;
+static int g_selected_output_device = -1;
+
+#if FB_SFX_MT_ENABLED
+static pthread_t g_audio_thread;
+static int g_audio_thread_valid = 0;
+static volatile int g_audio_thread_stop = 0;
+#endif
+
+static int fb_sfxDarwinStopRequested(void)
+{
+#if FB_SFX_MT_ENABLED
+    return g_audio_thread_stop;
+#else
+    return 0;
+#endif
+}
+
+static void fb_sfxDarwinInitDebug(void)
+{
+    const char *env;
+
+    if (g_darwin_debug_initialized)
+        return;
+
+    g_darwin_debug_initialized = 1;
+    env = getenv("SFXLIB_DARWIN_DEBUG");
+    g_darwin_debug_enabled = (env && *env && *env != '0');
+}
+
+static int fb_sfxDarwinDebugEnabled(void)
+{
+    fb_sfxDarwinInitDebug();
+    return g_darwin_debug_enabled;
+}
+
+#define DARWIN_DBG(...) \
+    do { if (fb_sfxDarwinDebugEnabled()) fprintf(stderr, "SFX_DARWIN: " __VA_ARGS__); } while (0)
+
+static void fb_sfxDarwinLogStatus(const char *where, OSStatus status)
+{
+    DARWIN_DBG("%s failed (status=%ld)\n", where, (long)status);
+}
+
+static int fb_sfxDarwinGetDeviceList(AudioDeviceID **devices, int *count)
+{
+    AudioObjectPropertyAddress addr;
+    UInt32 size;
+    OSStatus status;
+
+    if (!devices || !count)
+        return -1;
+
+    *devices = NULL;
+    *count = 0;
+
+    addr.mSelector = kAudioHardwarePropertyDevices;
+    addr.mScope = kAudioObjectPropertyScopeGlobal;
+    addr.mElement = kAudioObjectPropertyElementMain;
+
+    size = 0;
+    status = AudioObjectGetPropertyDataSize(kAudioObjectSystemObject,
+                                            &addr,
+                                            0,
+                                            NULL,
+                                            &size);
+    if (status != noErr || size == 0)
+    {
+        fb_sfxDarwinLogStatus("AudioObjectGetPropertyDataSize(devices)", status);
+        return -1;
+    }
+
+    *devices = (AudioDeviceID *)malloc(size);
+    if (!*devices)
+        return -1;
+
+    status = AudioObjectGetPropertyData(kAudioObjectSystemObject,
+                                        &addr,
+                                        0,
+                                        NULL,
+                                        &size,
+                                        *devices);
+    if (status != noErr)
+    {
+        fb_sfxDarwinLogStatus("AudioObjectGetPropertyData(devices)", status);
+        free(*devices);
+        *devices = NULL;
+        return -1;
+    }
+
+    *count = (int)(size / sizeof(AudioDeviceID));
+    return 0;
+}
+
+static int fb_sfxDarwinDeviceHasOutput(AudioDeviceID device)
+{
+    AudioObjectPropertyAddress addr;
+    UInt32 size;
+    OSStatus status;
+
+    addr.mSelector = kAudioDevicePropertyStreams;
+    addr.mScope = kAudioDevicePropertyScopeOutput;
+    addr.mElement = kAudioObjectPropertyElementMain;
+
+    size = 0;
+    status = AudioObjectGetPropertyDataSize(device, &addr, 0, NULL, &size);
+    return (status == noErr && size > 0);
+}
+
+static int fb_sfxDarwinOutputDeviceCount(void)
+{
+    AudioDeviceID *devices;
+    int device_count;
+    int output_count;
+    int i;
+
+    if (fb_sfxDarwinGetDeviceList(&devices, &device_count) != 0)
+        return 0;
+
+    output_count = 0;
+    for (i = 0; i < device_count; ++i)
+    {
+        if (fb_sfxDarwinDeviceHasOutput(devices[i]))
+            output_count++;
+    }
+
+    free(devices);
+    return output_count;
+}
+
+static int fb_sfxDarwinGetOutputDeviceByIndex(int index, AudioDeviceID *device)
+{
+    AudioDeviceID *devices;
+    int device_count;
+    int output_index;
+    int i;
+
+    if (!device || index < 0)
+        return -1;
+
+    if (fb_sfxDarwinGetDeviceList(&devices, &device_count) != 0)
+        return -1;
+
+    output_index = 0;
+    for (i = 0; i < device_count; ++i)
+    {
+        if (!fb_sfxDarwinDeviceHasOutput(devices[i]))
+            continue;
+
+        if (output_index == index)
+        {
+            *device = devices[i];
+            free(devices);
+            return 0;
+        }
+
+        output_index++;
+    }
+
+    free(devices);
+    return -1;
+}
+
+static CFStringRef fb_sfxDarwinCopyDeviceUID(AudioDeviceID device)
+{
+    AudioObjectPropertyAddress addr;
+    CFStringRef uid;
+    UInt32 size;
+    OSStatus status;
+
+    addr.mSelector = kAudioDevicePropertyDeviceUID;
+    addr.mScope = kAudioObjectPropertyScopeGlobal;
+    addr.mElement = kAudioObjectPropertyElementMain;
+
+    uid = NULL;
+    size = (UInt32)sizeof(CFStringRef);
+    status = AudioObjectGetPropertyData(device,
+                                        &addr,
+                                        0,
+                                        NULL,
+                                        &size,
+                                        (void *)&uid);
+    if (status != noErr || !uid)
+    {
+        fb_sfxDarwinLogStatus("AudioObjectGetPropertyData(device uid)", status);
+        return NULL;
+    }
+
+    return uid;
+}
+
+static int fb_sfxDarwinApplySelectedOutputDevice(void)
+{
+    AudioDeviceID device;
+    CFStringRef uid;
+    OSStatus status;
+
+    if (g_selected_output_device < 0)
+        return 0;
+
+    if (!g_audio_queue)
+        return -1;
+
+    if (fb_sfxDarwinGetOutputDeviceByIndex(g_selected_output_device, &device) != 0)
+        return -1;
+
+    uid = fb_sfxDarwinCopyDeviceUID(device);
+    if (!uid)
+        return -1;
+
+    status = AudioQueueSetProperty(g_audio_queue,
+                                   kAudioQueueProperty_CurrentDevice,
+                                   (const void *)&uid,
+                                   (UInt32)sizeof(CFStringRef));
+    CFRelease(uid);
+
+    if (status != noErr)
+    {
+        fb_sfxDarwinLogStatus("AudioQueueSetProperty(current device)", status);
+        return -1;
+    }
+
+    DARWIN_DBG("selected output device index=%d id=%u\n",
+               g_selected_output_device,
+               (unsigned)device);
+    return 0;
+}
+
+static int fb_sfxDarwinHasOutputDevice(void)
+{
+    AudioObjectPropertyAddress addr;
+    AudioDeviceID device = kAudioObjectUnknown;
+    UInt32 size = (UInt32)sizeof(device);
+    OSStatus status;
+
+    if (g_selected_output_device >= 0)
+    {
+        return fb_sfxDarwinGetOutputDeviceByIndex(g_selected_output_device,
+                                                  &device) == 0;
+    }
+
+    addr.mSelector = kAudioHardwarePropertyDefaultOutputDevice;
+    addr.mScope = kAudioObjectPropertyScopeGlobal;
+    addr.mElement = kAudioObjectPropertyElementMain;
+
+    status = AudioObjectGetPropertyData(kAudioObjectSystemObject,
+                                        &addr,
+                                        0,
+                                        NULL,
+                                        &size,
+                                        &device);
+    if (status != noErr)
+    {
+        fb_sfxDarwinLogStatus("AudioObjectGetPropertyData(default output)", status);
+        return 0;
+    }
+
+    if (device == kAudioObjectUnknown)
+    {
+        DARWIN_DBG("no default output device is available\n");
+        return 0;
+    }
+
+    DARWIN_DBG("default output device id=%u\n", (unsigned)device);
+    return 1;
+}
+
+static void fb_sfxDarwinSleepMs(unsigned long milliseconds)
+{
+    struct timespec req;
+
+    req.tv_sec = (time_t)(milliseconds / 1000UL);
+    req.tv_nsec = (long)((milliseconds % 1000UL) * 1000000UL);
+    nanosleep(&req, NULL);
+}
+
+static int fb_sfxDarwinWorkerFrames(void)
+{
+    int frames;
+
+    frames = (fb_sfx_darwin.buffer_frames > 0)
+        ? (fb_sfx_darwin.buffer_frames / 4)
+        : (FB_SFX_DEFAULT_BUFFER / 4);
+
+    if (frames < 256)
+        frames = 256;
+    else if (frames > 2048)
+        frames = 2048;
+
+    return frames;
+}
+
+#if FB_SFX_MT_ENABLED
+static void *fb_sfxDarwinAudioWorker(void *unused)
+{
+    (void)unused;
+
+    while (!g_audio_thread_stop)
+    {
+        if (!fb_sfx_darwin.running)
+        {
+            fb_sfxDarwinSleepMs(5);
+            continue;
+        }
+
+        if (fb_sfxForegroundFeedActive())
+        {
+            fb_sfxDarwinSleepMs(5);
+            continue;
+        }
+
+        fb_sfxUpdate(fb_sfxDarwinWorkerFrames());
+    }
+
+    return NULL;
+}
+
+static int fb_sfxDarwinEnsureWorker(void)
+{
+    if (g_audio_thread_valid)
+        return 0;
+
+    g_audio_thread_stop = 0;
+
+    if (pthread_create(&g_audio_thread, NULL, fb_sfxDarwinAudioWorker, NULL) != 0)
+        return -1;
+
+    g_audio_thread_valid = 1;
+    return 0;
+}
+#endif
+
+static void fb_sfxDarwinBufferDone(void *user_data,
+                                   AudioQueueRef queue,
+                                   AudioQueueBufferRef buffer)
+{
+    FB_SFX_DARWIN_QUEUE_BUFFER *buffers = (FB_SFX_DARWIN_QUEUE_BUFFER *)user_data;
+    int i;
+
+    (void)queue;
+
+    if (!fb_sfx_darwin.running)
+        return;
+
+    pthread_mutex_lock(&g_darwin_coreaudio_lock);
+    for (i = 0; i < FB_SFX_DARWIN_QUEUE_BUFFERS; ++i)
+    {
+        if (buffers[i].ref == buffer)
+        {
+            buffers[i].in_use = 0;
+            if (g_done_debug_count < 8)
+            {
+                DARWIN_DBG("buffer done: slot=%d bytes=%u\n",
+                           i,
+                           (unsigned)buffer->mAudioDataByteSize);
+                g_done_debug_count++;
+            }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_darwin_coreaudio_lock);
+}
+
+int fb_sfxDarwinInit(void)
+{
+    OSStatus status;
+    UInt32 i;
+
+    fb_sfxDarwinInitDebug();
+
+    if (fb_sfx_darwin.initialized)
+        return 0;
+
+    fb_sfxDarwinCaptureEnsureLinked();
+
+    if (!fb_sfxDarwinHasOutputDevice())
+        return -1;
+
+    memset(&g_format, 0, sizeof(g_format));
+    g_format.mSampleRate = (Float64)fb_sfx_darwin.sample_rate;
+    g_format.mFormatID = kAudioFormatLinearPCM;
+    g_format.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+    g_format.mChannelsPerFrame = (UInt32)fb_sfx_darwin.channels;
+    g_format.mBitsPerChannel = 32;
+    g_format.mFramesPerPacket = 1;
+    g_format.mBytesPerFrame = (UInt32)(sizeof(float) * fb_sfx_darwin.channels);
+    g_format.mBytesPerPacket = g_format.mBytesPerFrame;
+
+    status = AudioQueueNewOutput(&g_format,
+                                 fb_sfxDarwinBufferDone,
+                                 g_buffers,
+                                 NULL,
+                                 NULL,
+                                 0,
+                                 &g_audio_queue);
+    if (status != noErr)
+    {
+        fb_sfxDarwinLogStatus("AudioQueueNewOutput", status);
+        return -1;
+    }
+
+    if (fb_sfxDarwinApplySelectedOutputDevice() != 0)
+    {
+        fb_sfxDarwinExit();
+        return -1;
+    }
+
+    g_buffer_bytes = fb_sfx_darwin.buffer_frames * (int)g_format.mBytesPerFrame;
+    if (g_buffer_bytes <= 0)
+        g_buffer_bytes = FB_SFX_DEFAULT_BUFFER * (int)g_format.mBytesPerFrame;
+
+    for (i = 0; i < FB_SFX_DARWIN_QUEUE_BUFFERS; ++i)
+    {
+        status = AudioQueueAllocateBuffer(g_audio_queue,
+                                          (UInt32)g_buffer_bytes,
+                                          &g_buffers[i].ref);
+        if (status != noErr)
+        {
+            fb_sfxDarwinLogStatus("AudioQueueAllocateBuffer", status);
+            fb_sfxDarwinExit();
+            return -1;
+        }
+
+        memset(g_buffers[i].ref->mAudioData, 0, (size_t)g_buffer_bytes);
+        g_buffers[i].ref->mAudioDataByteSize = (UInt32)g_buffer_bytes;
+        g_buffers[i].in_use = 1;
+
+        status = AudioQueueEnqueueBuffer(g_audio_queue, g_buffers[i].ref, 0, NULL);
+        if (status != noErr)
+        {
+            fb_sfxDarwinLogStatus("AudioQueueEnqueueBuffer(init)", status);
+            g_buffers[i].in_use = 0;
+            fb_sfxDarwinExit();
+            return -1;
+        }
+    }
+
+    g_current_buffer = 0;
+
+    status = AudioQueueStart(g_audio_queue, NULL);
+    if (status != noErr)
+    {
+        fb_sfxDarwinLogStatus("AudioQueueStart", status);
+        fb_sfxDarwinExit();
+        return -1;
+    }
+
+    fb_sfx_darwin.initialized = 1;
+    fb_sfx_darwin.device_handle = g_audio_queue;
+
+    DARWIN_DBG("initialized (rate=%d channels=%d buffer=%d)\n",
+               fb_sfx_darwin.sample_rate,
+               fb_sfx_darwin.channels,
+               fb_sfx_darwin.buffer_frames);
+
+    return 0;
+}
+
+int fb_sfxDarwinActivate(int rate, int channels, int buffer_frames)
+{
+    fb_sfx_darwin.sample_rate = (rate > 0) ? rate : FB_SFX_DEFAULT_RATE;
+    fb_sfx_darwin.channels = (channels > 0) ? channels : FB_SFX_DEFAULT_CHANNELS;
+    fb_sfx_darwin.buffer_frames = (buffer_frames > 0) ? buffer_frames : FB_SFX_DEFAULT_BUFFER;
+
+    if (fb_sfx_darwin.initialized)
+    {
+        if ((int)g_format.mSampleRate != fb_sfx_darwin.sample_rate ||
+            (int)g_format.mChannelsPerFrame != fb_sfx_darwin.channels ||
+            g_buffer_bytes != fb_sfx_darwin.buffer_frames * (int)(sizeof(float) * fb_sfx_darwin.channels))
+        {
+            DARWIN_DBG("format change requested, rebuilding queue\n");
+            fb_sfxDarwinExit();
+        }
+    }
+
+    if (fb_sfxDarwinInit() != 0)
+        return -1;
+
+#if FB_SFX_MT_ENABLED
+    if (fb_sfxDarwinEnsureWorker() != 0)
+        return -1;
+#endif
+
+    fb_sfx_darwin.running = 1;
+    return 0;
+}
+
+void fb_sfxDarwinDeactivate(void)
+{
+    fb_sfx_darwin.running = 0;
+}
+
+void fb_sfxDarwinExit(void)
+{
+    fb_sfx_darwin.running = 0;
+
+#if FB_SFX_MT_ENABLED
+    if (g_audio_thread_valid)
+    {
+        g_audio_thread_stop = 1;
+        if (!pthread_equal(g_audio_thread, pthread_self()))
+            pthread_join(g_audio_thread, NULL);
+        g_audio_thread_valid = 0;
+    }
+#endif
+
+    if (g_audio_queue)
+    {
+        int j;
+
+        AudioQueueStop(g_audio_queue, true);
+
+        pthread_mutex_lock(&g_darwin_coreaudio_lock);
+        for (j = 0; j < FB_SFX_DARWIN_QUEUE_BUFFERS; ++j)
+        {
+            if (g_buffers[j].ref)
+            {
+                AudioQueueFreeBuffer(g_audio_queue, g_buffers[j].ref);
+                g_buffers[j].ref = NULL;
+                g_buffers[j].in_use = 0;
+            }
+        }
+        pthread_mutex_unlock(&g_darwin_coreaudio_lock);
+
+        AudioQueueDispose(g_audio_queue, true);
+        g_audio_queue = NULL;
+        g_current_buffer = 0;
+    }
+
+    fb_sfx_darwin.initialized = 0;
+    fb_sfx_darwin.device_handle = NULL;
+    g_current_buffer = 0;
+
+    DARWIN_DBG("shutdown\n");
+}
+
+int fb_sfxDarwinWrite(float *buffer, int frames)
+{
+    FB_SFX_DARWIN_QUEUE_BUFFER *slot;
+    size_t bytes;
+    int current_buffer;
+
+    if (!g_audio_queue || !buffer || frames <= 0 || !fb_sfx_darwin.running ||
+        fb_sfxDarwinStopRequested())
+        return -1;
+
+    fb_sfxDriverDiagnostics("CoreAudio",
+                            buffer,
+                            frames,
+                            fb_sfx_darwin.channels);
+
+    for (;;)
+    {
+        pthread_mutex_lock(&g_darwin_coreaudio_lock);
+        /*
+            AudioQueue callbacks may stop returning buffers while shutdown is
+            in progress.  DarwinExit waits for the worker before it disposes
+            the queue, so the polling loop must observe the worker stop flag
+            instead of relying on another callback to release a buffer.
+        */
+        if (!fb_sfx_darwin.running || fb_sfxDarwinStopRequested())
+        {
+            pthread_mutex_unlock(&g_darwin_coreaudio_lock);
+            return -1;
+        }
+
+        current_buffer = g_current_buffer;
+        slot = &g_buffers[current_buffer];
+        if (slot->ref && !slot->in_use)
+            break;
+
+        pthread_mutex_unlock(&g_darwin_coreaudio_lock);
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.001, false);
+    }
+
+    bytes = (size_t)frames * (size_t)g_format.mBytesPerFrame;
+    if (bytes > (size_t)g_buffer_bytes)
+        bytes = (size_t)g_buffer_bytes;
+
+    memcpy(slot->ref->mAudioData, buffer, bytes);
+    slot->ref->mAudioDataByteSize = (UInt32)bytes;
+    slot->in_use = 1;
+    pthread_mutex_unlock(&g_darwin_coreaudio_lock);
+
+    if (AudioQueueEnqueueBuffer(g_audio_queue, slot->ref, 0, NULL) != noErr)
+    {
+        pthread_mutex_lock(&g_darwin_coreaudio_lock);
+        slot->in_use = 0;
+        pthread_mutex_unlock(&g_darwin_coreaudio_lock);
+        return -1;
+    }
+
+    if (g_write_debug_count < 8)
+    {
+        DARWIN_DBG("enqueue: slot=%d frames=%d bytes=%llu\n",
+                   current_buffer,
+                   frames,
+                   (unsigned long long)bytes);
+        g_write_debug_count++;
+    }
+
+    pthread_mutex_lock(&g_darwin_coreaudio_lock);
+    g_current_buffer = (current_buffer + 1) % FB_SFX_DARWIN_QUEUE_BUFFERS;
+    pthread_mutex_unlock(&g_darwin_coreaudio_lock);
+
+    return (int)(bytes / g_format.mBytesPerFrame);
+}
+
+int fb_sfxDarwinRunning(void)
+{
+    return fb_sfx_darwin.running;
+}
+
+static int darwin_init(int rate, int channels, int buffer, int flags)
+{
+    fb_sfx_darwin.sample_rate = (rate > 0) ? rate : FB_SFX_DEFAULT_RATE;
+    fb_sfx_darwin.channels = (channels > 0) ? channels : FB_SFX_DEFAULT_CHANNELS;
+    fb_sfx_darwin.buffer_frames = (buffer > 0) ? buffer : FB_SFX_DEFAULT_BUFFER;
+    if ((flags & FB_SFX_INIT_LOW_LATENCY) && fb_sfx_darwin.buffer_frames > 1024)
+        fb_sfx_darwin.buffer_frames = 1024;
+
+    return fb_sfxDarwinActivate(fb_sfx_darwin.sample_rate,
+                                fb_sfx_darwin.channels,
+                                fb_sfx_darwin.buffer_frames);
+}
+
+static void darwin_exit(void)
+{
+    fb_sfxDarwinDeactivate();
+    fb_sfxDarwinExit();
+}
+
+static int darwin_write(const float *samples, int frames)
+{
+    return fb_sfxDarwinWrite((float *)samples, frames);
+}
+
+static int darwin_device_list(void)
+{
+    int count;
+
+    count = fb_sfxDarwinOutputDeviceCount();
+    DARWIN_DBG("output devices=%d\n", count);
+    return count;
+}
+
+static int darwin_device_select(int device)
+{
+    AudioDeviceID device_id;
+    int was_running;
+    int result;
+
+    if (fb_sfxDarwinGetOutputDeviceByIndex(device, &device_id) != 0)
+        return -1;
+
+    DARWIN_DBG("request output device index=%d id=%u\n",
+               device,
+               (unsigned)device_id);
+    g_selected_output_device = device;
+    if (!fb_sfx_darwin.initialized)
+        return 0;
+
+    was_running = fb_sfx_darwin.running;
+    fb_sfxDarwinExit();
+
+    result = was_running
+        ? fb_sfxDarwinActivate(fb_sfx_darwin.sample_rate,
+                               fb_sfx_darwin.channels,
+                               fb_sfx_darwin.buffer_frames)
+        : fb_sfxDarwinInit();
+
+    return result;
+}
+
+const FB_SFX_DRIVER fb_sfxDriverCoreAudio =
+{
+    "CoreAudio",
+    FB_SFX_DRIVER_CAP_BACKGROUND,
+    darwin_init,
+    darwin_exit,
+    darwin_write,
+    NULL,
+    NULL,
+    darwin_device_list,
+    darwin_device_select
+};
+
+const FB_SFX_DRIVER *__fb_sfx_drivers_list[] =
+{
+    &fb_sfxDriverCoreAudio,
+    &__fb_sfxDriverNull,
+    NULL
+};
+
+#endif
+
+/* end of sfx_driver_coreaudio.c */

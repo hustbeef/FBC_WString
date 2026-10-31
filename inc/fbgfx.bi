@@ -1,0 +1,488 @@
+''
+'' FreeBASIC graphics libraries: fbgfx.bi
+'' Constants, image/event layouts and optional graphics service declarations.
+'' Drawing implementations and platform drivers are not defined here.
+''
+#ifndef __fbgfx_bi__
+#define __fbgfx_bi__
+
+'' The Android packaging helper uses this private marker when its bundled
+'' cross compiler predates the public -gfx3 option. Do not redefine the public
+'' marker when source code has already selected gfxlib3 directly.
+#ifdef __FB_GFXLIB3_OPTION__
+	#ifndef __FB_GFXLIB3__
+		#define __FB_GFXLIB3__
+	#endif
+#endif
+
+'' The question-mark names are handled as special cases by the compiler and
+'' are replaced by the correct threading/PIC library variant at link time.
+''   fbgfx
+''   fbgfxmt      thread-safe
+''   fbgfxpic     position independent code
+''   fbgfxmtpic   thread-safe & PIC
+
+#ifdef __FB_GFXLIB3__
+	#inclib "fbgfx3?"
+#else
+	#inclib "fbgfx?"
+#endif
+
+#if __FB_LANG__ = "fb"
+namespace FB
+#endif
+
+	'' Pixel dimensions of DRAW STRING, independent of VIEW/WINDOW and clipping.
+	'' Empty text has zero width and the full font height. Explicit font images
+	'' may be measured without a display. Errors return nonzero and zero outputs.
+#if __FB_LANG__ = "qb"
+	declare function DrawStringSize alias "fb_GfxDrawStringSize" _
+		( byref text as const string, byref pixel_width as long, _
+		  byref pixel_height as long, byval font_image as any __ptr = 0 ) as long
+	declare function PaintPattern alias "fb_GfxPaintPattern" _
+		( byval target as any __ptr, byval x as single, byval y as single, _
+		  byref pattern as const string, byval foreground as __ulong = 1, _
+		  byval background as __ulong = 0, byval border as __ulong = 1, _
+		  byval relative as long = 0 ) as long
+#else
+	extern "rtlib"
+	' The QB and FB declarations have equivalent ABI signatures but use dialect-specific pointer spelling.
+	' FB-LINTER: DISABLE-NEXT-LINE FBL-DECL-014
+	declare function DrawStringSize overload alias "fb_GfxDrawStringSize" _
+		( byref text as const string, byref pixel_width as long, _ ' fblint: disable-line FBL-API-001 -- Dimension pairs retain width then height order.
+		  byref pixel_height as long, byval font_image as any ptr = 0 ) as long
+	declare function DrawStringSize overload alias "fb_GfxDrawStringSizeWstr" _
+		( byref text as const wstring, byref pixel_width as long, _ ' fblint: disable-line FBL-API-001 -- Dimension pairs retain width then height order.
+		  byref pixel_height as long, byval font_image as any ptr = 0 ) as long
+#if defined(__FB_HAS_USTRING__) and not defined(FB_NO_USTRING)
+	declare function DrawStringSize overload alias "fb_GfxDrawStringSizeUstr" _
+		( byref text as const ustring, byref pixel_width as long, _ ' fblint: disable-line FBL-API-001 -- Dimension pairs retain width then height order.
+		  byref pixel_height as long, byval font_image as any ptr = 0 ) as long
+#endif
+	'' One packed byte per row, 1..64 rows; bit 7 is the leftmost pixel.
+	'' Target 0 selects the work page. Nonzero relative uses STEP coordinates.
+	'' Pattern phase follows physical target coordinates. Colors are ordinary
+	'' gfxlib colors, written directly without alpha blending.
+	' The QB and FB declarations have equivalent ABI signatures but use dialect-specific pointer spelling.
+	' FB-LINTER: DISABLE-NEXT-LINE FBL-DECL-014
+	declare function PaintPattern overload alias "fb_GfxPaintPattern" _
+		( byval target as any ptr, byval x as single, byval y as single, _ ' fblint: disable-line FBL-API-001 -- Coordinates, extents and creation options retain the public API order.
+		  byref pattern as const string, byval foreground as ulong = 1, _ ' fblint: disable-line FBL-API-001 -- Color roles retain the published drawing/widget order.
+		  byval background as ulong = 0, byval border as ulong = 1, _ ' fblint: disable-line FBL-API-001 -- Color roles retain the published drawing/widget order.
+		  byval relative as long = 0 ) as long
+	'' Unicode arguments contribute their UTF-8 bytes to this binary pattern.
+	declare function PaintPattern overload alias "fb_GfxPaintPatternWstr" _
+		( byval target as any ptr, byval x as single, byval y as single, _ ' fblint: disable-line FBL-API-001 -- Coordinates, extents and creation options retain the public API order.
+		  byref pattern as const wstring, byval foreground as ulong = 1, _ ' fblint: disable-line FBL-API-001 -- Color roles retain the published drawing/widget order.
+		  byval background as ulong = 0, byval border as ulong = 1, _ ' fblint: disable-line FBL-API-001 -- Color roles retain the published drawing/widget order.
+		  byval relative as long = 0 ) as long
+#if defined(__FB_HAS_USTRING__) and not defined(FB_NO_USTRING)
+	declare function PaintPattern overload alias "fb_GfxPaintPattern" _
+		( byval target as any ptr, byval x as single, byval y as single, _ ' fblint: disable-line FBL-API-001 -- Coordinates, extents and creation options retain the public API order.
+		  byref pattern as const ustring, byval foreground as ulong = 1, _ ' fblint: disable-line FBL-API-001 -- Color roles retain the published drawing/widget order.
+		  byval background as ulong = 0, byval border as ulong = 1, _ ' fblint: disable-line FBL-API-001 -- Color roles retain the published drawing/widget order.
+		  byval relative as long = 0 ) as long
+#endif
+	end extern
+#endif
+
+	'' Flags accepted by Screen and ScreenRes
+	''
+	'' Usage examples:
+	''  SCREEN 14, 16,, GFX_FULLSCREEN
+	''  SCREEN 18, 32,, GFX_OPENGL OR GFX_STENCIL_BUFFER
+	''  SCREENRES 640, 480, 32, 2, GFX_RESIZABLE
+	''
+	const as long _
+		GFX_NULL                    = -1        , _
+		GFX_WINDOWED                = &h00000000, _
+		GFX_FULLSCREEN              = &h00000001, _
+		GFX_OPENGL                  = &h00000002, _
+		GFX_NO_SWITCH               = &h00000004, _
+		GFX_NO_FRAME                = &h00000008, _
+		GFX_SHAPED_WINDOW           = &h00000010, _
+		GFX_ALWAYS_ON_TOP           = &h00000020, _
+		GFX_ALPHA_PRIMITIVES        = &h00000040, _
+		GFX_HIGH_PRIORITY           = &h00000080, _
+		GFX_NO_X86_MMX              = &h00000100, _
+		GFX_RESIZABLE               = &h00000400, _
+		GFX_SCREEN_EXIT             = &h80000000l
+
+#ifdef __FB_GFXLIB3__
+	'' Select the explicit Vulkan path while that backend reaches full parity.
+	const as long GFX_VULKAN = &h00000200
+#endif
+
+	'' OpenGL options
+	const as long _
+		GFX_STENCIL_BUFFER          = &h00010000, _
+		GFX_ACCUMULATION_BUFFER     = &h00020000, _
+		GFX_MULTISAMPLE             = &h00040000
+
+	'' Constants for OpenGL 2D render
+	const as integer _
+		OGL_2D_NONE                 = 0, _
+		OGL_2D_MANUAL_SYNC          = 1, _
+		OGL_2D_AUTO_SYNC            = 2
+
+	'' Constants accepted by ScreenControl
+	''
+	'' Getters:
+	const as integer _
+		GET_WINDOW_POS              = 0, _
+		GET_WINDOW_TITLE            = 1, _
+		GET_WINDOW_HANDLE           = 2, _
+		GET_DESKTOP_SIZE            = 3, _
+		GET_SCREEN_SIZE             = 4, _
+		GET_SCREEN_DEPTH            = 5, _
+		GET_SCREEN_BPP              = 6, _
+		GET_SCREEN_PITCH            = 7, _
+		GET_SCREEN_REFRESH          = 8, _
+		GET_DRIVER_NAME             = 9, _
+		GET_TRANSPARENT_COLOR       = 10, _
+		GET_VIEWPORT                = 11, _
+		GET_PEN_POS                 = 12, _
+		GET_COLOR                   = 13, _
+		GET_ALPHA_PRIMITIVES        = 14, _
+		GET_GL_EXTENSIONS           = 15, _
+		GET_HIGH_PRIORITY           = 16, _
+		GET_SCANLINE_SIZE           = 17, _
+		GET_X86_MMX_ENABLED         = 18, _
+		_
+		GET_GL_COLOR_BITS           = 37, _
+		GET_GL_COLOR_RED_BITS       = 38, _
+		GET_GL_COLOR_GREEN_BITS     = 39, _
+		GET_GL_COLOR_BLUE_BITS      = 40, _
+		GET_GL_COLOR_ALPHA_BITS     = 41, _
+		GET_GL_DEPTH_BITS           = 42, _
+		GET_GL_STENCIL_BITS         = 43, _
+		GET_GL_ACCUM_BITS           = 44, _
+		GET_GL_ACCUM_RED_BITS       = 45, _
+		GET_GL_ACCUM_GREEN_BITS     = 46, _
+		GET_GL_ACCUM_BLUE_BITS      = 47, _
+		GET_GL_ACCUM_ALPHA_BITS     = 48, _
+		GET_GL_NUM_SAMPLES          = 49, _
+		_
+		GET_GL_2D_MODE              = 82, _
+		GET_GL_SCALE                = 83
+
+	'' Setters:
+	const as integer _
+		SET_WINDOW_POS              = 100, _
+		SET_WINDOW_TITLE            = 101, _
+		SET_PEN_POS                 = 102, _
+		SET_DRIVER_NAME             = 103, _
+		SET_ALPHA_PRIMITIVES        = 104, _
+		_
+		SET_GL_COLOR_BITS           = 105, _
+		SET_GL_COLOR_RED_BITS       = 106, _
+		SET_GL_COLOR_GREEN_BITS     = 107, _
+		SET_GL_COLOR_BLUE_BITS      = 108, _
+		SET_GL_COLOR_ALPHA_BITS     = 109, _
+		SET_GL_DEPTH_BITS           = 110, _
+		SET_GL_STENCIL_BITS         = 111, _
+		SET_GL_ACCUM_BITS           = 112, _
+		SET_GL_ACCUM_RED_BITS       = 113, _
+		SET_GL_ACCUM_GREEN_BITS     = 114, _
+		SET_GL_ACCUM_BLUE_BITS      = 115, _
+		SET_GL_ACCUM_ALPHA_BITS     = 116, _
+		SET_GL_NUM_SAMPLES          = 117, _
+		SET_X86_MMX_ENABLED         = 118, _
+		_
+		SET_GL_2D_MODE              = 150, _
+		SET_GL_SCALE                = 151
+
+	'' Commands:
+	const as integer _
+		POLL_EVENTS                 = 200
+
+
+	'' Color values for transparency
+	''
+	#if __FB_LANG__ = "qb"
+		const as __ulong _
+			MASK_COLOR_INDEX        = 0, _
+			MASK_COLOR              = &hFF00FF
+	#else
+		const as ulong _
+			MASK_COLOR_INDEX        = 0, _
+			MASK_COLOR              = &hFF00FF
+	#endif
+
+
+	'' Event type IDs
+	''
+	const as integer _
+		EVENT_KEY_PRESS             = 1, _
+		EVENT_KEY_RELEASE           = 2, _
+		EVENT_KEY_REPEAT            = 3, _
+		EVENT_MOUSE_MOVE            = 4, _
+		EVENT_MOUSE_BUTTON_PRESS    = 5, _
+		EVENT_MOUSE_BUTTON_RELEASE  = 6, _
+		EVENT_MOUSE_DOUBLE_CLICK    = 7, _
+		EVENT_MOUSE_WHEEL           = 8, _
+		EVENT_MOUSE_ENTER           = 9, _
+		EVENT_MOUSE_EXIT            = 10, _
+		EVENT_WINDOW_GOT_FOCUS      = 11, _
+		EVENT_WINDOW_LOST_FOCUS     = 12, _
+		EVENT_WINDOW_CLOSE          = 13, _
+		EVENT_MOUSE_HWHEEL          = 14, _
+		EVENT_WINDOW_RESIZE         = 15, _
+		EVENT_DROP                  = 16
+
+
+	'' Event structure, to be used with ScreenEvent
+	''
+	type EVENT field = 1
+		type as long
+	#if __FB_LANG__ = "qb"
+		__union
+	#else
+		union
+	#endif
+			type
+				scancode as long
+				ascii as long
+			end type
+			type
+				x as long
+				y as long
+				dx as long
+				dy as long
+			end type
+			type
+				width as long
+				height as long
+			end type
+			type
+				drop_id as long
+				drop_count as long
+				drop_kind as long
+			end type
+			button as long
+			z as long
+			w as long
+	#if __FB_LANG__ = "qb"
+		end __union
+	#else
+		end union
+	#endif
+	end type
+
+	'' Image buffer header, old style
+	'' Layout: bits 0-2 bpp, bits 3-15 width, then a 16-bit height.
+	type _OLD_HEADER field = 1
+		#if __FB_LANG__ = "qb"
+			bpp : 3 as __ushort
+			width : 13 as __ushort
+			height as __ushort
+		#else
+			bpp : 3 as ushort
+			width : 13 as ushort
+			height as ushort
+		#endif
+	end type
+
+	'' Image buffer header, new style (incorporates old header)
+	type IMAGE field = 1
+		#if __FB_LANG__ = "qb"
+			__union
+				old as _OLD_HEADER
+				type as __ulong
+			end __union
+		#else
+			union
+				old as _OLD_HEADER
+				type as ulong
+			end union
+		#endif
+
+		bpp as long
+
+		#if __FB_LANG__ = "qb"
+			width as __ulong
+			height as __ulong
+			pitch as __ulong
+			_reserved(1 to 12) as __ubyte
+		#else
+			width as ulong
+			height as ulong
+			pitch as ulong
+			_reserved(1 to 12) as ubyte
+		#endif
+	end type
+
+	'' This is a trick to obtain a pointer to the pixels data area
+	#if __FB_LANG__ = "qb"
+		__private function __pixels( byval anImage as Image __ptr ) as __ubyte __ptr
+			'' The helper is intentionally inline so the pointer stays tied to the image layout.
+			'' FB-LINTER: DISABLE-NEXT-LINE FBL-INC-005
+			__pixels = __cast( __ubyte __ptr, anImage ) + __sizeOf( Image )
+		end function
+	#else
+		private function __pixels( byval anImage as Image ptr ) as ubyte ptr
+			return( cast( ubyte ptr, anImage ) + sizeOf( Image ) )
+		end function
+	#endif
+
+	type PUT_HEADER as IMAGE
+
+
+	'' Constant identifying new style headers
+	'' (image.type must be equal to this value in new style headers)
+	''
+	const as integer PUT_HEADER_NEW = &h7
+
+
+	'' Mouse button constants to be used with GETMOUSE/ScreenEvent
+	''
+	const as integer _
+		BUTTON_LEFT                 = &h01, _
+		BUTTON_RIGHT                = &h02, _
+		BUTTON_MIDDLE               = &h04, _
+		BUTTON_X1                   = &h08, _
+		BUTTON_X2                   = &h10
+
+
+	'' GETXPAD status, button, and d-pad constants
+	''
+	const as integer _
+		XPAD_STATUS_MISSING         = 0, _
+		XPAD_STATUS_CONNECTED       = 1, _
+		XPAD_STATUS_DISCONNECTED    = 2
+
+	const as integer _
+		XPAD_BUTTON_A               = &h00000001, _
+		XPAD_BUTTON_B               = &h00000002, _
+		XPAD_BUTTON_X               = &h00000004, _
+		XPAD_BUTTON_Y               = &h00000008, _
+		XPAD_BUTTON_L1              = &h00000010, _
+		XPAD_BUTTON_R1              = &h00000020, _
+		XPAD_BUTTON_L3              = &h00000040, _
+		XPAD_BUTTON_R3              = &h00000080, _
+		XPAD_BUTTON_START           = &h00000100, _
+		XPAD_BUTTON_SELECT          = &h00000200, _
+		XPAD_BUTTON_GUIDE           = &h00000400, _
+		XPAD_BUTTON_L2              = &h00000800, _
+		XPAD_BUTTON_R2              = &h00001000
+
+	const as integer _
+		XPAD_DPAD_UP                = &h00000001, _
+		XPAD_DPAD_RIGHT             = &h00000002, _
+		XPAD_DPAD_DOWN              = &h00000004, _
+		XPAD_DPAD_LEFT              = &h00000008
+
+
+	'' Keyboard scancodes returned by MULTIKEY
+	''
+	enum
+		SC_ESCAPE     = &h01
+		SC_1          = &h02
+		SC_2          = &h03
+		SC_3          = &h04
+		SC_4          = &h05
+		SC_5          = &h06
+		SC_6          = &h07
+		SC_7          = &h08
+		SC_8          = &h09
+		SC_9          = &h0A
+		SC_0          = &h0B
+		SC_MINUS      = &h0C
+		SC_EQUALS     = &h0D
+		SC_BACKSPACE  = &h0E
+		SC_TAB        = &h0F
+		SC_Q          = &h10
+		SC_W          = &h11
+		SC_E          = &h12
+		SC_R          = &h13
+		SC_T          = &h14
+		SC_Y          = &h15
+		SC_U          = &h16
+		SC_I          = &h17
+		SC_O          = &h18
+		SC_P          = &h19
+		SC_LEFTBRACKET= &h1A
+		SC_RIGHTBRACKET= &h1B
+		SC_ENTER      = &h1C
+		SC_CONTROL    = &h1D
+		SC_A          = &h1E
+		SC_S          = &h1F
+		SC_D          = &h20
+		SC_F          = &h21
+		SC_G          = &h22
+		SC_H          = &h23
+		SC_J          = &h24
+		SC_K          = &h25
+		SC_L          = &h26
+		SC_SEMICOLON  = &h27
+		SC_QUOTE      = &h28
+		SC_TILDE      = &h29
+		SC_LSHIFT     = &h2A
+		SC_BACKSLASH  = &h2B
+		SC_Z          = &h2C
+		SC_X          = &h2D
+		SC_C          = &h2E
+		SC_V          = &h2F
+		SC_B          = &h30
+		SC_N          = &h31
+		SC_M          = &h32
+		SC_COMMA      = &h33
+		SC_PERIOD     = &h34
+		SC_SLASH      = &h35
+		SC_RSHIFT     = &h36
+		SC_MULTIPLY   = &h37
+		SC_ALT        = &h38
+		SC_SPACE      = &h39
+		SC_CAPSLOCK   = &h3A
+		SC_F1         = &h3B
+		SC_F2         = &h3C
+		SC_F3         = &h3D
+		SC_F4         = &h3E
+		SC_F5         = &h3F
+		SC_F6         = &h40
+		SC_F7         = &h41
+		SC_F8         = &h42
+		SC_F9         = &h43
+		SC_F10        = &h44
+		SC_NUMLOCK    = &h45
+		SC_SCROLLLOCK = &h46
+		SC_HOME       = &h47
+		SC_UP         = &h48
+		SC_PAGEUP     = &h49
+		'' &h4A unused (?)
+		SC_LEFT       = &h4B
+		SC_CLEAR      = &h4C
+		SC_CENTER     = &h4C
+		SC_RIGHT      = &h4D
+		SC_PLUS       = &h4E
+		SC_END        = &h4F
+		SC_DOWN       = &h50
+		SC_PAGEDOWN   = &h51
+		SC_INSERT     = &h52
+		SC_DELETE     = &h53
+		'' &h54
+		'' &h55
+		'' &h56
+		SC_F11        = &h57
+		SC_F12        = &h58
+		'' &h59
+		'' &h5A
+		SC_LWIN       = &h5B
+		SC_RWIN       = &h5C
+		SC_MENU       = &h5D
+		'' &h5E
+		'' &h5F
+		'' &h60
+		'' &h61
+		'' &h62
+		'' &h63
+		SC_ALTGR      = &h64
+	end enum
+
+#if __FB_LANG__ = "fb"
+end namespace
+#endif
+
+#endif
+
+'' end of fbgfx.bi

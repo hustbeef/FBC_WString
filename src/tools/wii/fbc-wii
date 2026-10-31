@@ -1,0 +1,410 @@
+#!/usr/bin/env bash
+#
+# FreeBASIC Wii package wrapper
+# -----------------------------
+#
+# File: fbc-wii
+#
+# Purpose:
+#
+#     Invoke the Wii-targeting FreeBASIC compiler with the devkitPPC/libogc
+#     toolchain environment needed to produce Wii ELF/DOL binaries.
+#
+# Responsibilities:
+#
+#     - locate devkitPro, devkitPPC, and elf2dol
+#     - point fbc at the Wii include/runtime directories
+#     - pass the devkitPPC machine flags used by official Wii make rules
+#     - optionally stage a boot.dol bundle with current-directory assets
+#     - keep package layout details out of user command lines
+#
+# This file intentionally does NOT contain:
+#
+#     - emulator launch logic
+#     - game-specific build steps
+#     - Android, JavaScript, or Xbox package behavior
+#
+
+set -euo pipefail
+
+die() {
+	echo "fbc-wii: $*" >&2
+	exit 1
+}
+
+usage() {
+	cat <<EOF
+Usage: fbc-wii [options] program.bas
+
+Options:
+  --bundle DIR     Build a Wii homebrew folder; defaults output to DIR/boot.dol
+  --assets DIR     Copy DIR contents beside the DOL after a successful build
+  -x FILE, -o FILE Forwarded FreeBASIC output path.  With --assets and no
+                   --bundle, assets are copied beside FILE.
+
+Environment:
+  DEVKITPRO        devkitPro root (default: /opt/devkitpro)
+  DEVKITPPC        devkitPPC root (default: \$DEVKITPRO/devkitPPC)
+  FBWII_PREFIX     FreeBASIC Wii install prefix (default: /usr)
+  FBWII_COMPILER   fbc-wii-compiler path
+  FBWII_INCDIR     FreeBASIC include directory
+  FBWII_LIBDIR     FreeBASIC Wii runtime directory
+EOF
+}
+
+find_tool() {
+	local name="$1"
+	local candidate
+
+	for candidate in \
+		"${DEVKITPPC:-}/bin/$name.exe" \
+		"${DEVKITPPC:-}/bin/$name" \
+		"${DEVKITPRO:-}/tools/bin/$name.exe" \
+		"${DEVKITPRO:-}/tools/bin/$name"
+	do
+		[ -n "$candidate" ] || continue
+		[ -x "$candidate" ] || continue
+		echo "$candidate"
+		return 0
+	done
+
+	if command -v "$name" >/dev/null 2>&1; then
+		command -v "$name"
+		return 0
+	fi
+
+	return 1
+}
+
+copy_asset_tree() {
+	local source_dir="$1"
+	local dest_dir="$2"
+
+	[ -d "$source_dir" ] || die "assets directory not found: $source_dir"
+	mkdir -p "$dest_dir"
+
+	if command -v rsync >/dev/null 2>&1; then
+		rsync -a "$source_dir"/ "$dest_dir"/
+	else
+		cp -a "$source_dir"/. "$dest_dir"/
+	fi
+}
+
+output_parent_dir() {
+	local path="$1"
+
+	case "$path" in
+		*/*)
+			printf '%s\n' "${path%/*}"
+			;;
+		*\\*)
+			printf '%s\n' "${path%\\*}"
+			;;
+		*)
+			printf '%s\n' "."
+			;;
+	esac
+}
+
+bundle_output_path() {
+	local path="$1"
+
+	case "$path" in
+		*\\*)
+			printf '%s\\boot.dol\n' "$path"
+			;;
+		*)
+			printf '%s/boot.dol\n' "$path"
+			;;
+	esac
+}
+
+shell_path() {
+	local path="$1"
+
+	if command -v cygpath >/dev/null 2>&1; then
+		case "$path" in
+			[a-zA-Z]:*|\\\\*)
+				cygpath -u "$path"
+				return 0
+				;;
+		esac
+	fi
+
+	printf '%s\n' "${path//\\//}"
+}
+
+case "${1:-}" in
+	--help|-help|-h)
+		usage
+		exit 0
+		;;
+esac
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../../.." 2>/dev/null && pwd || true)"
+
+prefix="${FBWII_PREFIX:-/usr}"
+libroot="${FBWII_LIBROOT:-$prefix/lib/freebasic-wii}"
+compiler="${FBWII_COMPILER:-$libroot/bin/fbc-wii-compiler}"
+incdir="${FBWII_INCDIR:-$prefix/include/freebasic-wii}"
+libdir="${FBWII_LIBDIR:-$libroot/wii-powerpc}"
+explicit_incdir=0
+explicit_libdir=0
+repo_layout=0
+
+[ -z "${FBWII_INCDIR:-}" ] || explicit_incdir=1
+[ -z "${FBWII_LIBDIR:-}" ] || explicit_libdir=1
+
+if [ ! -x "$compiler" ] && [ -n "$repo_root" ]; then
+	if [ -x "$repo_root/bin/fbc-wii-compiler" ]; then
+		compiler="$repo_root/bin/fbc-wii-compiler"
+	elif [ -x "$repo_root/bin/fbc-wii-compiler.exe" ]; then
+		compiler="$repo_root/bin/fbc-wii-compiler.exe"
+	fi
+fi
+
+if [ ! -d "$incdir" ] && [ -n "$repo_root" ] && [ -f "$repo_root/inc/fbgfx.bi" ]; then
+	incdir="$repo_root/inc"
+	repo_layout=1
+fi
+
+if { [ ! -d "$libdir" ] || [ ! -f "$libdir/fbrt0.o" ] || [ ! -f "$libdir/libfb.a" ]; } &&
+	[ -n "$repo_root" ] && [ -d "$repo_root/lib/freebasic/wii" ]; then
+	libdir="$repo_root/lib/freebasic/wii"
+	repo_layout=1
+fi
+
+export DEVKITPRO="${DEVKITPRO:-/opt/devkitpro}"
+export DEVKITPPC="${DEVKITPPC:-$DEVKITPRO/devkitPPC}"
+
+[ -x "$compiler" ] || die "Wii-targeting compiler not found: $compiler"
+[ -d "$incdir" ] || die "FreeBASIC include directory not found: $incdir"
+[ -d "$libdir" ] || die "Wii runtime directory not found: $libdir"
+[ -d "$DEVKITPRO/libogc/include" ] || die "libogc headers not found under $DEVKITPRO"
+[ -d "$DEVKITPRO/libogc/lib/wii" ] || die "libogc Wii libraries not found under $DEVKITPRO"
+
+cc="$(find_tool powerpc-eabi-gcc)" || die "powerpc-eabi-gcc not found"
+as="$(find_tool powerpc-eabi-as)" || die "powerpc-eabi-as not found"
+ar="$(find_tool powerpc-eabi-ar)" || die "powerpc-eabi-ar not found"
+ranlib="$(find_tool powerpc-eabi-ranlib)" || die "powerpc-eabi-ranlib not found"
+elf2dol="$(find_tool elf2dol)" || die "elf2dol not found"
+
+export PATH="$DEVKITPPC/bin:$DEVKITPRO/tools/bin:$PATH"
+
+tmpbase="${FBWII_TMPDIR:-$PWD/.fbwii-tmp}"
+mkdir -p "$tmpbase"
+tmpdir="$(mktemp -d "$tmpbase/fbc-wii.XXXXXX")" || die "could not create a temporary tool directory"
+
+cleanup_tmpdir() {
+	rm -rf "$tmpdir"
+}
+
+trap cleanup_tmpdir EXIT
+
+host_prefix="$prefix"
+host_incdir="$incdir"
+host_libdir="$libdir"
+host_devkitpro="$DEVKITPRO"
+host_devkitppc="$DEVKITPPC"
+fbc_gcc="$cc"
+fbc_ld="$cc"
+fbc_as="$as"
+fbc_ar="$ar"
+fbc_ranlib="$ranlib"
+fbc_elf2dol="$elf2dol"
+fbc_args=()
+raw_fbc_args=()
+bundle_dir=""
+asset_dir="${FBWII_ASSETS:-}"
+bundle_shell_dir=""
+asset_shell_dir=""
+output_path=""
+output_seen=0
+
+if [ "$repo_layout" -eq 0 ] && command -v realpath >/dev/null 2>&1; then
+	relative_prefix="$(realpath --relative-to="$PWD" "$prefix" 2>/dev/null || true)"
+	if [ -n "$relative_prefix" ]; then
+		case "$relative_prefix" in
+			/*|../*) ;;
+			*)
+				host_prefix="$relative_prefix"
+				if [ "$explicit_incdir" -eq 0 ]; then
+					host_incdir="$relative_prefix/include/freebasic-wii"
+				fi
+				if [ "$explicit_libdir" -eq 0 ]; then
+					host_libdir="$relative_prefix/lib/freebasic-wii/wii-powerpc"
+				fi
+				;;
+		esac
+	fi
+fi
+
+case "$(uname -s)" in
+	CYGWIN*|MSYS*|MINGW*)
+		if command -v cygpath >/dev/null 2>&1; then
+			native_tmpdir="$(cygpath -am "$tmpdir")"
+			export TMP="$native_tmpdir"
+			export TEMP="$native_tmpdir"
+			export TMPDIR="$native_tmpdir"
+			case "$host_prefix" in
+				/*) host_prefix="$(cygpath -am "$host_prefix")" ;;
+			esac
+			case "$host_incdir" in
+				/*) host_incdir="$(cygpath -am "$host_incdir")" ;;
+			esac
+			case "$host_libdir" in
+				/*) host_libdir="$(cygpath -am "$host_libdir")" ;;
+			esac
+			host_devkitpro="$(cygpath -am "$DEVKITPRO")"
+			host_devkitppc="$(cygpath -am "$DEVKITPPC")"
+			gcc_trampoline="$tmpdir/fbc-wii-gcc.cmd"
+			native_gcc="$(cygpath -am "$cc")"
+			native_gcc_trampoline="$(cygpath -am "$gcc_trampoline")"
+			cat > "$gcc_trampoline" <<EOF
+@echo off
+set TMP=$native_tmpdir
+set TEMP=$native_tmpdir
+set TMPDIR=$native_tmpdir
+"$native_gcc" %*
+EOF
+			fbc_gcc="$native_gcc_trampoline"
+			fbc_ld="$native_gcc_trampoline"
+			fbc_as="$(cygpath -am "$as")"
+			fbc_elf2dol="$(cygpath -am "$elf2dol")"
+			ar_trampoline="$tmpdir/fbc-wii-ar.cmd"
+			native_ar="$(cygpath -am "$ar")"
+			native_ar_trampoline="$(cygpath -am "$ar_trampoline")"
+			cat > "$ar_trampoline" <<EOF
+@echo off
+"$native_ar" %*
+EOF
+			fbc_ar="$native_ar_trampoline"
+			ranlib_trampoline="$tmpdir/fbc-wii-ranlib.cmd"
+			native_ranlib="$(cygpath -am "$ranlib")"
+			native_ranlib_trampoline="$(cygpath -am "$ranlib_trampoline")"
+			cat > "$ranlib_trampoline" <<EOF
+@echo off
+"$native_ranlib" %*
+EOF
+			fbc_ranlib="$native_ranlib_trampoline"
+		else
+			export TMP="$tmpdir"
+			export TEMP="$tmpdir"
+			export TMPDIR="$tmpdir"
+		fi
+		;;
+	*)
+		export TMP="$tmpdir"
+		export TEMP="$tmpdir"
+		export TMPDIR="$tmpdir"
+		;;
+esac
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--help|-help|-h)
+			usage
+			exit 0
+			;;
+		--bundle)
+			[ $# -ge 2 ] || die "--bundle requires a directory"
+			bundle_dir="$2"
+			shift 2
+			;;
+		--bundle=*)
+			bundle_dir="${1#--bundle=}"
+			shift
+			;;
+		--assets)
+			[ $# -ge 2 ] || die "--assets requires a directory"
+			asset_dir="$2"
+			shift 2
+			;;
+		--assets=*)
+			asset_dir="${1#--assets=}"
+			shift
+			;;
+		-x|-o)
+			[ $# -ge 2 ] || die "$1 requires a file"
+			output_seen=1
+			output_path="$2"
+			raw_fbc_args+=("$1" "$2")
+			shift 2
+			;;
+		--)
+			raw_fbc_args+=("$1")
+			shift
+			while [ $# -gt 0 ]; do
+				raw_fbc_args+=("$1")
+				shift
+			done
+			;;
+		*)
+			raw_fbc_args+=("$1")
+			shift
+			;;
+	esac
+done
+
+if [ -n "$bundle_dir" ]; then
+	bundle_shell_dir="$(shell_path "$bundle_dir")"
+	mkdir -p "$bundle_shell_dir"
+	if [ "$output_seen" -eq 0 ]; then
+		output_path="$(bundle_output_path "$bundle_dir")"
+		raw_fbc_args+=("-x" "$output_path")
+	fi
+elif [ -n "$asset_dir" ]; then
+	[ -n "$output_path" ] || die "--assets requires --bundle or an explicit -x/-o output path"
+	bundle_dir="$(output_parent_dir "$output_path")"
+	bundle_shell_dir="$(shell_path "$bundle_dir")"
+fi
+
+if [ -n "$asset_dir" ]; then
+	asset_shell_dir="$(shell_path "$asset_dir")"
+fi
+
+if command -v cygpath >/dev/null 2>&1; then
+	for arg in "${raw_fbc_args[@]}"; do
+		case "$arg" in
+			/*)
+				fbc_args+=("$(cygpath -am "$arg")")
+				;;
+			*)
+				fbc_args+=("$arg")
+				;;
+		esac
+	done
+else
+	fbc_args=("${raw_fbc_args[@]}")
+fi
+
+env \
+	DEVKITPRO="$host_devkitpro" \
+	DEVKITPPC="$host_devkitppc" \
+	GCC="$fbc_gcc" \
+	AS="$fbc_as" \
+	AR="$fbc_ar" \
+	RANLIB="$fbc_ranlib" \
+	LD="$fbc_ld" \
+	ELF2DOL="$fbc_elf2dol" \
+	"$compiler" \
+	-prefix "$host_prefix" \
+	-target wii \
+	-arch powerpc \
+	-gen gcc \
+	-i "$host_incdir" \
+	-p "$host_libdir" \
+	-Wc -DGEKKO \
+	-Wc -I"$host_devkitpro/libogc/include" \
+	-Wc -mrvl \
+	-Wc -mcpu=750 \
+	-Wc -meabi \
+	-Wc -mhard-float \
+	"${fbc_args[@]}"
+
+if [ -n "$asset_dir" ]; then
+	copy_asset_tree "$asset_shell_dir" "$bundle_shell_dir"
+fi
+
+# end of fbc-wii

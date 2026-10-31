@@ -1,0 +1,20 @@
+﻿{{fbdoc item="title" value="Graphics internal formats"}}
+
+The graphics library stores pixels in a small set of internal formats and then
+converts to the platform backend as needed. Backend code should treat the
+internal format as a contract, not as a suggestion, because SCREEN modes,
+SCREENSET, image buffers, palette handling, and driver updates all depend on it.
+
+{{fbdoc item="subsect" value="What to watch"}}
+
+	Preserve byte order and pitch calculations.
+	Keep palette modes separate from true-color modes.
+	Avoid assuming that the visible window size equals the framebuffer size.
+	Test mode changes, SCREENSET pages, fullscreen/maximized/windowed cases, and
+	mouse coordinate scaling on the backend being changed.
+
+{{fbdoc item="subsect" value="Backend rule"}}
+
+If a backend needs a native surface format that differs from the FreeBASIC
+format, do the conversion at the backend boundary. Do not let backend-specific
+pixel assumptions leak back into shared graphics code.

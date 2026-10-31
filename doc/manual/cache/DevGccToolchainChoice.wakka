@@ -1,0 +1,19 @@
+﻿{{fbdoc item="title" value="Toolchain choice notes"}}
+
+FreeBASIC can use different external C/C++ and linker toolchains depending on
+the target. The current build system tries to keep that selection centralized
+instead of scattering compiler names through individual rules.
+
+{{fbdoc item="subsect" value="Where selection happens"}}
+
+Toolchain selection is mainly handled by the platform, CPU, compiler-config,
+toolchain-flags, host-tools, and OS flag modules under ##mk/##. If a target is
+choosing the wrong compiler or linker, fix the target identity or toolchain
+module before changing unrelated compile rules.
+
+{{fbdoc item="subsect" value="General guidance"}}
+
+Use the distro or MSYS2 package scripts when building release artifacts. They
+install or locate the expected compiler family for that host. Use direct make
+variables for focused development or for bringing up a new target, then fold the
+working choices back into the proper ##mk/## module or build script.

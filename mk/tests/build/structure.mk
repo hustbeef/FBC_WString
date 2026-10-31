@@ -1,0 +1,139 @@
+##############################################################################
+# tests/build/structure.mk
+#
+# Verifies the mk/ directory structure matches the refactored layout
+# Project: FreeBASIC build system
+# Purpose: Expose source-structure and isolated Make contract checks.
+# Responsibilities: Run validators and check the maintained fragment inventory.
+# This file intentionally does NOT define compiler or runtime implementations.
+##############################################################################
+
+PYTHON ?= python3
+
+.PHONY: source-docs-test source-docs-render-test
+source-docs-test:
+	$(PYTHON) "$(rootdir)/build_scripts/check-source-docs.py" --root "$(rootdir)"
+
+# The converter is a native developer tool. A source-only gate needs no SDK;
+# rendering explicitly requires a built fbdoc and never publishes packages.
+FBDOC ?= $(rootdir)/doc/fbdoc/fbdoc$(EXEEXT)
+source-docs-render-test:
+	$(PYTHON) "$(rootdir)/build_scripts/check-source-docs.py" --root "$(rootdir)" --fbdoc "$(FBDOC)"
+
+quick-test full-test: source-docs-test
+
+.PHONY: make-contracts-test
+make-contracts-test:
+	$(PYTHON) "$(rootdir)/build_scripts/test-make-contracts.py" --root "$(rootdir)" --make "$(MAKE)"
+
+.PHONY: source-artifacts-test
+source-artifacts-test:
+	@$(PYTHON) "$(rootdir)/build_scripts/check-source-artifacts.py" --root "$(rootdir)"
+
+.PHONY: mk-structure-test gfx-structure-test
+gfx-structure-test:
+	@$(PYTHON) "$(rootdir)/build_scripts/check-gfx-source-graph.py" --root "$(rootdir)" --make "$(MAKE)"
+
+mk-structure-test: source-artifacts-test gfx-structure-test
+	$(call _mt_echo,Verifying $(mkpath)/ structure)
+
+	@test -f $(rootdir)/GNUmakefile || { echo "ERROR: missing $(rootdir)/GNUmakefile"; exit 1; }
+	@test -d $(mkpath) || { echo ""; echo "ERROR: mk directory missing: $(mkpath)"; echo ""; exit 1; }
+
+	@test -f $(mkpath)/platform.mk        || { echo "ERROR: missing $(mkpath)/platform.mk"; exit 1; }
+	@test -f $(mkpath)/source-graph.mk    || { echo "ERROR: missing $(mkpath)/source-graph.mk"; exit 1; }
+	@test -f $(mkpath)/compiler-sources.mk || { echo "ERROR: missing $(mkpath)/compiler-sources.mk"; exit 1; }
+	@test -f $(mkpath)/layout.mk          || { echo "ERROR: missing $(mkpath)/layout.mk"; exit 1; }
+	@test -f $(mkpath)/build-layout.mk    || { echo "ERROR: missing $(mkpath)/build-layout.mk"; exit 1; }
+	@test -f $(mkpath)/toolchain-flags.mk || { echo "ERROR: missing $(mkpath)/toolchain-flags.mk"; exit 1; }
+	@test -f $(mkpath)/android/toolchain-flags.mk || { echo "ERROR: missing Android toolchain-flags.mk"; exit 1; }
+
+	@test -d $(mkpath)/build || { echo "ERROR: missing $(mkpath)/build directory"; exit 1; }
+
+	@test -f $(mkpath)/build/build-targets.mk    || { echo "ERROR: missing build-targets.mk"; exit 1; }
+	@test -f $(mkpath)/build/compile-rules.mk    || { echo "ERROR: missing compile-rules.mk"; exit 1; }
+	@test -f $(mkpath)/build/archive-rules.mk    || { echo "ERROR: missing archive-rules.mk"; exit 1; }
+	@test -f $(mkpath)/build/dependency-rules.mk || { echo "ERROR: missing dependency-rules.mk"; exit 1; }
+	@test -f $(mkpath)/build/clean-rules.mk      || { echo "ERROR: missing clean-rules.mk"; exit 1; }
+
+	@test -f $(mkpath)/inst_uninst.mk || { echo "ERROR: missing $(mkpath)/inst_uninst.mk"; exit 1; }
+	@test -z "$$(find $(mkpath) -type f \( -name '*.bak' -o -name '*~' \) -print -quit)" || { \
+		echo "ERROR: unexpected backup file under $(mkpath)"; \
+		find $(mkpath) -type f \( -name '*.bak' -o -name '*~' \); \
+		exit 1; \
+	}
+
+	@arm_flags="$$( $(MAKE) --no-print-directory -s print-config \
+		TARGET_TRIPLET=armv7a-linux-androideabi \
+		TARGET=armv7a-linux-androideabi CC="$(CC)" CXX="$(CXX)" \
+		| sed -n 's/^ALLCFLAGS=//p' )"; \
+	printf '%s\n' "$$arm_flags" | grep -F -- '-mfloat-abi=softfp' >/dev/null || { \
+		echo "ERROR: Android ARMv7 C flags lost the softfp ABI baseline"; \
+		exit 1; \
+	}; \
+	printf '%s\n' "$$arm_flags" | grep -F -- '-mfpu=vfpv3-d16' >/dev/null || { \
+		echo "ERROR: Android ARMv7 C flags lost the non-NEON baseline"; \
+		exit 1; \
+	}
+
+	@dos_default="$$( $(MAKE) --no-print-directory -s print-config \
+		HAVE_PREREQS_MK= TARGET_OS=dos \
+		| sed -n 's/^ALLCFLAGS=//p' )"; \
+	printf '%s\n' "$$dos_default" | grep -F -- '-DDISABLE_TCP' >/dev/null || { \
+		echo "ERROR: DOS default unexpectedly enabled TCP"; \
+		exit 1; \
+	}; \
+	printf '%s\n' "$$dos_default" | grep -F -- '-DFB_DOS_DPMI_YIELD' >/dev/null && { \
+		echo "ERROR: DOS default unexpectedly enabled DPMI yielding"; \
+		exit 1; \
+	}; \
+	printf '%s\n' "$$dos_default" | grep -F -- '-DFB_DOS_GFX_LOW_POWER' >/dev/null && { \
+		echo "ERROR: DOS default unexpectedly lowered the graphics timer rate"; \
+		exit 1; \
+	}; \
+	dos_low_power="$$( $(MAKE) --no-print-directory -s print-config \
+		HAVE_PREREQS_MK= TARGET_OS=dos DOS_GFX_LOW_POWER=YesPlease \
+		| sed -n 's/^ALLCFLAGS=//p' )"; \
+	printf '%s\n' "$$dos_low_power" | grep -F -- '-DFB_DOS_GFX_LOW_POWER' >/dev/null || { \
+		echo "ERROR: DOS_GFX_LOW_POWER did not enable the graphics timer profile"; \
+		exit 1; \
+	}; \
+	host_low_power="$$( $(MAKE) --no-print-directory -s print-config \
+		HAVE_PREREQS_MK= TARGET_OS=win32 DOS_GFX_LOW_POWER=YesPlease \
+		| sed -n 's/^ALLCFLAGS=//p' )"; \
+	printf '%s\n' "$$host_low_power" | grep -F -- '-DFB_DOS_GFX_LOW_POWER' >/dev/null && { \
+		echo "ERROR: DOS graphics timer profile leaked into a native target"; \
+		exit 1; \
+	}; \
+	dos_yield_config="$$( $(MAKE) --no-print-directory -s print-config \
+		HAVE_PREREQS_MK= TARGET_OS=dos DOS_DPMI_YIELD=YesPlease \
+		)"; \
+	dos_yield="$$(printf '%s\n' "$$dos_yield_config" | sed -n 's/^ALLCFLAGS=//p')"; \
+	printf '%s\n' "$$dos_yield" | grep -F -- '-DFB_DOS_DPMI_YIELD' >/dev/null || { \
+		echo "ERROR: DOS_DPMI_YIELD did not enable the DPMI yield macro"; \
+		exit 1; \
+	}; \
+	dos_yield_mt="$$(printf '%s\n' "$$dos_yield_config" | sed -n 's/^DISABLE_MT=//p')"; \
+	[ "$$dos_yield_mt" = "YesPlease" ] || { \
+		echo "ERROR: DOS_DPMI_YIELD unexpectedly enabled the MT archives"; \
+		exit 1; \
+	}; \
+	printf '%s\n' "$$dos_yield" | grep -F -- '-DDISABLE_TCP' >/dev/null || { \
+		echo "ERROR: DOS_DPMI_YIELD changed the DOS TCP default"; \
+		exit 1; \
+	}
+
+	@dos_threads="$$( $(MAKE) --no-print-directory -s print-config \
+		HAVE_PREREQS_MK= TARGET_TRIPLET=i586-pc-msdosdjgpp \
+		DOS_THREAD_PROVIDER=pdmlwp )"; \
+	printf '%s\n' "$$dos_threads" | grep -Fx 'THREAD_MODEL=pdmlwp' >/dev/null && \
+	printf '%s\n' "$$dos_threads" | grep -Fx 'DISABLE_MT=' >/dev/null || { \
+		echo "ERROR: explicit DOS thread provider did not enable MT archives"; \
+		exit 1; \
+	}
+
+	$(call _mt_echo,$(mkpath)/ structure OK)
+
+##############################################################################
+# end of tests/build/structure.mk
+##############################################################################

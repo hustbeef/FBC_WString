@@ -1,0 +1,51 @@
+{{fbdoc item="title" value="LOCK"}}----
+Requests a lock on a file range
+
+{{fbdoc item="syntax"}}##
+	**Lock** #//filenum//, //record//
+	**Lock** #//filenum//, //start// To //end//
+##
+{{fbdoc item="param"}}
+	##//filenum//##
+		The file number used to ##[[KeyPgOpen|Open]]## the file.
+	##//record//##
+		The record (##[[KeyPgRandom|Random]]## files) to lock.
+	##//start//##
+		The first byte position (##[[KeyPgBinary|Binary]]## files) to lock from.
+	##//end//##
+		The last byte position (##[[KeyPgBinary|Binary]]## files) to lock to.
+
+{{fbdoc item="desc"}}
+	##**Lock**## requests a lock on a file range, usually to allow safe writing to it. The first position and final position are inclusive. A single position locks one byte in a ##[[KeyPgBinary|Binary]]## file or one record in a ##[[KeyPgRandom|Random]]## file. A ##//start//## to ##//end//## range locks every byte or record in that range. If the requested range is already locked incompatibly, the request returns a file I/O error immediately.
+	
+	After modifying the data, issue ##[[KeyPgUnlock|Unlock]]## with the same range. Locking behavior depends on the target operating system. On Unix-like systems, file locks are advisory and process-associated, so cooperating programs must use compatible locks. Separate handles in the same process do not conflict with each other, and closing any handle for a file releases all POSIX record locks that process holds on it. A conflict or native lock failure sets a file I/O error. Invalid file numbers or ranges set an illegal function call error.
+	
+	Targets without a native byte-range locking implementation report a file I/O error instead of claiming that a lock was acquired.
+
+{{fbdoc item="ex"}}
+{{fbdoc item="filename" value="examples/manual/fileio/lock.bas"}}%%(freebasic)
+'' e.g. locking a file, reading 100 bytes, and unlocking it. 
+'' To run, make sure there exists a file called 'file.ext' 
+'' in the current directory that is at least 100 bytes.
+
+dim array(1 to 100) as integer
+dim f as integer, i as integer
+f = freefile
+open "file.ext" for binary as #f
+lock #f, 1 to 100
+for i = 1 to 100
+	get #f, i, array(i)
+next
+unlock #f, 1 to 100
+close #f
+%%
+
+{{fbdoc item="diff"}}
+	- A single position or explicit range is required; the entire file cannot be locked implicitly
+
+{{fbdoc item="see"}}
+	- ##[[KeyPgOpen|Open]]##
+	- ##[[KeyPgUnlock|Unlock]]##
+	- ##[[KeyPgScreenlock|ScreenLock]]##
+
+{{fbdoc item="back" value="CatPgFile|File I/O Functions"}}

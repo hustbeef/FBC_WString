@@ -1,0 +1,210 @@
+#####################
+# feature-policy.mk #
+#####################
+#
+# High-level feature policy layer.
+#
+# This file:
+#   - Applies compile-time feature defines (via ALLCFLAGS / ALLFBLFLAGS)
+#   - Does NOT detect platform (platform.mk does that)
+#   - Does NOT decide PIC (platform-features.mk does that)
+#
+# Inputs expected:
+#   TARGET_OS
+#   MAKECMDGOALS
+#
+# Defines/Modifies:
+#   ALLCFLAGS
+#   ALLFBLFLAGS
+#   DISABLE_MT   (may be set here for special targets)
+#
+#####################
+
+# ---------------------------------------------------------------------------
+# Guard
+# ---------------------------------------------------------------------------
+
+ifeq ($(strip $(TARGET_OS)),)
+  $(error feature-policy.mk: TARGET_OS not defined (include platform.mk first))
+endif
+
+# ---------------------------------------------------------------------------
+# Bootstrap-minimal policy
+#
+# Strip optional subsystems to reduce dependency surface.
+# ---------------------------------------------------------------------------
+
+ifneq ($(strip $(filter bootstrap-minimal,$(MAKECMDGOALS)) $(BOOTSTRAP_MINIMAL)),)
+  DISABLE_X11 := YesPlease
+  DISABLE_NCURSES := YesPlease
+  ALLCFLAGS += \
+    -DDISABLE_GPM \
+    -DDISABLE_FFI \
+    -DDISABLE_X11 \
+    -DDISABLE_LANGINFO
+endif
+
+# ---------------------------------------------------------------------------
+# User-requested feature switches
+#
+# Cross-target helper compilers do not always need the full host runtime
+# feature set.  Allow package targets to turn off optional libraries without
+# pretending the host operating system lacks them globally.
+# ---------------------------------------------------------------------------
+
+ifneq ($(strip $(DISABLE_FFI)),)
+  ALLCFLAGS += -DDISABLE_FFI
+endif
+
+ifneq ($(strip $(DISABLE_NCURSES)),)
+  ALLCFLAGS += -DDISABLE_NCURSES
+endif
+
+ifneq ($(strip $(DISABLE_GPM)),)
+  ALLCFLAGS += -DDISABLE_GPM
+endif
+
+ifneq ($(strip $(DISABLE_ALSA)),)
+  ALLCFLAGS += -DDISABLE_ALSA
+endif
+
+ifneq ($(strip $(DISABLE_PULSE)),)
+  ALLCFLAGS += -DDISABLE_PULSE
+endif
+
+# ---------------------------------------------------------------------------
+# DOS (djgpp)
+# ---------------------------------------------------------------------------
+
+ifeq ($(TARGET_OS),dos)
+  ALLCFLAGS += \
+    -DDISABLE_WCHAR \
+    -DDISABLE_FFI \
+    -DDISABLE_X11 \
+    -DDISABLE_NCURSES \
+    -DDISABLE_LANGINFO
+endif
+
+# ---------------------------------------------------------------------------
+# Android
+#
+# Android Bionic does not provide full glibc surface.
+# ---------------------------------------------------------------------------
+
+ifeq ($(TARGET_OS),android)
+  ALLCFLAGS += \
+    -DDISABLE_NCURSES \
+    -DDISABLE_X11 \
+    -DDISABLE_FFI \
+    -DDISABLE_LANGINFO \
+    -DDISABLE_GPM
+endif
+
+# ---------------------------------------------------------------------------
+# Xbox
+#
+# nxdk does not currently ship a target libffi.  ThreadCreate/ThreadWait are
+# still built through the Win32-style thread model, but ThreadCall must keep
+# using the rtlib fallback until an Xbox libffi port is available.
+# ---------------------------------------------------------------------------
+
+ifeq ($(TARGET_OS),xbox)
+  ALLCFLAGS += \
+    -DDISABLE_FFI \
+    -DDISABLE_OPENGL
+endif
+
+# ---------------------------------------------------------------------------
+# Windows CE
+#
+# The CE SDK has native window, sound, socket, and threading APIs, but not the
+# desktop terminal and locale integrations used by the hosted Unix runtimes.
+# ---------------------------------------------------------------------------
+
+ifeq ($(TARGET_OS),wince)
+  CPPFLAGS += -I$(rootdir)/lib/freebasic/wince-$(TARGET_ARCH)/include
+  ALLCFLAGS += \
+    -DDISABLE_NCURSES \
+    -DDISABLE_LANGINFO \
+    -DDISABLE_GPM \
+    -DDISABLE_OPENGL
+endif
+
+# ---------------------------------------------------------------------------
+# JavaScript backend
+# ---------------------------------------------------------------------------
+
+ifeq ($(TARGET_OS),js)
+  DISABLE_MT := YesPlease
+  ALLCFLAGS += \
+    -DDISABLE_FFI
+endif
+
+# ---------------------------------------------------------------------------
+# Wii
+#
+# libogc is a console SDK, not a hosted POSIX desktop environment.  Keep the
+# optional hosted integrations out of the target build and let the Wii-specific
+# gfx/sfx/runtime files provide the supported surface.
+# ---------------------------------------------------------------------------
+
+ifeq ($(TARGET_OS),wii)
+  ALLCFLAGS += \
+    -DDISABLE_FFI \
+    -DDISABLE_X11 \
+    -DDISABLE_OPENGL \
+    -DDISABLE_NCURSES \
+    -DDISABLE_LANGINFO \
+    -DDISABLE_GPM
+endif
+
+# ---------------------------------------------------------------------------
+# RISC OS / GCCSDK
+#
+# UnixLib supplies pthreads, termios/termcap, sockets, iconv, and the normal
+# hosted C surface.  The RISC OS workflow builds GCC's bundled ARM libffi for
+# THREADCALL because GCCSDK does not install it by default. Linux gpm remains
+# unavailable. The graphics feature macros come from platform-features.mk.
+# ---------------------------------------------------------------------------
+
+ifeq ($(TARGET_OS),riscos)
+  ALLCFLAGS += \
+    -DDISABLE_GPM
+endif
+
+# AROS exposes its native desktop and device APIs directly. The AROS runtime
+# replacements own console handling, so Linux-specific ncurses, gpm, and
+# locale discovery must not be pulled into target builds. The release workflow
+# stages the matching static libffi and its generated architecture header in
+# the target runtime directory so THREADCALL remains fully functional.
+ifeq ($(TARGET_OS),aros)
+  CPPFLAGS += -I$(rootdir)/lib/freebasic/aros-$(TARGET_ARCH)/include
+  ALLCFLAGS += \
+    -DDISABLE_NCURSES \
+    -DDISABLE_LANGINFO \
+    -DDISABLE_GPM
+endif
+
+# Amiga newlib has no desktop Unix integration. Native platform providers and
+# the staged m68k libffi supply the runtime interfaces used by this target.
+ifeq ($(TARGET_OS),amiga)
+  ALLCFLAGS += \
+    -DDISABLE_NCURSES \
+    -DDISABLE_LANGINFO \
+    -DDISABLE_GPM
+  CPPFLAGS += -I$(rootdir)/lib/freebasic/amiga-m68k/include
+endif
+
+# ---------------------------------------------------------------------------
+# Windows console stack size
+#
+# Keep console stack conservative but non-fragile.
+# ---------------------------------------------------------------------------
+
+ifneq ($(filter win32 wince cygwin,$(TARGET_OS)),)
+  ALLFBLFLAGS += -t 2048
+endif
+
+############################
+# end of feature-policy.mk #
+############################

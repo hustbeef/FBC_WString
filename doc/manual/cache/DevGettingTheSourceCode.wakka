@@ -1,0 +1,38 @@
+﻿{{fbdoc item="title" value="Getting the source code"}}
+
+The FreeBASIC source tree is maintained in Git. A normal developer checkout is
+enough for compiler, runtime, documentation, and packaging work.
+
+%%(sh)
+git clone https://github.com/freebasic/fbc.git
+cd fbc
+%%
+
+Some developers use a fork instead of the main repository. In that case, clone
+the fork and keep the upstream repository configured as a second remote:
+
+%%(sh)
+git remote add upstream https://github.com/freebasic/fbc.git
+git fetch upstream
+%%
+
+{{fbdoc item="subsect" value="Updating a checkout"}}
+
+Use normal Git commands to update the source tree:
+
+%%(sh)
+git fetch --all --prune
+git pull --ff-only
+%%
+
+If the compiler was already built before the update, see
+::DevRebuildAfterUpdates|Getting source code updates and rebuilding FreeBASIC::.
+The build system can rebuild only what changed in many cases, but bootstrap and
+platform changes sometimes require a cleaner rebuild.
+
+{{fbdoc item="subsect" value="Windows notes"}}
+
+On Windows, Git for Windows and MSYS2 Git both work. Be consistent about which
+shell owns the checkout when running long build scripts. Mixing Windows paths,
+MSYS2 paths, and Cygwin paths in one command line is a common source of avoidable
+build failures.

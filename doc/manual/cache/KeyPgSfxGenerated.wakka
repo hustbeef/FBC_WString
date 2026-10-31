@@ -1,0 +1,39 @@
+﻿{{fbdoc item="title" value="Generated Sound Commands"}}----
+Overview of the generated-tone, PLAY-string, mix, waveform, envelope, and instrument commands.
+
+{{fbdoc item="desc"}}
+	Generated sound commands synthesize audio directly through sfxlib. They are useful for simple tones, retro-style PLAY strings, game sound effects that do not need external files, and quick diagnostics that prove the sound path works.
+
+{{fbdoc item="section" value="Command pages"}}
+	- ##[[KeyPgSound|SOUND]]##: generated tone.
+	- ##[[KeyPgTone|TONE]]##: channel-specific tone.
+	- ##[[KeyPgNoise|NOISE]]##: generated noise.
+	- ##[[KeyPgNote|NOTE]]##: named musical note.
+	- ##[[KeyPgPlay|PLAY]]##: BASIC PLAY strings.
+	- ##[[KeyPgTempo|TEMPO]]##: PLAY tempo.
+	- ##[[KeyPgChannel|CHANNEL]]##: default channel.
+	- ##[[KeyPgOctave|OCTAVE]]##: default octave.
+	- ##[[KeyPgVoice|VOICE]]##: default instrument.
+	- ##[[KeyPgVol|VOL]]##: compact master volume.
+	- ##[[KeyPgVolume|VOLUME]]##: master or channel volume.
+	- ##[[KeyPgBalance|BALANCE]]##: master stereo balance.
+	- ##[[KeyPgPan|PAN]]##: channel stereo pan.
+	- ##[[KeyPgWave|WAVE]]##: waveform definition.
+	- ##[[KeyPgEnvelope|ENVELOPE]]##: ADSR envelope definition.
+	- ##[[KeyPgInstrument|INSTRUMENT]]##: instrument definition or assignment.
+
+{{fbdoc item="ex"}}
+%%(freebasic)
+tempo 140
+octave 4
+channel 0
+volume 0.5
+play "cdefgab"
+%%
+
+{{fbdoc item="see"}}
+	- ##[[CatPgSfx|Sound Library Reference]]##
+	- ##[[KeyPgSfx|SFX]]##
+	- ##[[KeyPgMusic|MUSIC]]##
+
+{{fbdoc item="back" value="CatPgSfx|Sound Library Reference"}}

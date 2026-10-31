@@ -1,0 +1,59 @@
+{{fbdoc item="title" value="Xbox port FAQ"}}----
+
+This page describes the FreeBASIC target for the original Xbox.
+
+The Xbox target is for the 2001 Xbox.  It is not for Xbox 360, Xbox One, Xbox
+Series X/S, or normal Windows programs.
+
+**Xbox port questions:**
+	==- Is this target usable?==
+	==- Does it need the Microsoft XDK?==
+	==- How do I build a program?==
+	==- Where can I run it?==
+
+==Is this target usable?==
+
+Yes.  The ##fbc-xbox## helper driver builds programs and produces ##.xbe##
+executables.  The ##fbc-xbox-xiso## helper can make Xbox ISO images with
+optional asset directories.
+
+
+==Does it need the Microsoft XDK?==
+
+No.  The target is built around nxdk and other open tools.  That keeps the
+toolchain redistributable and avoids depending on the old proprietary
+Microsoft XDK.
+
+
+==How do I build a program?==
+
+%%
+fbc-xbox program.bas -x program.xbe
+%%
+
+To create an ISO:
+
+%%
+fbc-xbox-xiso program.xbe program.iso
+%%
+
+To include assets:
+
+%%
+fbc-xbox-xiso program.xbe program.iso --assets game-assets
+%%
+
+
+==Where can I run it?==
+
+Use real modified Xbox hardware or an emulator that can run homebrew XBE
+files.  The source tree includes build and test scripts for emulator-based
+smoke tests where they are available.
+
+
+{{fbdoc item="back" value="FaqToc|FAQ Table of Contents"}}
+{{fbdoc item="see"}}
+	[[DevBuildXbox|Compiling FB for Xbox]]
+	[[KeyPgDdfbxbox|__FB_XBOX__]]
+----
+{{fbdoc item="back" value="CatPgFaq|FAQ Pages"}}

@@ -1,0 +1,105 @@
+##############################################################################
+# tests/bootstrap/matrix.mk
+#
+# Multi-architecture bootstrap distribution matrix test
+# Project: FreeBASIC build system
+# Purpose: Validate bootstrap archive production across the selected target matrix.
+# Responsibilities: Check each archive and release its owned storage before the next.
+# This file intentionally does NOT build native SDKs or retain every matrix archive.
+##############################################################################
+
+BOOTSTRAP_TEST_ARCHES := \
+	linux-amd64 \
+	linux-i386 \
+	linux-arm64 \
+	linux-armhf \
+	linux-armel \
+	linux-powerpc \
+	linux-powerpc64 \
+	linux-ppc64el \
+	linux-riscv64 \
+	linux-s390x \
+	linux-loongarch64 \
+	freebsd-amd64 \
+	freebsd-i386 \
+	freebsd-arm64 \
+	freebsd-powerpc \
+	freebsd-powerpc64 \
+	darwin-x86_64 \
+	darwin-aarch64 \
+	haiku-x86_64 \
+	haiku-x86 \
+	cygwin-x86_64 \
+	cygwin-x86 \
+	mingw-x86_64 \
+	mingw-x86
+
+BOOTSTRAP_REQUIRED_EMIT_MATRIX := \
+	win64:win64:x86_64-w64-mingw32 \
+	win32-aarch64:win32-aarch64:aarch64-w64-mingw32 \
+	darwin-aarch64:darwin-aarch64:aarch64-apple-darwin \
+	freebsd-aarch64:freebsd-aarch64:aarch64-unknown-freebsd \
+	linux-mips32:linux-mips32:mips-linux-gnu \
+	linux-mips32el:linux-mips32el:mipsel-linux-gnu \
+	linux-mips64:linux-mips64:mips64-linux-gnuabi64 \
+	linux-mips64el:linux-mips64el:mips64el-linux-gnuabi64 \
+	netbsd-aarch64:netbsd-aarch64:aarch64-unknown-netbsd \
+	openbsd-aarch64:openbsd-aarch64:aarch64-unknown-openbsd \
+	dragonfly-aarch64:dragonfly-aarch64:aarch64-unknown-dragonfly \
+	haiku-aarch64:haiku-aarch64:aarch64-unknown-haiku
+
+.PHONY: bootstrap-dist-matrix-test
+bootstrap-dist-matrix-test:
+	$(call _mt_echo,Testing bootstrap distribution matrix)
+
+	mkdir -p "$(TEST_TMP)"
+
+	@set -e; \
+	out="$(TEST_TMP)/bootstrap-dist-matrix.out"; \
+	forbidden='(^|/)\.[^/]+/|(^|/)(stage|dist|out|packages|package-root[^/]*|pkgroot[^/]*)/'; \
+	: > "$$out"; \
+	for arch in $(BOOTSTRAP_TEST_ARCHES); do \
+	        echo "==> Building bootstrap distribution for $$arch"; \
+	        $(TEST_TOOLCHAIN_ENV) $(MAKE) bootstrap-dist-target BOOTSTRAP_DIST_WORKTREE=1 FBTARGET_DIR_OVERRIDE=$$arch; \
+	        ARCHIVE="FreeBASIC-$(FBVERSION)-source-bootstrap-$$arch.$(BOOT_DIST_EXT)"; \
+	        if [ ! -s "$$ARCHIVE" ]; then \
+	                echo ""; \
+	                echo "ERROR: no archive produced for $$arch"; \
+	                echo ""; \
+	                ls -1; \
+	                exit 1; \
+	        fi; \
+	        tar -tf "$$ARCHIVE" > "$(TEST_TMP)/archive-members.lst"; \
+	        if grep -E "$$forbidden" "$(TEST_TMP)/archive-members.lst"; then \
+	                echo ""; \
+	                echo "ERROR: bootstrap archive $$ARCHIVE contains excluded generated directories"; \
+	                exit 1; \
+	        fi; \
+	        echo "$$arch -> $$ARCHIVE" | tee -a "$$out"; \
+	        rm -f "$$ARCHIVE"; \
+	done; \
+	echo ""; \
+	echo "==> Matrix results:"; \
+	cat "$$out"
+	$(call _mt_cleanup_success)
+
+.PHONY: bootstrap-emit-matrix-test
+bootstrap-emit-matrix-test:
+	$(call _mt_echo,Testing bootstrap emission matrix)
+	@set -e; \
+	for spec in $(BOOTSTRAP_REQUIRED_EMIT_MATRIX); do \
+		case " $(BOOTSTRAP_MATRIX) " in \
+		*" $$spec "*) ;; \
+		*) echo "ERROR: bootstrap emit matrix missing $$spec"; exit 1 ;; \
+		esac; \
+	done
+	@rm -rf bootstrap/linux-emit-matrix-a
+	$(call _mt_run,$(MAKE) bootstrap-emit-matrix BOOTSTRAP_MATRIX='linux-emit-matrix-a')
+	@test -d bootstrap/linux-emit-matrix-a || { echo "ERROR: bootstrap/linux-emit-matrix-a missing"; exit 1; }
+	@find bootstrap/linux-emit-matrix-a -type f \( -name "*.c" -o -name "*.asm" \) | grep -q . || { echo "ERROR: bootstrap/linux-emit-matrix-a sources missing"; exit 1; }
+	@rm -rf bootstrap/linux-emit-matrix-a
+	$(call _mt_cleanup_success)
+
+##############################################################################
+# end of tests/bootstrap/matrix.mk
+##############################################################################

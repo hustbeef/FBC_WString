@@ -1,0 +1,72 @@
+''
+''
+'' time -- header translated with help of SWIG FB wrapper
+''
+'' NOTICE: This file is part of the FreeBASIC Compiler package and can't
+''         be included in other distributions without authorization.
+''
+''
+#ifdef __FB_AMIGA__
+#include once "amiga/crt/time.bi"
+#endif
+
+#ifndef __crt_time_bi__
+#define __crt_time_bi__
+
+#include once "crt/stddef.bi"
+#include once "crt/sys/types.bi"
+
+#if defined(__FB_WII__)
+#include once "crt/wii/time.bi"
+#elseif defined(__FB_WIN32__) or defined(__FB_XBOX__)
+#include once "crt/win32/time.bi"
+#elseif defined(__FB_DOS__)
+#include once "crt/dos/time.bi"
+#elseif defined(__FB_LINUX__) or defined(__FB_ANDROID__) or defined(__FB_NUTTX__)
+#include once "crt/linux/time.bi"
+#elseif defined(__FB_CYGWIN__)
+#include once "crt/cygwin/time.bi"
+#elseif defined(__FB_FREEBSD__)
+#include once "crt/freebsd/time.bi"
+#elseif defined(__FB_DRAGONFLY__)
+#include once "crt/dragonfly/time.bi"
+#elseif defined(__FB_OPENBSD__)
+#include once "crt/openbsd/time.bi"
+#elseif defined(__FB_NETBSD__)
+#include once "crt/netbsd/time.bi"
+#elseif defined(__FB_HAIKU__)
+#include once "crt/haiku/time.bi"
+#elseif defined(__FB_SOLARIS__)
+#include once "crt/solaris/time.bi"
+#elseif defined(__FB_DARWIN__)
+#include once "crt/darwin/time.bi"
+#else
+#error Unsupported platform
+#endif
+
+extern "c"
+declare function clock () as clock_t
+#if defined(__FB_NETBSD__)
+declare function time_ alias "__time50" (byval as time_t ptr = NULL) as time_t
+declare function difftime alias "__difftime50" (byval as time_t, byval as time_t) as double
+declare function mktime alias "__mktime50" (byval as tm ptr) as time_t
+declare function asctime (byval as tm ptr) as zstring ptr
+declare function ctime alias "__ctime50" (byval as time_t ptr) as zstring ptr
+declare function gmtime alias "__gmtime50" (byval as time_t ptr) as tm ptr
+declare function localtime alias "__locatime50" (byval as time_t ptr) as tm ptr
+#else
+declare function time_ alias "time" (byval as time_t ptr = NULL) as time_t
+declare function difftime (byval as time_t, byval as time_t) as double
+declare function mktime (byval as tm ptr) as time_t
+declare function asctime (byval as tm ptr) as zstring ptr
+declare function ctime (byval as time_t ptr) as zstring ptr
+declare function gmtime (byval as time_t ptr) as tm ptr
+declare function localtime (byval as time_t ptr) as tm ptr
+#endif
+declare function strftime (byval as zstring ptr, byval as size_t, byval as zstring ptr, byval as tm ptr) as size_t
+declare function wcsftime (byval as wchar_t ptr, byval as size_t, byval as wchar_t ptr, byval as tm ptr) as size_t
+end extern
+
+#endif
+
+'' end of crt/time.bi

@@ -1,0 +1,53 @@
+
+const SCREEN_MODE = 14
+const MODE_COUNT = 3
+const PALETTE_LAST = 255
+const EXTENDED_KEY_PREFIX = 255
+const EIGHT_BIT_BORDER_COLOR = 40
+const GRADIENT_LEFT = 32
+const GRADIENT_HEIGHT = 40
+const RED_GRADIENT_TOP = 40
+const GREEN_GRADIENT_TOP = 100
+const BLUE_GRADIENT_TOP = 160
+
+DIM depth(0 to MODE_COUNT - 1) AS INTEGER
+DIM key AS STRING, driver AS STRING
+DIM AS INTEGER i, j, w, h, d, rate
+
+depth(0) = 8
+depth(1) = 16
+depth(2) = 32
+
+FOR i = LBOUND(depth) to UBOUND(depth)
+	SCREEN SCREEN_MODE, depth(i)
+	IF SCREENPTR = 0 THEN
+		PRINT "Unable to create graphics mode at "; depth(i); " bits per pixel."
+		CONTINUE FOR
+	END IF
+
+	SCREENINFO w, h, d,,, rate, driver
+	LINE(0, 0)-(w-1, h-1), IIF(i = 0, EIGHT_BIT_BORDER_COLOR, CINT(RGB(255, 0, 0))), B
+	LOCATE 2, 2: PRINT "Mode: " + STR(w) + "x" + STR(h) + "x" + STR(d);
+	IF (rate > 0) THEN
+		PRINT " @ " + STR(rate) + " Hz";
+	END IF
+	PRINT " (" + driver + ")"
+	IF (i = 0) THEN
+		FOR j = 0 TO PALETTE_LAST
+			LINE(GRADIENT_LEFT+j, GREEN_GRADIENT_TOP)- _
+			    (GRADIENT_LEFT+j, GREEN_GRADIENT_TOP+GRADIENT_HEIGHT-1), j
+		NEXT j
+	ELSE
+		FOR j = 0 TO PALETTE_LAST
+			LINE(GRADIENT_LEFT+j, RED_GRADIENT_TOP)- _
+			    (GRADIENT_LEFT+j, RED_GRADIENT_TOP+GRADIENT_HEIGHT-1), j SHL 16
+			LINE(GRADIENT_LEFT+j, GREEN_GRADIENT_TOP)- _
+			    (GRADIENT_LEFT+j, GREEN_GRADIENT_TOP+GRADIENT_HEIGHT-1), j SHL 8
+			LINE(GRADIENT_LEFT+j, BLUE_GRADIENT_TOP)- _
+			    (GRADIENT_LEFT+j, BLUE_GRADIENT_TOP+GRADIENT_HEIGHT-1), j
+		NEXT j
+	END IF
+	key = INKEY
+	WHILE key = "": key = INKEY: WEND
+	IF key = CHR(EXTENDED_KEY_PREFIX) + "k" THEN END
+NEXT i

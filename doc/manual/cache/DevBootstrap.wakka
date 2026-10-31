@@ -1,0 +1,29 @@
+﻿{{fbdoc item="title" value="Bootstrapping FreeBASIC"}}
+
+FreeBASIC can rebuild itself, but the path depends on what compiler and bootstrap
+sources are already available. The current make system keeps bootstrap logic in
+##mk/bootstrap/## and exposes named targets for the common states.
+
+{{fbdoc item="subsect" value="Common bootstrap targets"}}
+
+%%(sh)
+make prereqs-fbc
+make bootstrap-minimal
+make bootstrap-seed-peer
+make bootstrap-emit
+make bootstrap-dist-target
+%%
+
+The right target depends on whether the host already has a usable ##fbc##, a
+system package compiler, or target-specific generated bootstrap sources.
+
+{{fbdoc item="subsect" value="How to debug bootstrap problems"}}
+
+Start with ##make print-config## and ##make prereqs-fbc##. Bootstrap failures are
+usually easier to understand after confirming the selected host, target,
+bootstrap compiler, backend, binary names, and output directories.
+
+If a new platform cannot even run a previous FreeBASIC compiler, generate or
+stage bootstrap sources from a platform that can. Avoid changing parser or code
+generation behavior just to make a bootstrap step pass until the failure has
+been traced to the real portability problem.

@@ -1,0 +1,29 @@
+﻿{{fbdoc item="title" value="Structure layout"}}
+
+Structure layout must match the target ABI when FreeBASIC code talks to C
+libraries, system calls, graphics backends, sound backends, or binary file
+formats. Do not assume that a structure layout proven on one CPU is correct on
+another CPU.
+
+{{fbdoc item="subsect" value="What affects layout"}}
+
+	Field type and size.
+	Field alignment.
+	Structure packing.
+	Pointer size.
+	Calling convention and ABI family.
+	Compiler-specific C headers for the target platform.
+
+{{fbdoc item="subsect" value="Modern targets"}}
+
+Layout-sensitive code should be checked on every advertised CPU family. That
+includes 32-bit and 64-bit x86, ARM, AArch64, PowerPC-family targets,
+MIPS-family targets, s390x, WebAssembly/JavaScript where applicable, and the
+BSD, Haiku, Solaris-like, DOS, Windows, and mobile targets supported by the
+tree.
+
+{{fbdoc item="subsect" value="Practical rule"}}
+
+When a structure is shared with C, prefer a tiny C probe or a FreeBASIC test that
+checks ##sizeof## and important field offsets on the real target. Guessing from
+a similar platform is not enough for release work.

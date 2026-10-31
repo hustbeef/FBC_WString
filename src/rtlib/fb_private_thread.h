@@ -1,0 +1,135 @@
+/*
+ * Project: FreeBASIC runtime library
+ * File: fb_private_thread.h
+ * Purpose: Provide fb private thread runtime support.
+ * Responsibilities: Shared runtime types, ABI declarations and internal contracts.
+ * This file intentionally does NOT contain: Platform implementations or compiler parsing.
+ */
+/* FreeBASIC runtime: fb_private_thread.h
+ * Private thread handles, startup records and platform mutex storage.
+ * Public threading declarations and scheduler implementations live elsewhere.
+ */
+
+#if defined HOST_CYGWIN
+	#include <pthread.h>
+#endif
+
+#if defined(HOST_DOS) && defined(ENABLE_MT) && defined(FB_DOS_PDMLWP)
+	#include "drivers/dos/fb_dos_thread.h"
+	struct FB_DOS_MUTEX_WAITER;
+	struct _FBMUTEX {
+		int owner;
+		unsigned int depth;
+		struct FB_DOS_MUTEX_WAITER *head;
+		struct FB_DOS_MUTEX_WAITER *tail;
+	};
+#endif
+
+#if defined HOST_UNIX
+	#include <pthread.h>
+	struct _FBMUTEX {
+		pthread_mutex_t id;
+	};
+#elif defined HOST_WIN32
+	#include <windows.h>
+	struct _FBMUTEX {
+		HANDLE id;
+	};
+#elif defined HOST_XBOX
+	#include <windows.h>
+	struct _FBMUTEX {
+		CRITICAL_SECTION id;
+	};
+#elif defined HOST_WII
+	#include <ogc/lwp.h>
+	#include <ogc/mutex.h>
+	struct _FBMUTEX {
+		mutex_t id;
+	};
+#endif
+
+/* Solaris pthread.h does not define PTHREAD_STACK_MIN */
+#ifndef PTHREAD_STACK_MIN
+	#define PTHREAD_STACK_MIN 8192
+#endif
+
+/* pthreads will crash some targets when stack size is too small.
+// The default of 2048 KiB is too small as tested on freebsd-13.0-i386.
+// OpenBSD's PTHREAD_STACK_MIN is also too small for libc resolver paths
+// reached from threaded TCP programs. Haiku's PTHREAD_STACK_MIN is likewise
+// too small for threaded TCP INPUT paths. NetBSD and DragonFlyBSD also expose
+// small minimum stacks that are not sufficient for resolver calls made by
+// threaded TCP programs. illumos has the same issue in ordinary BASIC thread
+// examples. Linux targets using musl can expose it too.
+// 8192 KiB seems about alright (jeffm)
+// see https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=234775
+*/
+#if defined( HOST_LINUX ) || defined( HOST_FREEBSD ) || defined( HOST_DRAGONFLY ) || defined( HOST_OPENBSD ) || defined( HOST_NETBSD ) || defined( HOST_HAIKU ) || defined( HOST_SOLARIS )
+	#define FBTHREAD_STACK_MIN (8192 * 1024)
+#else
+	#define FBTHREAD_STACK_MIN PTHREAD_STACK_MIN
+#endif
+
+/* Thread handle returned by threadcreate(), so the caller is able to track the
+   thread (freed by threadwait/threaddetach).
+
+   At least on Win32 we probably don't really need this - it would be enough to
+   just use the HANDLE directly instead of wrapping it in an dynamically
+   allocated FBTHREAD structure. (we're already assuming that NULL is an invalid
+   handle in the win32 fb_ThreadCreate(), so that'd be nothing new)
+
+   With pthreads though, it's not clear whether we could store a pthread_t into
+   a void*, because pthread_t doesn't have to be an integer or pointer, and
+   furthermore, zero may be a valid value for it. */
+
+typedef enum _FBTHREADFLAGS
+{
+	FBTHREAD_NONE = 0,
+	FBTHREAD_MAIN = 1,
+	FBTHREAD_EXITED = 2,
+	FBTHREAD_DETACHED = 4
+} FBTHREADFLAGS;
+
+struct _FBTHREAD {
+#if defined HOST_DOS
+	int id;
+	void *opaque;
+#elif defined HOST_UNIX
+	pthread_t id;
+#elif defined HOST_CYGWIN
+	pthread_t id;
+#elif defined HOST_WIN32
+	HANDLE id;
+#elif defined HOST_XBOX
+	HANDLE id;
+#elif defined HOST_WII
+	lwp_t id;
+#else
+#error Unexpected target
+#endif
+	volatile FBTHREADFLAGS flags;
+};
+
+/* Info structure passed to our internal threadproc()s, so it can call the
+   user's threadproc (freed at the end of our threadproc()s) */
+typedef struct {
+	FB_THREADPROC     proc;
+	void             *param;
+	FBTHREAD         *thread;
+} FBTHREADINFO;
+
+typedef struct _FB_FBTHREADCTX
+{
+	FBTHREAD	*self;
+} FB_FBTHREADCTX;
+
+#define fb_FBTHREADCTX_Destructor NULL
+
+void          fb_AllocateMainFBThread( void );
+FBTHREADFLAGS fb_AtomicSetThreadFlags( volatile FBTHREADFLAGS *flags, FBTHREADFLAGS newFlag );
+
+#ifdef ENABLE_MT
+void          fb_CloseAtomicFBThreadFlagMutex( void );
+#endif
+
+/* end of fb_private_thread.h */

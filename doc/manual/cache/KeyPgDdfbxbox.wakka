@@ -1,0 +1,24 @@
+{{fbdoc item="title" value="__FB_XBOX__"}}----
+
+{{fbdoc item="syntax"}}
+	""__FB_XBOX__""
+
+{{fbdoc item="desc"}}
+	Define without a value created at compile time when the original Xbox
+	target is being used.  It can be used to compile parts of a program only
+	for the Xbox target.
+
+{{fbdoc item="ex"}}
+%%(freebasic)
+#IFDEF __FB_XBOX__
+	print "Xbox target"
+#ENDIF
+%%
+
+{{fbdoc item="back" value="CatPgDddefines|Predefined Defines"}}
+{{fbdoc item="see"}}
+	[[DevBuildXbox|Compiling FB for Xbox]]
+	[[FaqPgxbox|Xbox port FAQ]]
+	[[CompilerOpttarget|Compiler Option: -target]]
+----
+{{fbdoc item="back" value="CatPgCompiler|Compiler Meta-Commands"}}

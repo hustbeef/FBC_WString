@@ -1,0 +1,1094 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+die() {
+	echo "fbc-android: $*" >&2
+	exit 1
+}
+
+usage() {
+	cat <<EOF
+Usage: fbc-android [options] program.bas
+
+Options:
+  -x FILE, -o FILE       Output APK, .so, or .o path
+  --emit-apk             Produce a signed debug APK (default)
+  --emit-so              Produce libfreebasicapp.so only
+  --emit-obj             Produce the compiled FreeBASIC object only
+  --no-entry             Do not rename the source main procedure
+  --api N                NDK API level for native compilation (default: 26)
+  --min-api N            APK minSdkVersion (default: 21)
+  --target-api N         APK targetSdkVersion (default: highest installed platform)
+  --target TARGET        Build one Android ABI target
+  --targets LIST         Build APK native libraries for a comma/space-separated
+                         target list (default: android-arm,android-aarch64,android-x86_64)
+  --assets DIR           Add all files from DIR as current-directory APK assets
+  --env NAME=VALUE       Set an environment variable before the program starts
+  --package NAME         Android application package name
+  --label TEXT           Android application label
+  --hideKeyboardButton   Disable the on-screen keyboard toggle button and IME
+  --landscape            Request landscape orientation for the Activity
+  --keep-temp            Keep temporary build directory
+  --runOnPhone           Install and launch the APK on the current adb device
+  --help                 Show this help text
+
+Environment:
+  ANDROID_HOME / ANDROID_SDK_ROOT   Android SDK location
+  ANDROID_NDK_HOME                  Android NDK location
+  ANDROID_D8_JAR / D8_JAR           R8/D8 jar to use when no d8/dx tool exists
+  ANDROID_DX_JAR / DX_JAR           dx jar to use when no d8/dx tool exists
+  FBANDROID_PREFIX                  Install prefix (default: /usr)
+  FBANDROID_ASSETS                  Directory to include as current-directory APK assets
+  FBANDROID_TARGET                  Single Android target key
+  FBANDROID_TARGETS                 Comma/space-separated Android target keys
+
+Source defines:
+  #define FB_ANDROID_HIDE_KEYBOARD_BUTTON
+                                  Disable the on-screen keyboard toggle button and IME
+  #define FB_ANDROID_LANDSCAPE
+                                  Request landscape orientation for the Activity.
+                                  Landscape is also inferred from common
+                                  SCREEN/SCREENRES source usage.
+EOF
+}
+
+source_uses_landscape_screen() {
+	local source_file="$1"
+
+	awk '
+	BEGIN {
+		found = 0
+	}
+
+	{
+		line = $0
+		sub(/\047.*/, "", line)
+		sub(/^[ \t]+/, "", line)
+		gsub(/[,()]/, " ", line)
+
+		fields = split(line, field, /[ \t]+/)
+		if (fields < 2)
+			next
+
+		command = tolower(field[1])
+
+		if (command == "screenres" && fields >= 3) {
+			width = field[2] + 0
+			height = field[3] + 0
+
+			if (width > height && height > 0)
+			{
+				found = 1
+				exit
+			}
+		}
+
+		if (command == "screen" && fields >= 2) {
+			mode = field[2] + 0
+
+			if (mode >= 1 && mode <= 13)
+			{
+				found = 1
+				exit
+			}
+		}
+	}
+
+	END {
+		if (found)
+			exit 0
+
+		exit 1
+	}
+	' "$source_file"
+}
+
+source_uses_threading() {
+	local source_file="$1"
+
+	awk '
+	{
+		line = tolower($0)
+		sub(/\047.*/, "", line)
+
+		if (line ~ /(^|[^a-z0-9_])(threadcreate|threadwait|mutexcreate|mutexlock|mutexunlock)([^a-z0-9_]|$)/)
+		{
+			found = 1
+			exit
+		}
+	}
+
+	END {
+		if (found)
+			exit 0
+
+		exit 1
+	}
+	' "$source_file"
+}
+
+source_uses_gfxlib3() {
+	local source_file="$1"
+
+	if grep -Eiq '^[[:space:]]*#define[[:space:]]+__FB_GFXLIB3__([[:space:]]|$)' \
+		"$source_file"; then
+		return 0
+	fi
+
+	# fbgfx3.bi declares the extension API and defines the public marker itself.
+	# Treat a direct include as selection even when a program does not repeat the
+	# marker in its own source.
+	grep -Eiq '^[[:space:]]*#include([[:space:]]+once)?[[:space:]]+"fbgfx3\.bi"' \
+		"$source_file"
+}
+
+find_sdk() {
+	local candidate
+	for candidate in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" /usr/lib/android-sdk /opt/android-sdk "$HOME/Android/Sdk"; do
+		[ -n "$candidate" ] || continue
+		[ -d "$candidate" ] || continue
+		echo "$candidate"
+		return 0
+	done
+	return 1
+}
+
+c_string() {
+	local value="$1"
+
+	value="${value//\\/\\\\}"
+	value="${value//\"/\\\"}"
+	value="${value//$'\n'/\\n}"
+	printf '"%s"' "$value"
+}
+
+find_ndk() {
+	local sdk="$1"
+	local candidate
+
+	shopt -s nullglob
+	for candidate in \
+		"${ANDROID_NDK_HOME:-}" \
+		"$sdk"/ndk/* \
+		"$sdk"/ndk-bundle \
+		/usr/lib/android-sdk/ndk/* \
+		/usr/lib/android-sdk/ndk-bundle \
+		/usr/lib/android-ndk* \
+		/opt/android-ndk*
+	do
+		[ -n "$candidate" ] || continue
+		[ -d "$candidate/toolchains/llvm/prebuilt" ] || continue
+		echo "$candidate"
+		shopt -u nullglob
+		return 0
+	done
+	shopt -u nullglob
+	return 1
+}
+
+find_prebuilt() {
+	local ndk="$1"
+	local candidate
+
+	case "$(uname -s)-$(uname -m)" in
+		Linux-x86_64) candidate="$ndk/toolchains/llvm/prebuilt/linux-x86_64" ;;
+		Linux-aarch64|Linux-arm64) candidate="$ndk/toolchains/llvm/prebuilt/linux-aarch64" ;;
+		Darwin-x86_64) candidate="$ndk/toolchains/llvm/prebuilt/darwin-x86_64" ;;
+		Darwin-arm64) candidate="$ndk/toolchains/llvm/prebuilt/darwin-arm64" ;;
+		*) candidate="" ;;
+	esac
+
+	if [ -n "$candidate" ] && [ -d "$candidate/bin" ]; then
+		echo "$candidate"
+		return 0
+	fi
+
+	shopt -s nullglob
+	for candidate in "$ndk"/toolchains/llvm/prebuilt/*; do
+		[ -d "$candidate/bin" ] || continue
+		echo "$candidate"
+		shopt -u nullglob
+		return 0
+	done
+	shopt -u nullglob
+	return 1
+}
+
+find_platform_jar() {
+	local sdk="$1"
+	local max_api="${2:-}"
+	local selected=""
+	local platform
+	local api
+
+	if [ -n "${ANDROID_PLATFORM_JAR:-}" ] && [ -f "$ANDROID_PLATFORM_JAR" ]; then
+		echo "$ANDROID_PLATFORM_JAR"
+		return 0
+	fi
+
+	shopt -s nullglob
+	for platform in "$sdk"/platforms/android-*; do
+		[ -f "$platform/android.jar" ] || continue
+		if [ -n "$max_api" ]; then
+			api="${platform##*/android-}"
+			[[ "$api" =~ ^[0-9]+$ ]] || continue
+			[ "$api" -le "$max_api" ] || continue
+		fi
+		selected="$platform/android.jar"
+	done
+	shopt -u nullglob
+
+	[ -n "$selected" ] || return 1
+	echo "$selected"
+}
+
+tool_or_die() {
+	local name="$1"
+	local sdk="$2"
+	local found=""
+
+	shopt -s nullglob
+	for found in \
+		"$sdk"/build-tools/*/"$name" \
+		"$sdk"/build-tools/*/"$name.exe" \
+		"$sdk"/build-tools/*/"$name.bat" \
+		"$sdk"/cmdline-tools/latest/bin/"$name" \
+		"$sdk"/cmdline-tools/latest/bin/"$name.exe" \
+		"$sdk"/cmdline-tools/latest/bin/"$name.bat" \
+		"$sdk"/tools/bin/"$name" \
+		"$sdk"/tools/bin/"$name.exe" \
+		"$sdk"/tools/bin/"$name.bat" \
+		"$sdk"/platform-tools/"$name" \
+		"$sdk"/platform-tools/"$name.exe" \
+		"$sdk"/platform-tools/"$name.bat"
+	do
+		[ -f "$found" ] || continue
+		echo "$found"
+		shopt -u nullglob
+		return 0
+	done
+	shopt -u nullglob
+
+	if command -v "$name" >/dev/null 2>&1; then
+		command -v "$name"
+		return 0
+	fi
+
+	die "required Android tool '$name' was not found"
+}
+
+launch_on_phone() {
+	local adb="$1"
+	local pkg="$2"
+	local activity="org.freebasic.android.FreeBasicNativeActivity"
+	local attached_devices
+
+	attached_devices=$("$adb" devices | awk '$2 == "device" {count++} END {print count+0}')
+	if [ "$attached_devices" -eq 0 ]; then
+		die "no connected adb device found"
+	fi
+	if [ "$attached_devices" -gt 1 ]; then
+		echo "fbc-android: multiple devices detected; using the first adb device" >&2
+		"$adb" devices >&2
+	fi
+
+	echo "fbc-android: installing ${output}" >&2
+	"$adb" install -r "$output"
+	"$adb" shell am force-stop "$pkg" >/dev/null 2>&1 || true
+	"$adb" logcat -b all -c || true
+
+	if ! "$adb" shell am start -W \
+		-a android.intent.action.MAIN \
+		-c android.intent.category.LAUNCHER \
+		-n "$pkg/$activity"; then
+		echo "fbc-android: explicit launch failed, trying launcher fallback" >&2
+		"$adb" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1
+	fi
+}
+
+sanitize_module() {
+	local value="$1"
+	value="${value##*/}"
+	value="${value%.*}"
+	value="$(printf '%s' "$value" | tr -c 'A-Za-z0-9_' '_')"
+	case "$value" in
+		""|[0-9]*) value="fb_${value}" ;;
+	esac
+	echo "$value"
+}
+
+sanitize_package() {
+	local value="$1"
+	value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9.' '.')"
+	value="${value#.}"
+	value="${value%.}"
+	[ -n "$value" ] || value="app"
+	echo "org.freebasic.$value"
+}
+
+android_target_info() {
+	local target="$1"
+
+	case "$target" in
+		android-arm|arm|armhf|armeabi-v7a)
+			echo "android-arm|armv7a-linux-androideabi|armv7a|armeabi-v7a"
+			;;
+		android-aarch64|aarch64|arm64|arm64-v8a)
+			echo "android-aarch64|aarch64-linux-android|aarch64|arm64-v8a"
+			;;
+		android-x86_64|x86_64)
+			echo "android-x86_64|x86_64-linux-android|x86_64|x86_64"
+			;;
+		*)
+			die "unsupported Android target: $target"
+			;;
+	esac
+}
+
+append_android_target() {
+	local spec="$1"
+	local info
+	local key
+	local triple
+	local arch
+	local abi
+	local existing
+
+	info="$(android_target_info "$spec")"
+	IFS='|' read -r key triple arch abi <<EOF
+$info
+EOF
+
+	for existing in "${target_keys[@]:-}"; do
+		if [ "$existing" = "$key" ]; then
+			return 0
+		fi
+	done
+
+	target_keys+=("$key")
+	target_triples+=("$triple")
+	target_arches+=("$arch")
+	target_abis+=("$abi")
+}
+
+prefix="${FBANDROID_PREFIX:-/usr}"
+libroot="${FBANDROID_LIBROOT:-$prefix/lib/freebasic-android}"
+compiler="${FBANDROID_COMPILER:-$libroot/bin/fbc-android-compiler}"
+incdir="${FBANDROID_INCDIR:-}"
+share="${FBANDROID_SHARE:-$prefix/share/freebasic-android}"
+template="${FBANDROID_TEMPLATE:-$share/template}"
+if [ -z "${FBANDROID_TEMPLATE:-}" ] && \
+	[ -f "${BASH_SOURCE[0]%/*}/fb_android_app.c" ] && \
+	[ -f "${BASH_SOURCE[0]%/*}/strings.xml" ] && \
+	[ -f "${BASH_SOURCE[0]%/*}/AndroidManifest.xml.in" ]; then
+	template="${BASH_SOURCE[0]%/*}"
+fi
+if [ -z "$incdir" ]; then
+	if [ -f "$prefix/inc/fbgfx.bi" ]; then
+		incdir="$prefix/inc"
+	else
+		incdir="$prefix/include/freebasic-android"
+	fi
+fi
+target_list="${FBANDROID_TARGETS:-${FBANDROID_TARGET:-android-arm,android-aarch64,android-x86_64}}"
+if [ -n "${FBANDROID_LIBDIR:-}" ] && [ -z "${FBANDROID_TARGETS:-}" ]; then
+	target_list="${FBANDROID_TARGET:-android-aarch64}"
+fi
+single_libdir="${FBANDROID_LIBDIR:-}"
+api="${ANDROID_API:-26}"
+min_api="${ANDROID_MIN_API:-21}"
+target_api="${ANDROID_TARGET_API:-}"
+mode="apk"
+keep_temp=0
+output=""
+package=""
+label=""
+src=""
+asset_dir="${FBANDROID_ASSETS:-}"
+env_defs=()
+use_mt=0
+use_gfx3=0
+use_gfx2_reference=0
+use_entry=1
+run_on_phone=0
+keyboard_button="true"
+screen_orientation="unspecified"
+fbc_args=()
+project_sources=()
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--help)
+			usage
+			exit 0
+			;;
+		--emit-apk) mode="apk"; shift ;;
+		--emit-so) mode="so"; shift ;;
+		--emit-obj) mode="obj"; shift ;;
+		--no-entry) use_entry=0; shift ;;
+		--api) api="$2"; shift 2 ;;
+		--min-api) min_api="$2"; shift 2 ;;
+		--target-api) target_api="$2"; shift 2 ;;
+		--target) target_list="$2"; shift 2 ;;
+		--targets) target_list="$2"; shift 2 ;;
+		--package) package="$2"; shift 2 ;;
+		--label) label="$2"; shift 2 ;;
+		--hideKeyboardButton) keyboard_button="false"; shift ;;
+		--landscape) screen_orientation="landscape"; shift ;;
+		--assets)
+			asset_dir="$2"
+			shift 2
+			;;
+		--env)
+			env_defs+=("$2")
+			shift 2
+			;;
+		--runOnPhone) run_on_phone=1; shift ;;
+		--keep-temp) keep_temp=1; shift ;;
+		-x|-o)
+			output="$2"
+			shift 2
+			;;
+		--)
+			shift
+			while [ $# -gt 0 ]; do
+				fbc_args+=("$1")
+				shift
+			done
+			;;
+		-*)
+			if [ "$1" = "-mt" ]; then
+				use_mt=1
+			fi
+			if [ "$1" = "-gfx3" ]; then
+				#
+				# The Android cross compiler can predate the host compiler's
+				# -gfx3 switch. Translate it to a private marker instead of
+				# passing an option it cannot parse. The checkout fbgfx.bi maps
+				# that marker to __FB_GFXLIB3__ only when the source has not
+				# already selected gfxlib3. The header overlay below supplies
+				# fbgfx3's declarations.
+				use_gfx3=1
+				fbc_args+=(
+					"-d" "__FB_GFXLIB3_OPTION__"
+					"-include" "fbgfx3-option.bi"
+				)
+			else
+				fbc_args+=("$1")
+			fi
+			shift
+			;;
+		*)
+			if [ -z "$src" ] && [ "${1##*.}" = "bas" ]; then
+				src="$1"
+			elif [ "${1##*.}" = "bas" ]; then
+				project_sources+=("$1")
+			else
+				fbc_args+=("$1")
+			fi
+			shift
+			;;
+	esac
+done
+
+for arg in "${fbc_args[@]}"; do
+	if [ "$arg" = "-mt" ]; then
+		use_mt=1
+	fi
+	if [ "$arg" = "-gfx3" ]; then
+		#
+		# -gfx3 injects __FB_GFXLIB3__ inside the compiler.  The wrapper must
+		# make the same archive decision as it does for a visible source define,
+		# because gfxlib3 owns renderer and event-pump threads even when BASIC
+		# does not explicitly use THREADCREATE.
+		use_gfx3=1
+	fi
+done
+
+#
+# The graphics benchmark contains a conditional __FB_GFXLIB3__ define so one
+# source can build both backends on Android. The lightweight source scan below
+# cannot evaluate nested preprocessor conditions, therefore an explicit
+# GFX2_REFERENCE command-line definition must suppress that inference.
+#
+for ((argument_index = 0; argument_index < ${#fbc_args[@]}; ++argument_index)); do
+	if [ "${fbc_args[$argument_index]}" = "-d" ] &&
+	   [ $((argument_index + 1)) -lt ${#fbc_args[@]} ] &&
+	   [ "${fbc_args[$((argument_index + 1))]}" = "GFX2_REFERENCE" ]; then
+		use_gfx2_reference=1
+	fi
+done
+
+[ "$run_on_phone" -eq 0 ] || [ "$mode" = "apk" ] || die "--runOnPhone only applies to APK output"
+
+[ -n "$src" ] || die "missing program.bas"
+[ -f "$src" ] || die "source file not found: $src"
+for project_source in "${project_sources[@]}"; do
+	[ -f "$project_source" ] || die "project source file not found: $project_source"
+done
+[ -x "$compiler" ] || die "Android-targeting compiler not found: $compiler"
+[ -d "$incdir" ] || die "Android include directory not found: $incdir"
+[ -f "$template/fb_android_app.c" ] || die "Android APK template not found: $template"
+[ -f "$template/FreeBasicNativeActivity.java" ] || die "Android Java activity template not found: $template"
+[ -f "$template/FreeBasicInputBridge.java" ] || die "Android Java input bridge template not found: $template"
+[ -f "$template/FreeBasicInputView.java" ] || die "Android Java input-view template not found: $template"
+
+if [ "$use_gfx2_reference" -eq 0 ] && source_uses_gfxlib3 "$src"; then
+	use_gfx3=1
+fi
+for ((argument_index = 0; argument_index < ${#fbc_args[@]}; ++argument_index)); do
+	if [ "$use_gfx2_reference" -eq 0 ] &&
+	   [ "${fbc_args[$argument_index]}" = "-d" ] &&
+	   [ $((argument_index + 1)) -lt ${#fbc_args[@]} ] &&
+	   [ "${fbc_args[$((argument_index + 1))]}" = "__FB_GFXLIB3__" ]; then
+		use_gfx3=1
+	fi
+done
+
+# gfxlib3 always owns a renderer thread, even when the BASIC source does not
+# use THREADCREATE itself.  Select the thread-safe rtlib and graphics archives
+# so the renderer, idle event pump, and BASIC program can use runtime services
+# concurrently.
+if [ "$use_gfx3" -eq 1 ]; then
+	use_mt=1
+fi
+
+target_keys=()
+target_triples=()
+target_arches=()
+target_abis=()
+
+target_list="$(printf '%s' "$target_list" | tr ',' ' ')"
+for target_spec in $target_list; do
+	append_android_target "$target_spec"
+done
+
+[ "${#target_keys[@]}" -gt 0 ] || die "no Android targets selected"
+
+if [ "$mode" != "apk" ] && [ "${#target_keys[@]}" -ne 1 ]; then
+	die "--emit-so and --emit-obj require exactly one Android target; use --target TARGET"
+fi
+
+if [ -n "$single_libdir" ] && [ "${#target_keys[@]}" -ne 1 ]; then
+	die "FBANDROID_LIBDIR can only be used with one Android target"
+fi
+
+for ((i = 0; i < ${#target_keys[@]}; ++i)); do
+	if [ -n "$single_libdir" ]; then
+		check_libdir="$single_libdir"
+	else
+		check_libdir="$libroot/${target_keys[$i]}"
+	fi
+	[ -d "$check_libdir" ] || die "Android runtime directory not found: $check_libdir"
+done
+
+if [ "$keyboard_button" = "true" ] && \
+   grep -Eiq '^[[:space:]]*#[[:space:]]*(define|DEFINE)[[:space:]]+FB_ANDROID_HIDE_KEYBOARD_BUTTON([[:space:]]|$)' "$src"; then
+	keyboard_button="false"
+fi
+
+if [ "$screen_orientation" = "unspecified" ] && \
+   grep -Eiq '^[[:space:]]*#[[:space:]]*(define|DEFINE)[[:space:]]+FB_ANDROID_LANDSCAPE([[:space:]]|$)' "$src"; then
+	screen_orientation="landscape"
+fi
+
+if [ "$screen_orientation" = "unspecified" ] && source_uses_landscape_screen "$src"; then
+	screen_orientation="landscape"
+fi
+
+if [ "$use_mt" -eq 0 ] && source_uses_threading "$src"; then
+	use_mt=1
+fi
+
+for ((i = 0; i < ${#fbc_args[@]}; ++i)); do
+	case "${fbc_args[$i]}" in
+		-dFB_ANDROID_HIDE_KEYBOARD_BUTTON|-dFB_ANDROID_HIDE_KEYBOARD_BUTTON=*)
+			keyboard_button="false"
+			;;
+		-dFB_ANDROID_LANDSCAPE|-dFB_ANDROID_LANDSCAPE=*)
+			screen_orientation="landscape"
+			;;
+		-d)
+			if [ $((i + 1)) -lt ${#fbc_args[@]} ]; then
+				case "${fbc_args[$((i + 1))]}" in
+					FB_ANDROID_HIDE_KEYBOARD_BUTTON|FB_ANDROID_HIDE_KEYBOARD_BUTTON=*)
+						keyboard_button="false"
+						;;
+					FB_ANDROID_LANDSCAPE|FB_ANDROID_LANDSCAPE=*)
+						screen_orientation="landscape"
+						;;
+				esac
+			fi
+			;;
+	esac
+done
+
+if [ "$keyboard_button" = "true" ]; then
+	keyboard_enabled_define=1
+	soft_input_mode="stateUnspecified|adjustResize"
+else
+	keyboard_enabled_define=0
+	soft_input_mode="stateAlwaysHidden|adjustResize"
+fi
+
+src_name="${src//\\//}"
+base="${src_name##*/}"
+base="${base%.*}"
+module="$(sanitize_module "$src_name")"
+[ -n "$label" ] || label="$base"
+[ -n "$package" ] || package="$(sanitize_package "$base")"
+[ -z "$asset_dir" ] || [ -d "$asset_dir" ] || die "assets directory not found: $asset_dir"
+for env_def in "${env_defs[@]}"; do
+	case "$env_def" in
+		*=*) ;;
+		*) die "--env expects NAME=VALUE: $env_def" ;;
+	esac
+
+	env_name="${env_def%%=*}"
+	[[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "invalid --env variable name: $env_name"
+done
+
+case "$mode" in
+	apk) [ -n "$output" ] || output="$base.apk" ;;
+	so) [ -n "$output" ] || output="libfreebasicapp.so" ;;
+	obj) [ -n "$output" ] || output="$base.o" ;;
+esac
+
+sdk="$(find_sdk)" || die "Android SDK not found; set ANDROID_HOME or ANDROID_SDK_ROOT"
+ndk="$(find_ndk "$sdk")" || die "Android NDK not found; set ANDROID_NDK_HOME"
+prebuilt="$(find_prebuilt "$ndk")" || die "Android NDK LLVM toolchain not found under $ndk"
+ar="$prebuilt/bin/llvm-ar"
+ranlib="$prebuilt/bin/llvm-ranlib"
+
+[ -x "$ar" ] || ar="$ar.exe"
+[ -x "$ranlib" ] || ranlib="$ranlib.exe"
+
+[ -x "$ar" ] || die "NDK llvm-ar not found: $ar"
+[ -x "$ranlib" ] || die "NDK llvm-ranlib not found: $ranlib"
+
+tmp="${TMPDIR:-/tmp}/fbc-android.$$"
+mkdir -p "$tmp"
+cleanup() {
+	if [ "$keep_temp" -eq 0 ]; then
+		rm -rf "$tmp"
+	else
+		echo "fbc-android: kept temporary directory: $tmp" >&2
+	fi
+}
+trap cleanup EXIT
+
+#
+# A source checkout can contain newer gfxlib3 selection and declaration
+# headers than the standalone Android compiler installation. Copy the selected
+# Android include tree and replace only those public headers when gfxlib3 is
+# requested. The compiler still sees every target-specific runtime include,
+# while the program sees the same -gfx3 pre-include, constants, and #inclib
+# selection as a normal checkout build. Installed wrappers without the
+# checkout files retain their existing include directory.
+compiler_incdir="$incdir"
+checkout_incdir="${BASH_SOURCE[0]%/*}/../../../inc"
+if [ "$use_gfx3" -eq 1 ] && \
+	[ -f "$checkout_incdir/fbgfx.bi" ] && \
+	[ -f "$checkout_incdir/fbgfx3.bi" ] && \
+	[ -f "$checkout_incdir/fbgfx3-option.bi" ]; then
+	compiler_incdir="$tmp/gfx3-include"
+	mkdir -p "$compiler_incdir"
+	cp -a "$incdir"/. "$compiler_incdir"/
+	cp "$checkout_incdir/fbgfx.bi" "$compiler_incdir/fbgfx.bi"
+	cp "$checkout_incdir/fbgfx3.bi" "$compiler_incdir/fbgfx3.bi"
+	cp "$checkout_incdir/fbgfx3-option.bi" \
+		"$compiler_incdir/fbgfx3-option.bi"
+fi
+
+cfile="$tmp/$module.c"
+objfile="$tmp/$module.o"
+appobj="$tmp/fb_android_app.o"
+sofile="$tmp/libfreebasicapp.so"
+entry_args=()
+module_args=()
+sofiles=()
+
+if [ "$use_entry" -eq 1 ]; then
+	entry_args=(-entry fb_android_program_main)
+fi
+# -m identifies the input module by its original file name.  The sanitized
+# name is only suitable for generated C and object paths.  Passing the
+# sanitized name for a source such as game-demo.bas makes fbc treat it as a
+# constructor module, which runs the BASIC program while the native library is
+# still loading and before Android has supplied a window.
+module_args=(-m "$base")
+
+for ((target_index = 0; target_index < ${#target_keys[@]}; ++target_index)); do
+	target_key="${target_keys[$target_index]}"
+	triple="${target_triples[$target_index]}"
+	fbc_arch="${target_arches[$target_index]}"
+	abi="${target_abis[$target_index]}"
+
+	if [ -n "$single_libdir" ]; then
+		libdir="$single_libdir"
+	else
+		libdir="$libroot/$target_key"
+	fi
+
+	cc="$prebuilt/bin/${triple}${api}-clang"
+	[ -x "$cc" ] || cc="$cc.exe"
+	[ -x "$cc" ] || die "NDK compiler not found: $cc"
+
+	target_tmp="$tmp/$target_key"
+	mkdir -p "$target_tmp"
+	cfile="$target_tmp/$module.c"
+	objfile="$target_tmp/$module.o"
+	appobj="$target_tmp/fb_android_app.o"
+	sofile="$target_tmp/libfreebasicapp.so"
+
+	env GCC="$cc" CLANG="$cc" AS="$cc" LD="$cc" AR="$ar" RANLIB="$ranlib" \
+		"$compiler" \
+		-prefix "$prefix" \
+		-target "$triple" \
+		-arch "$fbc_arch" \
+		-gen gcc \
+		-r \
+		-pic \
+		"${entry_args[@]}" \
+		"${module_args[@]}" \
+		-i "$compiler_incdir" \
+		-p "$libdir" \
+		"${fbc_args[@]}" \
+		-o "$cfile" \
+		"$src"
+
+	"$cc" -fPIC -DANDROID -D__FB_ANDROID__ -I"$incdir" -Wno-unused-variable -Wno-unused-function -c "$cfile" -o "$objfile"
+
+	#
+	# Multi-module FreeBASIC project
+	#
+	# The main module owns the renamed Android entry point. Compile every
+	# additional .bas argument as an ordinary separately linked module. Passing
+	# those sources to the main compiler invocation does not emit their code in
+	# -r mode and leaves unresolved BASIC symbols in the shared library.
+	project_objects=()
+	project_pids=()
+	for project_source in "${project_sources[@]}"; do
+		project_name="${project_source##*/}"
+		project_name="${project_name%.*}"
+		project_module="$(sanitize_module "$project_source")"
+		project_cfile="$target_tmp/$project_module.c"
+		project_objfile="$target_tmp/$project_module.o"
+
+		project_objects+=("$project_objfile")
+		(
+			env GCC="$cc" CLANG="$cc" AS="$cc" LD="$cc" AR="$ar" RANLIB="$ranlib" \
+				"$compiler" \
+				-prefix "$prefix" \
+				-target "$triple" \
+				-arch "$fbc_arch" \
+				-gen gcc \
+				-r \
+				-pic \
+				-i "$compiler_incdir" \
+				-p "$libdir" \
+				"${fbc_args[@]}" \
+				-o "$project_cfile" \
+				"$project_source"
+
+			"$cc" -fPIC -DANDROID -D__FB_ANDROID__ -I"$incdir" \
+				-Wno-unused-variable -Wno-unused-function \
+				-c "$project_cfile" -o "$project_objfile"
+		) &
+		project_pids+=("$!")
+
+		# Two compiler processes keep memory bounded on development machines
+		# while allowing independent FreeBASIC modules to make progress.
+		if [ "${#project_pids[@]}" -ge 2 ]; then
+			wait "${project_pids[0]}"
+			project_pids=("${project_pids[@]:1}")
+		fi
+	done
+	for project_pid in "${project_pids[@]}"; do
+		wait "$project_pid"
+	done
+
+	if [ "$mode" = "obj" ]; then
+		[ "${#project_objects[@]}" -eq 0 ] || \
+			die "--emit-obj accepts only one FreeBASIC source"
+		cp "$objfile" "$output"
+		echo "$output"
+		exit 0
+	fi
+
+	"$cc" -fPIC -DANDROID -DFB_ANDROID_KEYBOARD_ENABLED="$keyboard_enabled_define" -I"$incdir" -c "$template/fb_android_app.c" -o "$appobj"
+
+	envobj=""
+	if [ "${#env_defs[@]}" -gt 0 ]; then
+		envc="$target_tmp/fb_android_env.c"
+		envobj="$target_tmp/fb_android_env.o"
+		{
+			echo '#include <stdlib.h>'
+			echo ''
+			echo 'static void __attribute__((constructor)) fb_android_set_package_env(void)'
+			echo '{'
+			for env_def in "${env_defs[@]}"; do
+				env_name="${env_def%%=*}"
+				env_value="${env_def#*=}"
+				printf '\tsetenv(%s, %s, 1);\n' "$(c_string "$env_name")" "$(c_string "$env_value")"
+			done
+			echo '}'
+		} > "$envc"
+		"$cc" -fPIC -DANDROID -c "$envc" -o "$envobj"
+	fi
+
+	startup="$libdir/fbrt0pic.o"
+	runtime=()
+	if [ "$use_mt" -eq 1 ]; then
+		fb_runtime="libfbmtpic.a"
+		fbrt_runtime="libfbrtmtpic.a"
+		if [ "$use_gfx3" -eq 1 ]; then
+			gfx_runtime="libfbgfx3mtpic.a"
+		else
+			gfx_runtime="libfbgfxmtpic.a"
+		fi
+		sfx_runtime="libsfxmtpic.a"
+	else
+		fb_runtime="libfbpic.a"
+		fbrt_runtime="libfbrtpic.a"
+		if [ "$use_gfx3" -eq 1 ]; then
+			gfx_runtime="libfbgfx3pic.a"
+		else
+			gfx_runtime="libfbgfxpic.a"
+		fi
+		sfx_runtime="libsfxpic.a"
+	fi
+
+	[ -f "$startup" ] || die "required Android runtime file is missing: $startup"
+	[ -f "$libdir/$fb_runtime" ] || die "required Android runtime file is missing: $libdir/$fb_runtime"
+	runtime+=("$libdir/$fb_runtime")
+	gfx_runtime_path=""
+	for optional in "$fbrt_runtime" "$sfx_runtime"; do
+		if [ -f "$libdir/$optional" ]; then
+			runtime+=("$libdir/$optional")
+		fi
+	done
+	if [ -f "$libdir/$gfx_runtime" ]; then
+		gfx_runtime_path="$libdir/$gfx_runtime"
+	fi
+
+	# Both graphics runtimes export NativeActivity callback targets which are
+	# reached through weak symbols in fb_android_app.c. Keep the selected
+	# graphics archive whole so those entry points are retained.
+	runtime_group=("${runtime[@]}")
+	if [ -n "$gfx_runtime_path" ]; then
+		runtime_group+=("-Wl,--whole-archive" "$gfx_runtime_path" "-Wl,--no-whole-archive")
+	fi
+
+	link_objects=("$appobj")
+	[ -z "$envobj" ] || link_objects+=("$envobj")
+	link_objects+=("$startup" "$objfile")
+	link_objects+=("${project_objects[@]}")
+	android_graphics_libraries=()
+	if [ "$use_gfx3" -eq 1 ]; then
+		android_graphics_libraries=(-lEGL -lGLESv3)
+	fi
+
+	"$cc" -shared -Wl,-soname,libfreebasicapp.so -o "$sofile" \
+		"${link_objects[@]}" \
+		-Wl,--start-group "${runtime_group[@]}" -Wl,--end-group \
+		-Wl,--wrap=exit \
+		-llog -landroid -lEGL -lGLESv2 -lOpenSLES "${android_graphics_libraries[@]}" \
+		-ldl -lm
+
+	if [ "$mode" = "so" ]; then
+		cp "$sofile" "$output"
+		echo "$output"
+		exit 0
+	fi
+
+	sofiles+=("$abi|$sofile")
+done
+
+platform_jar="$(find_platform_jar "$sdk")" || die "no Android platform android.jar found under $sdk/platforms"
+target_sdk="${platform_jar%/android.jar}"
+target_sdk="${target_sdk##*/android-}"
+[ -z "$target_api" ] || target_sdk="$target_api"
+aapt="$(tool_or_die aapt "$sdk")"
+aapt_version="$( "$aapt" version 2>&1 || true )"
+use_aapt2=0
+if printf '%s' "$aapt_version" | grep -q "v0.2-debian"; then
+	aapt="$(tool_or_die aapt2 "$sdk")"
+	use_aapt2=1
+	aapt2_platform_jar="$(find_platform_jar "$sdk" 23 || true)"
+	[ -n "$aapt2_platform_jar" ] && platform_jar="$aapt2_platform_jar"
+fi
+apksigner="$(tool_or_die apksigner "$sdk")"
+keytool="$(command -v keytool || true)"
+[ -n "$keytool" ] || die "keytool not found; install a JDK"
+javac="$(command -v javac || true)"
+[ -n "$javac" ] || die "javac not found; install a JDK"
+d8=""
+dx=""
+d8_jar="${ANDROID_D8_JAR:-${D8_JAR:-}}"
+dx_jar="${ANDROID_DX_JAR:-${DX_JAR:-}}"
+java_tool=""
+if command -v d8 >/dev/null 2>&1; then
+	d8="$(command -v d8)"
+else
+	shopt -s nullglob
+	for found in "$sdk"/build-tools/*/d8 "$sdk"/build-tools/*/d8.exe "$sdk"/build-tools/*/d8.bat; do
+		[ -f "$found" ] || continue
+		d8="$found"
+		break
+	done
+	shopt -u nullglob
+fi
+if [ -z "$d8" ]; then
+	if command -v dx >/dev/null 2>&1; then
+		dx="$(command -v dx)"
+	else
+		shopt -s nullglob
+		for found in "$sdk"/build-tools/*/dx "$sdk"/build-tools/*/dx.exe "$sdk"/build-tools/*/dx.bat; do
+			[ -f "$found" ] || continue
+			dx="$found"
+			break
+		done
+		shopt -u nullglob
+	fi
+fi
+if [ -z "$d8" ] && [ -z "$dx" ] && [ -z "$d8_jar" ] && [ -z "$dx_jar" ]; then
+	shopt -s nullglob
+	for found in \
+		"$sdk"/build-tools/*/lib/dx.jar \
+		"$sdk"/build-tools/*/dx.jar \
+		/usr/share/java/com.android.dx.jar \
+		/usr/share/java/com.android.dx-*.jar
+	do
+		[ -f "$found" ] || continue
+		dx_jar="$found"
+		break
+	done
+	shopt -u nullglob
+fi
+if [ -z "$d8" ] && [ -z "$dx" ] && [ -n "$d8_jar" ]; then
+	[ -f "$d8_jar" ] || die "D8 jar was specified but not found: $d8_jar"
+	java_tool="$(command -v java || true)"
+	[ -n "$java_tool" ] || die "java not found; install a JRE or provide d8/dx"
+fi
+if [ -z "$d8" ] && [ -z "$dx" ] && [ -z "$java_tool" ] && [ -n "$dx_jar" ]; then
+	[ -f "$dx_jar" ] || die "dx jar was specified but not found: $dx_jar"
+	java_tool="$(command -v java || true)"
+	[ -n "$java_tool" ] || die "java not found; install a JRE or provide d8/dx"
+fi
+[ -n "$d8" ] || [ -n "$dx" ] || [ -n "$java_tool" ] || die "no dexer found; install Android build-tools with d8, the dalvik-exchange package for dx, or set ANDROID_D8_JAR/ANDROID_DX_JAR"
+
+asset_root="$tmp/assets"
+mkdir -p "$tmp/assets" "$tmp/apk/lib" "$tmp/res/values"
+if [ -d "$template/res" ]; then
+	# Project templates may contribute ordinary Android drawables and XML
+	# resources. The generated values file below remains driver-owned.
+	cp -a "$template/res/." "$tmp/res"/
+fi
+if [ -n "$asset_dir" ]; then
+	cp -a "$asset_dir/." "$asset_root"/
+	(
+		cd "$asset_root"
+		find . -type f -print \
+			| sed -e 's#^\./##' \
+			| grep -v '^_freebasic_asset_manifest.txt$' \
+			| sort > "_freebasic_asset_manifest.txt"
+	)
+fi
+for so_entry in "${sofiles[@]}"; do
+	abi="${so_entry%%|*}"
+	sofile="${so_entry#*|}"
+	mkdir -p "$tmp/apk/lib/$abi"
+	cp "$sofile" "$tmp/apk/lib/$abi/libfreebasicapp.so"
+done
+cp "$template/strings.xml" "$tmp/res/values/strings.xml"
+sed \
+	-e "s|@PACKAGE@|$package|g" \
+	-e "s|@MIN_SDK@|$min_api|g" \
+	-e "s|@TARGET_SDK@|$target_sdk|g" \
+	-e "s|@LABEL@|$label|g" \
+	-e "s|@KEYBOARD_BUTTON@|$keyboard_button|g" \
+	-e "s|@SCREEN_ORIENTATION@|$screen_orientation|g" \
+	-e "s#@SOFT_INPUT_MODE@#$soft_input_mode#g" \
+	"$template/AndroidManifest.xml.in" > "$tmp/AndroidManifest.xml"
+
+unsigned="$tmp/freebasicapp-unsigned.apk"
+unaligned="$tmp/freebasicapp-unaligned.apk"
+aligned="$tmp/freebasicapp-aligned.apk"
+
+if [ "$use_aapt2" -eq 1 ]; then
+	mkdir -p "$tmp/res-compiled"
+	"$aapt" compile --dir "$tmp/res" -o "$tmp/res-compiled"
+	mapfile -d '' aapt2_res < <(find "$tmp/res-compiled" -name '*.flat' -print0)
+	[ "${#aapt2_res[@]}" -gt 0 ] || die "aapt2 produced no compiled resources"
+	"$aapt" link -o "$unsigned" --manifest "$tmp/AndroidManifest.xml" -I "$platform_jar" -A "$asset_root" "${aapt2_res[@]}"
+else
+	"$aapt" package -f -M "$tmp/AndroidManifest.xml" -S "$tmp/res" -A "$asset_root" -I "$platform_jar" -F "$unsigned"
+fi
+
+mkdir -p "$tmp/java/org/freebasic/android" "$tmp/classes" "$tmp/dex"
+cp "$template/FreeBasicNativeActivity.java" "$tmp/java/org/freebasic/android/FreeBasicNativeActivity.java"
+cp "$template/FreeBasicInputBridge.java" "$tmp/java/org/freebasic/android/FreeBasicInputBridge.java"
+cp "$template/FreeBasicInputView.java" "$tmp/java/org/freebasic/android/FreeBasicInputView.java"
+"$javac" -source 8 -target 8 -Xlint:-options -bootclasspath "$platform_jar" \
+	-d "$tmp/classes" \
+	"$tmp/java/org/freebasic/android/FreeBasicNativeActivity.java" \
+	"$tmp/java/org/freebasic/android/FreeBasicInputBridge.java" \
+	"$tmp/java/org/freebasic/android/FreeBasicInputView.java"
+mapfile -d '' class_files < <(find "$tmp/classes" -name '*.class' -print0 | sort -z)
+[ "${#class_files[@]}" -gt 0 ] || die "javac produced no Android Java class files"
+if [ -n "$d8" ]; then
+	"$d8" --min-api "$min_api" --classpath "$platform_jar" \
+		--output "$tmp/dex" \
+		"${class_files[@]}"
+elif [ -n "$java_tool" ]; then
+	if [ -n "$d8_jar" ]; then
+		"$java_tool" -cp "$d8_jar" com.android.tools.r8.D8 \
+			--min-api "$min_api" \
+			--classpath "$platform_jar" \
+			--output "$tmp/dex" \
+			"${class_files[@]}"
+	else
+		"$java_tool" -jar "$dx_jar" --dex --output="$tmp/dex/classes.dex" "$tmp/classes"
+	fi
+else
+	"$dx" --dex --output="$tmp/dex/classes.dex" "$tmp/classes"
+fi
+jar uf "$unsigned" -C "$tmp/dex" classes.dex
+jar uf "$unsigned" -C "$tmp/apk" lib
+cp "$unsigned" "$unaligned"
+
+if command -v zipalign >/dev/null 2>&1; then
+	zipalign -f 4 "$unaligned" "$aligned"
+else
+	cp "$unaligned" "$aligned"
+fi
+
+keystore="${ANDROID_DEBUG_KEYSTORE:-$HOME/.android/debug.keystore}"
+mkdir -p "${keystore%/*}"
+if [ ! -f "$keystore" ]; then
+	"$keytool" -genkeypair \
+		-keystore "$keystore" \
+		-storepass android \
+		-keypass android \
+		-alias androiddebugkey \
+		-keyalg RSA \
+		-keysize 2048 \
+		-validity 10000 \
+		-dname "CN=Android Debug,O=Android,C=US" >/dev/null
+fi
+
+"$apksigner" sign \
+	--ks "$keystore" \
+	--ks-pass pass:android \
+	--key-pass pass:android \
+	--out "$output" \
+	"$aligned"
+
+if [ "$run_on_phone" -eq 1 ]; then
+	adb="$(tool_or_die adb "$sdk")"
+	launch_on_phone "$adb" "$package"
+fi
+
+echo "$output"

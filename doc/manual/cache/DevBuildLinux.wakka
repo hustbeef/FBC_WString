@@ -1,0 +1,31 @@
+﻿{{fbdoc item="title" value="Building on Linux and package distros"}}
+
+Linux builds can be done directly with ##make## or through the distro scripts in
+##build_scripts/##. Direct builds are best while developing a compiler or
+runtime change. Distro scripts are best when producing installable packages or
+checking that a target still works from a clean system image.
+
+{{fbdoc item="subsect" value="Direct native build"}}
+
+%%(sh)
+make print-config
+make prereqs-fbc
+make -j4
+%%
+
+The ##prereqs-fbc## target checks for the compiler and tools needed by the build
+that the make system has selected.
+
+{{fbdoc item="subsect" value="Distro scripts"}}
+
+The tree contains scripts for Debian, Ubuntu, Raspbian, Alpine, Arch, RPM-based
+distros, Slackware, and related test images. Use the matching script for the
+package family being tested. The scripts also document the package names needed
+by that distro family.
+
+{{fbdoc item="subsect" value="Cross and package builds"}}
+
+For Linux-to-other-target work, start with ::DevCrossCompiling|Cross-compiling::
+and the target-specific build page. The package scripts generally know more
+about install layout, naming, and archive contents than a short manual command
+line does.

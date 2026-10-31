@@ -1,0 +1,309 @@
+'' Project: FreeBASIC SDL examples
+'' File: sdl.bas
+'' Purpose:
+''     Display a FreeImage bitmap using an SDL1 surface.
+'' Responsibilities:
+''     Keep bitmap pixels alive while SDL borrows them and handle input.
+'' This file intentionally does NOT contain:
+''     Image saving or application-owned pixel copies.
+''
+'' Example of using FreeImage to load an image of any type and SDL to show it.
+'' The image file name is expected to be passed on the command line.
+'' Use the arrow keys to move the image, ESC to quit.
+
+#include once "FreeImage.bi"
+#include once "SDL/SDL.bi"
+
+const SCR_WIDTH = 800
+const SCR_HEIGHT= 600
+const SCR_BPP   = 16
+
+'' The blit helper uses the video surface created by main.
+'' FB-LINTER: DISABLE-NEXT-LINE FBL301
+dim shared video as SDL_Surface ptr
+
+declare sub blitImage( byval img as SDL_Surface ptr, byval x as integer, byval y as integer )
+declare function fibitmap2sdlsurface( byval dib as FIBITMAP Ptr ) as SDL_Surface ptr
+
+sub main()
+	dim as FIBITMAP ptr dib
+	dim as SDL_Surface ptr srcimg
+
+	dim as string filename = command(1)
+	if( filename = "" )Then
+		print "usage: freeimage.exe filename.ext"
+		end 1
+	end if
+
+	if( left( filename, 1 ) = !"\"" ) then
+		filename = mid( filename, 2 )
+	end if
+
+	if( right( filename, 1 ) = !"\"" ) then
+		filename = left( filename, len( filename ) - 1 )
+	end if
+
+	FreeImage_Initialise()
+	'' get file type
+	dim fiType as FREE_IMAGE_FORMAT = FreeImage_GetFileType( filename )
+	if fiType = FIF_UNKNOWN then
+		print
+		print "Unknown image format or file not found"
+		FreeImage_DeInitialise()
+		end 1
+	end if
+
+	print
+	print "FreeImage v"; *FreeImage_GetVersion( )
+	print "Opening: "; filename
+	print "Format: ";
+	select case as const fiType
+	case FIF_BMP:     print "OS/2 Bitmap (bmp)"
+	case FIF_ICO:     print "Icon (ico)"
+	case FIF_JPEG:    print "JPEG - JFIF Compliant (jif/jpg/jpeg)"
+	case FIF_JNG:     print "JNG (jng)"
+	case FIF_KOALA:   print "Koala (?)"
+	case FIF_LBM:     print "Deluxe Paint (lbm) or Amiga (iff)"
+	case FIF_MNG:     print "? (mng)"
+	case FIF_PBM:     print "Portable Bitmap (pbm)"
+	case FIF_PBMRAW:  print "Raw Portable Bitmap (pbm?)"
+	case FIF_PCD:     print "Kodak Photo CD (pcd)"
+	case FIF_PCX:     print "Zsoft Painbrush (pcx)"
+	case FIF_PGM:     print "Portable Greymap (pgm)"
+	case FIF_PGMRAW:  print "Raw Portable Greymap (pgm?)"
+	case FIF_PNG:     print "Portable Network Graphics (png)"
+	case FIF_PPM:     print "Portable Pixelmap (ppm)"
+	case FIF_PPMRAW:  print "Raw Portable Pixelmap (ppm?)"
+	case FIF_RAS:     print "Sun Raster Image (ras)"
+	case FIF_TARGA:   print "Truevision Targa (tga)"
+	case FIF_TIFF:    print "Tagged Image File Format (tif/tiff)"
+	case FIF_WBMP:    print "Windows Bitmap (bmp)"
+	case FIF_PSD:     print "Photoshop (psd)"
+	case FIF_CUT:     print "Dr. Halo (cut)"
+	case FIF_XBM:     print "? (xbm)"
+	case FIF_XPM:     print "? (xpm)"
+	case FIF_DDS:     print "? (dds)"
+	case FIF_GIF:     print "CompuServe Graphics Interchange (gif)"
+	end select
+
+	'' initialise sdl with video support
+	if( SDL_Init( SDL_INIT_VIDEO ) < 0 ) then
+		print "Couldn't initialise SDL"
+		FreeImage_DeInitialise()
+		end 1
+	end if
+
+	'' load image
+	dib = FreeImage_Load( fiType, filename )
+	if dib = NULL then
+		print "Couldn't load image"
+		SDL_Quit( )
+		FreeImage_DeInitialise()
+		end 1
+	end if
+	'' SDL's packed surfaces describe bitmap pixels, not floating-point TIFF/HDR
+	'' samples. Expand low-bit palettes to 32 bits without losing their colors.
+	if FreeImage_GetImageType(dib) <> FIT_BITMAP then
+		FreeImage_Unload(dib)
+		SDL_Quit()
+		FreeImage_DeInitialise()
+		end 1
+	end if
+	if FreeImage_GetBPP(dib) < 8 then
+		dim expanded as FIBITMAP ptr = FreeImage_ConvertTo32Bits(dib)
+		FreeImage_Unload(dib)
+		dib = expanded
+		if dib = NULL then
+			SDL_Quit()
+			FreeImage_DeInitialise()
+			end 1
+		end if
+	end if
+
+	'' image is upside-down, flip
+	if FreeImage_FlipVertical( dib ) = 0 then
+		print "Couldn't flip image"
+		FreeImage_Unload( dib )
+		SDL_Quit( )
+		FreeImage_DeInitialise()
+		end 1
+	end if
+
+	'' create a SDL surface from the bitmap
+	srcimg = fibitmap2sdlsurface( dib )
+	if( srcimg = NULL ) then
+		print "Couldn't create surface"
+		FreeImage_Unload( dib )
+		SDL_Quit( )
+		FreeImage_DeInitialise()
+		end 1
+	end if
+
+	'' set the video mode
+	video = SDL_SetVideoMode( SCR_WIDTH, SCR_HEIGHT, SCR_BPP, SDL_HWSURFACE or SDL_ANYFORMAT )
+	if( video = NULL ) then
+		print "Couldn't set video mode"
+		SDL_FreeSurface( srcimg )
+		FreeImage_Unload( dib )
+		SDL_Quit( )
+		FreeImage_DeInitialise()
+		end 1
+	end if
+
+	dim as long x = SCR_WIDTH\2 - srcimg->w\2
+	dim as long y = SCR_HEIGHT\2 - srcimg->h\2
+
+	dim doexit as integer, doupdate as integer
+	dim event as SDL_Event
+	dim exitStatus as integer
+
+	'' key repeat so we don't have to keep pressing over and over...
+	SDL_EnableKeyRepeat( 1, 1 )
+
+	'' Display the image before waiting for input; an expose event is not
+	'' guaranteed to be the first event delivered by every SDL video driver.
+	SDL_FillRect( video, NULL, SDL_MapRGB(video->format, 255, 255, 255) )
+	blitImage( srcimg, x, y )
+	SDL_Flip( video )
+
+	'' redraws if needed, quits on keypress or quit event
+	do while( doexit = 0 )
+		if SDL_WaitEvent( @event ) = 0 then
+			print "SDL_WaitEvent: "; *SDL_GetError( )
+			exitStatus = 1
+			exit do
+		end if
+		doupdate = 0
+
+		select case event.type
+		case SDL_KEYDOWN
+			'' key pressed
+			select case event.key.keysym.sym
+			case SDLK_ESCAPE
+				doexit = -1
+			case SDLK_UP
+				y = y - 8
+				doupdate = -1
+			case SDLK_DOWN
+				y = y + 8
+				doupdate = -1
+			case SDLK_LEFT
+				x = x - 8
+				doupdate = -1
+			case SDLK_RIGHT
+				x = x + 8
+				doupdate = -1
+			end select
+
+		case SDL_MOUSEBUTTONDOWN
+			'' mouse button pressed
+			SDL_GetMouseState( @x, @y )
+			x = x - srcimg->w\2
+			y = y - srcimg->h\2
+			doupdate = -1
+
+		case SDL_QUIT_
+			'' user closed the window
+			doexit = -1
+
+		case SDL_VIDEOEXPOSE, SDL_VIDEORESIZE
+			'' window opened or was resized
+			doupdate = -1
+
+		end select
+
+		'' only redraw if needed
+		if( doupdate ) then
+			' clear the screen
+			SDL_FillRect( video, NULL, SDL_MapRGB(video->format, 255, 255, 255) )
+			' draw the image
+			blitImage( srcimg, x, y )
+			'' show it
+			SDL_Flip( video )
+		end if
+
+	loop
+
+	'' SDL_CreateRGBSurfaceFrom borrows the FreeImage pixel buffer. Destroy
+	'' that surface before freeing the bitmap that supplies its pixels.
+	SDL_FreeSurface( srcimg )
+	FreeImage_Unload( dib )
+	SDL_Quit( )
+	FreeImage_DeInitialise()
+	if exitStatus then end 1
+end sub
+
+sub blitImage( byval img as SDL_Surface ptr, byval x as integer, byval y as integer )
+	dim dest as SDL_Rect
+	dest.x = x
+	dest.y = y
+	SDL_BlitSurface( img, 0, video, @dest )
+end sub
+
+'' Convert FreeImage palette to SDL palette
+function fipal2sdlpal( byval dib as FIBITMAP Ptr, byval surface as SDL_Surface ptr ) as integer
+	dim intpal(0 to 255) as SDL_Color
+
+	dim as RGBQUAD ptr pal = FreeImage_GetPalette( dib )
+	dim as integer colors = FreeImage_GetColorsUsed( dib )
+	if colors <= 0 or colors > 256 or pal = NULL then return 0
+
+	for i as integer = 0 to colors-1
+		intpal(i).r = pal->rgbRed
+		intpal(i).g = pal->rgbGreen
+		intpal(i).b = pal->rgbBlue
+		pal += 1
+	next
+
+	return SDL_SetColors( surface, @intpal(0), 0, colors )
+end function
+
+'' Convert FreeImage bitmap to SDL surface
+function fibitmap2sdlsurface( byval dib as FIBITMAP Ptr ) as SDL_Surface ptr
+	dim surface as SDL_Surface ptr
+	if dib = NULL then return NULL
+	dim image_width as ulong = FreeImage_GetWidth(dib)
+	dim image_height as ulong = FreeImage_GetHeight(dib)
+	dim image_bits as ulong = FreeImage_GetBPP(dib)
+	dim image_pitch as ulong = FreeImage_GetPitch(dib)
+	const MAX_IMAGE_PIXELS = 16 * 1024 * 1024
+	if image_width = 0 or image_height = 0 or image_pitch = 0 or _
+		culngint(image_width) * image_height > MAX_IMAGE_PIXELS then return NULL
+	'' SDL1 rectangles and surface pitch use 16-bit fields.
+	if image_width > 32767 or image_height > 32767 or image_pitch > 65535 then return NULL
+	select case image_bits
+	case 8, 16, 24, 32
+	case else
+		return NULL
+	end select
+	if FreeImage_GetImageType(dib) <> FIT_BITMAP or FreeImage_GetBits(dib) = NULL then return NULL
+	if image_pitch < culngint(image_width) * (image_bits \ 8) then return NULL
+
+	surface = SDL_CreateRGBSurfaceFrom( _
+				FreeImage_GetBits( dib ), _
+				FreeImage_GetWidth( dib ), _
+				FreeImage_GetHeight( dib ), _
+				FreeImage_GetBPP( dib ), _
+				FreeImage_GetPitch( dib ), _
+				FreeImage_GetRedMask( dib ), _
+				FreeImage_GetGreenMask( dib ), _
+				FreeImage_GetBlueMask( dib ), _
+				0 )
+
+	if( surface <> NULL ) then
+		if( FreeImage_GetPalette( dib ) <> NULL ) then
+			if fipal2sdlpal(dib, surface) = 0 then
+				SDL_FreeSurface(surface)
+				return NULL
+			end if
+		end if
+	end if
+
+	function = surface
+end function
+
+#ifndef IMAGE_EXAMPLE_NO_MAIN
+main()
+#endif
+
+'' End of sdl.bas

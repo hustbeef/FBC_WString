@@ -1,0 +1,44 @@
+'' Project: FreeBASIC compiler - semantic source constructs
+'' File: tooling/semantic-constructs.bi
+'' Purpose: Observe parser statement and compound boundaries.
+'' Responsibilities: Define construct identities, owners, and fact associations.
+'' This file intentionally does NOT contain: statement grammar or AST lowering.
+
+#ifndef __FB_SEMANTIC_CONSTRUCTS_BI__
+#define __FB_SEMANTIC_CONSTRUCTS_BI__
+
+#include once "lexer/lex.bi"
+
+declare sub fbSemanticModelResetConstructs( )
+declare function fbSemanticModelStatementBegin( byref source as LEX_LOCATION, byval token as integer, byval token_class as integer ) as longint
+declare sub fbSemanticModelStatementEnd( byval identity as longint, byref route as const string, byref ending as LEX_LOCATION, byval errors_before as integer )
+declare function fbSemanticModelCurrentStatement( ) as longint
+declare sub fbSemanticModelStatementOperandCapture( byval complete as integer )
+declare sub fbSemanticModelStatementOperandExport( )
+declare sub fbSemanticModelStatementIifInput( )
+declare sub fbSemanticModelStatementExpressionMissing( )
+declare function fbSemanticModelConstructBegin( byval token as integer ) as longint
+declare sub fbSemanticModelConstructEnd( byval identity as longint, byref ending as LEX_LOCATION )
+declare sub fbSemanticModelAssociateStatement( byref domain as const string, byval subject as longint, byval statement as longint = 0 )
+declare sub fbSemanticModelStatementOperation( byref operation as const string )
+declare sub fbSemanticModelNamespaceDeclaration _
+	( byval construct as longint, byval sym as FBSYMBOL ptr, byval is_anonymous as integer )
+declare sub fbSemanticModelSelectInput( byval construct as longint, byval expression as longint, byval storage as FBSYMBOL ptr, byval is_const as integer )
+declare sub fbSemanticModelSelectClause( byval construct as longint, byval is_else as integer, byval alternatives as integer )
+declare sub fbSemanticModelSelectAlternative( byval construct as longint, byval ordinal as integer, byref kind as const string, byval operation as integer, byval first_expression as longint, byval last_expression as longint, byval is_last as integer )
+
+declare sub fbSemanticModelSelectComparison _
+	( byval construct as longint, byval ordinal as integer, byval bound as integer, _
+	  byval operation as integer, byval matches_on_jump as integer, byval generation as longint )
+
+declare sub fbSemanticModelSelectConstant _
+	( byval construct as longint, byval ordinal as integer, byval dtype as integer, _
+	  byval first_value as ulongint, byval last_value as ulongint, byval bias as ulongint )
+
+declare sub fbSemanticModelSelectTable _
+	( byval construct as longint, byval dtype as integer, byval storage as FBSYMBOL ptr, _
+	  byval bias as ulongint, byval span as ulongint, byval count as integer )
+
+#endif
+
+'' end of tooling/semantic-constructs.bi

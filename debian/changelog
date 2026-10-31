@@ -1,0 +1,561 @@
+freebasic (1.20.5-1) unstable; urgency=medium
+
+  * Bump the compiler and package version to 1.20.5.
+  * Keep package metadata and the embedded compiler version synchronized.
+  * Update the SDL1 and SDL2 sample font links to the installed Vera font.
+
+ -- SJ_Zero <sj@fbxl.net>  Thu, 15 Oct 2026 10:00:00 -0400
+
+freebasic (1.20.4-3) unstable; urgency=medium
+
+  * Rebuild the ARM64 GFX3 backend with batched opaque ellipse rendering for
+    substantially faster native GLES performance on the R36+ handheld.
+
+ -- SJ_Zero <sj@fbxl.net>  Wed, 30 Sep 2026 00:00:00 -0400
+
+freebasic (1.20.4-2) unstable; urgency=medium
+
+  * Rebuild the current 1.20.4 packages as revision 2 so APT recognizes them
+    as newer than the already published revision 1 packages.
+
+ -- SJ_Zero <sj@fbxl.net>  Wed, 23 Sep 2026 10:19:12 -0400
+
+freebasic (1.20.4-1) unstable; urgency=medium
+
+  * Package the 1.20.4 compiler, runtime, graphics, sound, platform, and
+    release-validation updates under a new upstream package version.
+  * Keep the Debian-family package version synchronized with mk/version.mk so
+    current source cannot silently replace an older package revision.
+
+ -- SJ_Zero <sj@fbxl.net>  Thu, 03 Sep 2026 23:30:00 -0400
+
+freebasic (1.20.3-2) unstable; urgency=medium
+
+  * Link ncurses directly on Linux systems that do not provide a libcurses
+    linker alias.
+  * Publish the qualified 1.20.3 package set under a new Debian revision so
+    package managers do not retain the earlier repository snapshot.
+  * Read the Xbox package revision directly from debian/changelog before
+    build dependencies are installed.
+  * Point the native Termux bootstrap at the qualified Resolute Android
+    package retained by the trimmed release matrix.
+  * Keep generated installer examples aligned with the trimmed package
+    matrix.
+  * Let apk append its architecture to the repository URL while retaining
+    architecture-specific direct-package fallback downloads.
+  * Apply the package installer's explicit untrusted-local-package policy
+    when refreshing the unsigned APK repository index too.
+
+ -- SJ_Zero <sj@fbxl.net>  Thu, 20 Aug 2026 18:30:00 -0400
+
+freebasic (1.20.3-1) unstable; urgency=medium
+
+  * Package the 1.20.3 release with the new gfxlib3 runtime, expanded
+    QuickBASIC SCREEN compatibility, dependency-free PNG I/O, and current
+    sfxlib MIDI and mixer work.
+  * Use SDL dummy video and audio drivers for automated DOSBox-X package
+    tests on headless Linux release builders, and accept DOS executable
+    payloads without irrelevant Unix execute bits during resumed tests;
+    install the package providing sfdisk and exercise normal compiler cleanup
+    rather than preserving intermediates.  Use DOSBox-X shell redirection for
+    suite logs, verify all compiled test executables before audio analysis,
+    use deterministic capture cycles and uninterruptible delays for continuous
+    DMA evidence, and test the supported MUSIC and raw-stream APIs instead of
+    nonexistent AUDIO and STREAM commands.
+  * Stop the NuttX SDK package referencing a retired RP2350 firmware wrapper.
+  * Keep release architecture selection, package discovery, cleanup roots,
+    compiler flag arrays, and path setup clean under strict ShellCheck.
+  * Restore the Debian Ports chroot filesystems after debootstrap's foreign
+    second stage so package post-install scripts retain a working procfs.
+  * Stage the private sfxlib source headers used by strict MIDI/FM fbctest
+    helpers when validating Debian Ports packages.
+  * Stage those private sfxlib headers for APK, RPM, Arch Linux, and Slackware
+    package validation as well, keeping their isolated fbctests complete.
+  * Bootstrap Sid loong64 package tests from Debian's main archive now that
+    the architecture is no longer served by Debian Ports.
+  * Retry the initial threaded TCP loopback connection under QEMU instead of
+    letting a transient refusal strand the listening test thread.
+  * Avoid the public sfxlib TEMPO intrinsic in the anti-flickering example's
+    local timing variable so the packaged example compiles again.
+  * Skip the unavailable Ubuntu Jammy riscv64 multiarch package lane.
+  * Avoid duplicate target CPU-family definitions in RISC-V, s390x, and
+    LoongArch cross-compiler builds.
+  * Install the packaged NuttX SDK shell helpers with executable permissions
+    and remove generated empty object directories from the package.
+  * Preserve deferred win32 fastcall and thiscall register arguments while
+    later arguments are evaluated.
+  * Correct short-circuit constant-expression diagnostics, macro invocation
+    whitespace, equivalent macro redefinitions, token cleanup, and the
+    32-parameter limit.
+  * Stage sfxlib sources in isolated Windows package tests so MIDI/FM coverage
+    validates the packaged compiler and runtime.
+  * Depend on the ALSA and PulseAudio development packages from the base
+    compiler so packaged SOUND and sfxlib programs link on a fresh install.
+  * Elevate machine-wide Windows installer smoke tests automatically while
+    retaining their validation transcript and restoring PATH/profile state.
+  * Launch the bounded Explorer environment-refresh helper directly from NSIS
+    so Windows shell activation cannot leave a completed installer hung.
+  * Keep generated APKs, NuttX test output, probe tools, and Python caches out
+    of isolated source and bootstrap worktrees.
+  * Keep generated test executables and release output backups out of source
+    packages, and package filtered working-tree changes in bootstrap archives.
+  * Validate normal Debian and Ubuntu armhf packages against their ARMv7
+    hard-float baseline while reserving the ARMv6 check for Raspbian.
+  * Serialize gfxlib2 BMP headers and pixels in little-endian order and decode
+    BMP pixels and bitfield masks without host-endian loads, fixing BSAVE and
+    BLOAD on big-endian targets such as s390x.  Keep the union and BMP command
+    sweeps endian-neutral and verify the loaded pixel value.
+  * Keep release-monitor PID and status files out of source packages, and
+    reject an archive if transient process state bypasses staging filters.
+  * Limit release package matrices to each distribution's current stable and
+    rolling or unstable channel, including Resolute, Trixie/Sid, Alpine
+    3.24/edge, openSUSE Leap 16/Tumbleweed, and current enterprise releases;
+    omit postmarketOS architectures its published edge image cannot run.
+  * Require NuttX, Wii, and Xbox artifacts from the Resolute x86_64 row,
+    staging Wii build tools from a pinned official devkitPPC image when
+    Ubuntu does not package devkitPro.
+  * Mount a resolved shared artifact directory at /work/out so Docker builds
+    for Debian/Ubuntu, APK-family, and RPM-family packages work when the
+    release tree uses an out symlink to conserve disk space.
+  * Exclude that root out path when it is a symlink as well as a directory,
+    and reject any source archive that still contains it.
+  * Expose staged devkitPPC binaries to the makefile's early cross-toolchain
+    probe, retain the libogc include path while clearing host build flags, and
+    keep optimization enabled for libogc's always-inline clock helpers.
+  * Document the three intentional PowerPC Wii startup objects with narrow
+    Lintian overrides for the amd64 cross-target package.
+  * Remove ignored Wii object files and archives left by earlier local builds
+    before creating the upstream source archive, and reject the archive if
+    those generated files bypass cleanup.
+  * Build the multithreaded Xbox runtime selected by the compiler's default
+    Xbox mode so installed packages link normal programs successfully.
+  * Complete Wii runtime support for condition variables, file copying, FRE,
+    serial stubs, EXEC/RUN/CHAIN, SHELL, and date/time setters, and make the
+    Wii Exampleageddon sweep exercise the multithreaded runtime while
+    classifying NuttX and unavailable libffi THREADCALL examples correctly.
+  * Invoke native Wii archive tools directly from their Windows trampolines
+    so packaged builds do not depend on a second MSYS drive-mount table, and
+    isolate generated tool trampolines between parallel compiler processes;
+    include mktemp in the bundled command set required by those trampolines.
+  * Keep unrelated PATH entries from contaminating the packaged Xbox Clang
+    runtime, stage sfxlib sources and regenerate log-test manifests in the
+    isolated tree, compile and link Xbox single-module tests in one invocation
+    so automatic gfxlib and sfxlib selection reaches the XBE link, and preserve
+    the actual failure result in shortened test reports.
+  * Complete every gfxlib2 platform driver callback table with an explicit
+    resize slot, removing strict GCC missing-initializer warnings.
+  * Run pedantic Lintian on complete package sets and fail release rows on
+    errors or warnings.
+  * Install nested Xbox sidecar packages during Linux package validation,
+    check the installed NuttX and Wii launchers, and link an Xbox smoke XBE.
+  * Group Android cross-architecture runtime overrides so host-matching
+    Android targets do not leave unused Lintian overrides.
+  * Set each staged package's target distribution, use Jammy's supported
+    policy level, adapt path-based overrides to old and new Lintian parsers,
+    and narrowly recognize its known false-positive warning for normal
+    binutils dbgsym files.
+  * Use Raspbian Buster's Policy level, old override syntax, and legacy
+    fail-on-warnings interface while continuing to reject every non-overridden
+    error and warning.
+  * Lock Multi-Arch: same linux-libc-dev packages to the newest version shared
+    by both architectures, and install Architecture: all releases without an
+    invalid target qualifier.
+  * Build Sid target libraries in isolated sysroots so asynchronous C library,
+    cross-toolchain, and Debian Ports transitions cannot conflict in the
+    native package database; retain common libzstd versions for other rolling
+    multiarch repositories that temporarily publish different candidates.
+  * Retry transient APT downloads with bounded network timeouts so archived
+    distribution mirrors do not abort otherwise valid package builds.
+  * Install manual pages for the NuttX helper commands, mark the source-only
+    SDK architecture-independent, and document its DOS code-page byte table.
+  * Remove the Windows-only SWIG executable before creating Debian source
+    archives, avoiding a deleted-file mismatch from dpkg-source.
+  * Use registered package build-profile names, binNMU-safe dependencies,
+    current OpenGL and ncurses build dependencies, and source-only Debian
+    archives so strict Lintian package checks remain clean.
+  * Build and install gfxlib3 for supported Linux and Android targets, and
+    link a gfxlib3 SCREEN 13 smoke so incomplete packages fail validation.
+  * Disable -fno-plt for Debian package builds through an explicit build-system
+    opt-out, avoiding a Trixie GCC 14 and binutils relaxation bug that turns a
+    stack-passed runtime callback address into a call and crashes file I/O.
+  * Let Exampleageddon omit its source-tree runtime prefix during package
+    validation so tests link the installed package archives being qualified.
+  * Restrict the Ubuntu Android package to amd64, the only architecture for
+    which Ubuntu publishes Google's required Android NDK host toolchain.
+  * Use Termux's absolute Bash path in the public Android bootstrap so a
+    curl-downloaded copy can be executed directly on the phone.
+  * Build Android APKs on ARM64 phones with a native ARM64 Ubuntu compiler
+    and Termux's Clang, NDK sysroot, AAPT2, D8, APK signer, and Java tools,
+    removing the QEMU and x86_64 host-tool requirement; keep the launch smoke
+    alive with an uninterruptible FreeBASIC delay.
+  * Repair dependency-forced Android package state before adding Ubuntu host
+    tools, install the checksum utility required by fresh SDK downloads, and
+    use Termux's CA bundle on Android releases with obsolete system roots.
+  * Pause the sfxlib worker while the MIDI rate test records exact mixer frame
+    offsets, removing a scheduling-dependent ARM64 validation failure.
+  * Include failed fbctest detail logs and required sfxlib source inputs in
+    emulated package-test worktrees.
+  * Compile and link the threaded TCP test in one multithreaded invocation.
+  * Use unique Windows installer-test roots, retry transient cleanup, and
+    remove generated compiler files while the elevated token still owns them.
+  * Prefer the bundled devkitPPC over stale host settings, resolve Windows
+    tool names to their real .exe paths, and clean target-neutral fbcunit
+    objects with Wii settings before package validation so desktop objects
+    cannot reach the PowerPC linker.
+  * Restrict the gas64 single-precision branch regression test to x86-64 so
+    native ARM64 package validation does not select an incompatible backend.
+
+ -- SJ_Zero <sj@fbxl.net>  Thu, 30 Jul 2026 05:06:38 -0400
+
+freebasic (1.20.2-14) resolute; urgency=medium
+
+  * Keep Android graphics JNI entry points in generated shared libraries so
+    the packaged Java input bridge is fully linked at runtime.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Tue, 14 Jul 2026 15:20:00 -0400
+
+freebasic (1.20.2-13) resolute; urgency=medium
+
+  * Publish the integrated freebasic-android package with the Android NDK
+    dependency required by fbc-android for clean-install APK builds.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Tue, 14 Jul 2026 10:40:00 -0400
+
+freebasic (1.20.2-12) resolute; urgency=medium
+
+  * Drop explicit bash dependencies from shell-helper packages because bash is
+    essential on Debian and Ubuntu systems.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 16:30:00 -0400
+
+freebasic (1.20.2-11) resolute; urgency=medium
+
+  * Add packaged NuttX firmware-prep commands for ESP32-P4 Ethernet boards
+    and the Waveshare RP2350-PiZero, cloning NuttX/apps externally instead
+    of vendoring NuttX into the FreeBASIC package.
+  * Include the RP2350-PiZero NuttX image helpers in the installed
+    freebasic-nuttx SDK.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 16:00:00 -0400
+
+freebasic (1.20.2-10) resolute; urgency=medium
+
+  * Let the NuttX upload wrapper choose the next available HTTP port when
+    the default temporary transfer port is already in use.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 15:30:00 -0400
+
+freebasic (1.20.2-9) resolute; urgency=medium
+
+  * Build the NuttX remote-console and HTTP helper tools from writable
+    output-directory copies so installed SDK sources remain read-only.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 15:00:00 -0400
+
+freebasic (1.20.2-8) resolute; urgency=medium
+
+  * Clear generated NuttX dependency state even when reusing an existing
+    configured board tree, so container-mounted ESP32-P4 workdirs do not
+    inherit stale package-cache include paths.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 14:30:00 -0400
+
+freebasic (1.20.2-7) resolute; urgency=medium
+
+  * Provide the generated newlib _REENT_INIT fallback needed by the
+    packaged ESP32-P4 NuttX module build.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 14:00:00 -0400
+
+freebasic (1.20.2-6) resolute; urgency=medium
+
+  * Depend on kconfig-frontends-nox so the installed NuttX module workflow
+    has kconfig-tweak available in clean containers.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 13:30:00 -0400
+
+freebasic (1.20.2-5) resolute; urgency=medium
+
+  * Make the NuttX RISC-V relocation patch check recognize already-patched
+    NuttX trees when running from the installed SDK.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 13:00:00 -0400
+
+freebasic (1.20.2-4) resolute; urgency=medium
+
+  * Invoke installed NuttX SDK shell helpers through bash from the wrapper
+    commands so the package does not depend on source execute bits.
+  * Align the compiler build revision with the published Debian package
+    revision.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 12:30:00 -0400
+
+freebasic (1.20.2-3) resolute; urgency=medium
+
+  * Add the freebasic-nuttx package with the ESP32-P4 upload wrapper,
+    RISC-V NuttX smoke helper, remote console helpers, NuttX examples, and
+    the runtime/gfx/sfx source SDK needed to build loadable NuttX modules
+    from an installed package.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 12:00:00 -0400
+
+freebasic (1.20.2-2) resolute; urgency=medium
+
+  * Replace the unshipped NuttX iopins include and runtime symbols with the
+    platform-neutral gpiopins.bi / GpioPin* API.
+  * Add a generic GPIO runtime fallback so unsupported targets fail cleanly
+    while NuttX supplies the /dev/gpioN backend.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 06:00:00 -0400
+
+freebasic (1.20.2-1) resolute; urgency=medium
+
+  * Package the 1.20.2 development snapshot for Ubuntu Resolute.
+  * Include the new NuttX target work, runtime/library support, test
+    tooling, stricter diagnostics cleanup, and cross-target packaging
+    fixes recorded in changelog.txt.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 01 Jul 2026 00:00:00 -0400
+
+freebasic (1.20.1-1) jammy; urgency=medium
+
+  * Forward-port the divergent 1.10.4 line, including its separate
+    1.10.3 platform reality, into the 1.20 branch.
+  * Adopt the GNUmakefile + mk/ build system together with the
+    build_scripts/ and Debian packaging flow.
+  * Add sfxlib to the compiler, runtime, libraries, examples, and
+    package builds.
+  * Add OPEN TCP / OPEN TCP SERVER, TCP ACCEPT, and EOC support.
+  * Add Haiku support across compiler targets, rtlib, gfxlib2,
+    sfxlib, headers, libraries, and build scripts.
+  * Carry forward the broadened platform support and packaging work
+    for Darwin/macOS, Linux, Windows/MinGW, Windows/Cygwin, FreeBSD,
+    OpenBSD, NetBSD, DragonFly, Solaris, and Haiku.
+  * Carry forward newer cpu-family and linker handling, including
+    riscv64, s390x, loongarch64, and NetBSD rpath support.
+  * Restore the Windows UTF-8 filename runtime layer, including
+    Unicode-aware MinGW DIR() support and wide-path file wrappers.
+  * Add the Solaris target-specific console/runtime files and local
+    termcap shim needed on systems without usable termcap headers.
+  * Refresh the Darwin graphics driver/backend set from the 1.10.4
+    branch.
+  * Add commented sfxlib and OPEN TCP example programs.
+  * Fix Linux linker flag handling so -m32/-m64 are only passed on
+    x86/x86_64 targets.
+  * Fix Linux sfxlib shutdown and worker-lock issues found during the
+    1.20 forward-port validation work.
+  * Remove the accidentally nested duplicate src/sfxlib/sfxlib source
+    tree and move shared sfxlib teardown behind per-target platform hooks
+    instead of including Linux backend headers from the generic core.
+  * Fix Linux sfxlib CAPTURE SAVE so buffered recordings can be written
+    successfully on real hardware.
+  * Fix Alpine package smoke binaries by building musl-targeted compilers
+    that emit the musl dynamic loader path instead of glibc loader paths.
+  * Quiet ALSA library probe diagnostics during normal sfxlib backend
+    fallback while preserving them when sfxlib debug environment variables
+    are enabled.
+  * Tighten Linux package sfxlib smoke tests so they still fail on stderr
+    while reporting the active output driver, including null fallback in
+    no-audio Docker containers.
+  * Fix Unix console query hangs that could block example output in
+    non-responding terminal sessions.
+  * Rework the DOS package builder so build_scripts/msdos-build-freebasic.sh
+    can bootstrap the DOS toolchain on Linux, stage the distribution
+    under out/msdos, and clean successful .build-msdos intermediates by
+    default.
+  * Add an image-backed DOSBox-X validation path via
+    build_scripts/msdos-test-freebasic.sh that compiles hello-world,
+    SCREEN 13 graphics, Sound Blaster, and no-BLASTER fallback tests
+    from inside the packaged DOS distribution.
+  * Fix the DOS sfxlib integration by moving the backend sources onto
+    the normal DOS source path, restoring Sound Blaster and MPU-401
+    linkage/init, and making missing BLASTER settings fail visibly for
+    the Sound Blaster path.
+  * Add a DOS PC speaker fallback backend so sfxlib can still produce
+    audible playback when no Sound Blaster is configured.
+  * Refactor the Debian/Ubuntu package split so the native compiler,
+    runtime, startup objects, libraries, and core headers ship together
+    in freebasic.
+  * Reduce lintian noise by installing compiler driver manpages,
+    modernizing dependency names, cleaning generated documentation package
+    contents, normalizing example font/encoding handling, and documenting
+    intentional cross-target archive/runtime assets.
+  * Add freebasic-bindings for third-party header/binding files and
+    freebasic-examples for source examples, leaving freebasic-runtime
+    and freebasic-dev as transitional compatibility packages.
+  * Add a separate freebasic-js binary package that installs fbc-js,
+    JavaScript-target include files, libfb/libfbgfx/libsfx archives,
+    startup objects, and Emscripten JavaScript runtime support files
+    under a parallel freebasic-js layout.
+  * Build fbc-js as a native compiler executable that defaults to the
+    js-asmjs/Emscripten target while retaining the native host platform
+    for host-specific compiler behavior.
+  * Teach the package build to build JS-target runtime, gfxlib2, and
+    sfxlib artifacts with emcc/emar/emranlib and to depend on the
+    distro-provided emscripten and nodejs packages.
+  * Gate freebasic-js behind the nojs build profile and add
+    build_scripts/debianubuntu-build-freebasic.sh --no-js so native-only
+    Debian/Ubuntu package builds do not need Emscripten or nodejs.
+  * Add a JavaScript sfxlib backend using WebAudio in browsers with a
+    null fallback for non-browser package smoke tests.
+  * Add Debian/Ubuntu Docker smoke-test scripts for native FreeBASIC and
+    freebasic-js packages, installing the local package artifacts in
+    fresh containers with only their declared package dependencies.
+  * Add the replacement Linux package-factory scaffold for building one
+    native Docker container per distro release, cross-building CPU packages
+    inside that packaging environment, and keeping the older binfmt/native
+    matrix scripts available as validation wrappers.
+  * Add build_scripts/linux-cross-build-freebasic-matrix.sh as the one-shot
+    dispatcher above the Debian-family, APK-family, RPM-family, and
+    Slackware package builders, with distro/release/architecture filters,
+    --keep-going support, and default parallel make jobs based on the host
+    CPU count.
+  * Teach the Debian/Ubuntu package build to cross-build for a selected
+    host architecture via --host-arch, using a build-architecture bootstrap
+    compiler, target cross toolchains, and target development packages.
+  * Add RPM and Slackware clean-container package builders that install the
+    distro build dependencies, write package artifacts under out/linux, and
+    run console, gfxlib SCREEN/SCREENSET, SCREEN 13, sfxlib, and sfxlib
+    showcase compile/link smoke checks before packaging succeeds.
+  * Keep the APK-family path wired into the package factory, install examples
+    into the package layout, and reuse the shared source-copy excludes so
+    isolated package worktrees do not absorb generated build artifacts.
+  * Extend Linux package validation with optional full fbctests runs plus
+    console, gfxlib, SCREEN 13/SCREENSET, sfxlib, and installed sfxlib
+    showcase smoke coverage in clean target-architecture containers.
+  * Fix Linux non-x86 package links by emitting glibc dynamic-linker paths
+    for PowerPC, PowerPC64, PowerPC64LE, riscv64, and s390x targets, and
+    preserve whitespace when reading compiler-driver probe output.
+  * Fix strict-alignment targets by using memcpy-backed scalar loads/stores
+    for unaligned packed-field access and keeping runtime-managed STRING
+    and dynamic-array descriptors naturally aligned.
+  * Fix riscv64 and s390x C/C++ varargs interop by modelling GCC's target
+    __builtin_va_list ABI and mangling those types correctly.
+  * Default Debian/Ubuntu armhf packages to ARMv7 hard-float while retaining
+    an explicit armv6+fp override for Raspbian package builds.
+  * Make floating-point and PRINT USING tests tolerate target-endian and
+    target C-library NaN/IND differences.
+  * Add a freebasic-android package build profile that installs
+    fbc-android, Android/aarch64 runtime archives, Android-target headers,
+    and APK template glue separately from the native freebasic package,
+    and enable it by default in the Debian/Ubuntu build scripts while
+    keeping it out of the normal top-level make/all build.
+  * Move the fbc-android wrapper and APK template sources under tracked
+    src/tools/android instead of the ignored local tools/ tree.
+  * Add Android gfxlib and sfxlib backends, including modern/legacy gfx
+    driver records, Activity-backed console rendering with a soft-keyboard
+    toggle button, and AAudio/OpenSL ES sound backends.
+  * Propagate NativeActivity lifecycle and surface callbacks into Android
+    gfxlib/sfxlib so rendering and audio output pause cleanly and recover
+    across Android surface recreation, and wait for stdout/stderr redirection
+    before running the FreeBASIC main program.
+  * Add build_scripts/debianubuntu-test-freebasic-android.sh to build
+    console, gfxlib, and sfxlib APKs in a fresh container and run them
+    under an Android emulator when KVM and a system image are available.
+  * Keep emulator-only tooling out of the freebasic-android package
+    dependencies; the Android smoke test now installs adb, emulator,
+    command-line tools, and a system image only after the package has
+    already proven it can build APKs from declared dependencies, along
+    with the minimal X11 runtime libraries needed to launch the emulator
+    in a slim container, emits gfx/sfx markers through stderr so graphics-mode
+    PRINT redirection cannot hide them, force-stops each smoke Activity after
+    a clean marker pair, and polls all logcat buffers with useful diagnostics
+    while validating APK launch markers.
+  * Add an fbc-android --target-api option so APK manifests can satisfy
+    modern emulator install policy even when building against an older
+    distro-provided Android platform jar.
+  * Wrap the generated FreeBASIC program's exit() path in fbc-android APKs
+    so NativeActivity smoke tests can report the program exit marker instead
+    of terminating the Android process from the program thread.
+  * Recommend adb and Android emulator command-line tooling from the
+    freebasic-android package so installed users have a local APK test path
+    without making emulator infrastructure mandatory for package installs.
+  * Recommend optional example development packages from freebasic-examples
+    and freebasic-full so users can build more bundled examples without
+    making those libraries mandatory compiler dependencies.
+  * Fix Android triplet detection so aarch64-linux-android resolves to
+    TARGET_OS=android and use the NDK clang driver for Android assembly.
+  * Fix Android sfxlib archives so the generic core does not retain a
+    Linux-only fb_sfxLinuxExit reference in SFX APKs.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Thu, 14 May 2026 06:43:30 -0400
+
+freebasic (1.10.4-1) jammy; urgency=medium
+
+  * Added OPEN TCP and OPEN TCP SERVER support alongside the existing
+    OPEN COM and OPEN LPT device commands.
+  * Added TCP ACCEPT and EOC support for TCP communication endpoints.
+  * Integrated sfxlib into the compiler, runtime, examples, and manual
+    to provide broad built-in sound support.
+  * Hardened the GNUmakefile and mk/ build system so prerequisite
+    compiler checks fail clearly, bootstrap recovery paths are explicit,
+    and cross-target configuration is more predictable.
+  * Reworked the Debian/Ubuntu package build flow so it stages from a
+    full source tree, keeps the native dpkg-buildpackage and lintian
+    path intact, honors distro Fortify settings, disables incompatible
+    LTO in package builds, and emits artifacts under out/linux by
+    distro, codename, and architecture.
+  * Extended the Linux package matrix to include Ubuntu 26.04 LTS
+    (Resolute Raccoon) as an explicit Debian/Ubuntu target.
+  * Added Darwin x86_64 and arm64 to the target matrix, limited runtime
+    C++ compilation to targets that currently require it, and corrected
+    NetBSD toolchain/thread configuration handling.
+  * Serialized the Linux Debian/Ubuntu matrix runner, switched it to
+    reuse emitted bootstrap source trees, and kept per-target build
+    output visible live while still saving docker_build.log for each
+    target.
+  * Added bootstrap-emit-matrix coverage and cleaned successful Linux
+    package builds so stage, .build-*, and src/*/obj intermediates do
+    not accumulate across matrix entries.
+  * Fixed Linux sfxlib packaging and runtime integration so Debian and
+    Ubuntu builds include ALSA/Pulse dependencies, build the sfxlib
+    libraries, install Linux arch compatibility symlinks, and link
+    Linux sfxlib programs against the required audio libraries.
+  * Fixed a recent sfxlib core regression by restoring the missing
+    rollback helper declaration needed for clean builds.
+  * Fixed Linux sfxlib playback so PulseAudio and ALSA backends keep
+    feeding audio during unattended AUDIO, STREAM, MUSIC, and SFX
+    playback instead of reporting success while producing silence.
+  * Updated the macOS CoreAudio backend to use the same explicit feed
+    model on platforms where the backend does not already own an audio
+    callback or pull loop.
+  * Added mk/ build-system documentation and tightened bootstrap archive
+    and structure tests so hidden, stage, dist, and packages trees are
+    not pulled into release artifacts.
+  * Hardened the MSYS2 and Cygwin package builders so they provision
+    their own dependencies, keep staging isolated, clean generated
+    example artifacts, and emit release outputs under out/.
+  * Updated the compiler build so fbc reports the version from
+    mk/version.mk instead of relying on stale in-source release numbers.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Thu, 16 Apr 2026 18:00:00 +0000
+
+freebasic (1.10.3-1) jammy; urgency=medium
+
+  * Ported FreeBASIC to Haiku.
+  * Rebuilt the build environment for the 1.10.3 release.
+  * Packaged FreeBASIC for Windows/MinGW, Cygwin, Debian, Ubuntu,
+    NetBSD, FreeBSD, OpenBSD, Solaris, and DragonFly.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Fri, 27 Feb 2026 12:53:00 +0000
+
+freebasic (1.10.2-3) jammy; urgency=medium
+
+  * All changes necessary to build on all platforms
+  * Missing files for gfxlib added to allow successful test compiles
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Thu, 26 Feb 2026 13:34:00 +0000
+
+
+freebasic (1.10.2-2) jammy; urgency=medium
+
+  * Updated build to use improved utilities backported from 1.20
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Thu, 19 Feb 2026 09:34:00 +0000
+
+
+freebasic (1.10.2-1) jammy; urgency=medium
+
+  * Initial Debian/Ubuntu packaging for FreeBASIC 1.10.2.
+
+ -- FreeBASIC Packagers <packagers@example.invalid>  Wed, 11 Feb 2026 12:50:35 +0000

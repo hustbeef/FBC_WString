@@ -1,0 +1,192 @@
+'' Project: FreeBASIC compiler - BASIC expression grammar
+'' -----------------------------------------
+''
+'' File: parser/expressions/parser-expr-constant.bas
+''
+'' Purpose:
+''
+''     Parse atom constants and literals parsing.
+''
+'' Responsibilities:
+''
+''     - parse expressions at the required precedence level
+''     - resolve symbols and construct typed AST expressions
+''
+'' This file intentionally does NOT contain:
+''
+''     - token buffer allocation or machine instruction encoding
+''
+
+'' atom constants and literals parsing
+''
+'' chng: sep/2004 written [v1ctor]
+
+#include once "core/fb.bi"
+#include once "core/fbint.bi"
+#include once "parser/parser.bi"
+#include once "ast/ast.bi"
+#include once "tooling/semantic-hooks.bi"
+
+declare sub fbSemanticModelStringLiteralInput( byval expr as ASTNODE ptr, byval token as FBTOKEN ptr )
+
+declare sub fbSemanticModelExportBinding _
+	( _
+		byval sym as FBSYMBOL ptr, _
+		byref source as LEX_LOCATION, _
+		byval is_declaration as integer _
+	)
+
+function cConstant( byval sym as FBSYMBOL ptr ) as ASTNODE ptr
+	dim as LEX_LOCATION semantic_site = lexGetCurrentLocation( )
+	dim as string semantic_spelling = *lexGetText( )
+	dim as longint semantic_nonphysical = lexGetNonphysicalTokenCount( )
+
+	'' Check visibility of constant
+	if( symbCheckAccess( sym ) = FALSE ) then
+		errReport( FB_ERRMSG_ILLEGALMEMBERACCESS )
+	end if
+	fbSemanticModelExportBinding(sym, semantic_site, FALSE)
+
+	'' ID
+	lexSkipToken( LEXCHECK_POST_LANG_SUFFIX )
+
+	dim as ASTNODE ptr expr = astBuildConst( sym )
+	fbSemanticModelConstantExpression(expr, sym, semantic_site, semantic_nonphysical)
+	fbSemanticModelPPIdentifier(expr, sym, semantic_spelling, semantic_site, semantic_nonphysical)
+	function = expr
+end function
+
+'':::::
+'' LitString    =   STR_LITERAL STR_LITERAL* .
+''
+function cStrLiteral( byval skiptoken as integer ) as ASTNODE ptr
+	dim as FBSYMBOL ptr sym = any
+	dim as integer lgt = any, isunicode = any
+	dim as zstring ptr zs = any
+	dim as wstring ptr ws = any
+	dim as FB_WARNINGMSG wrnmsg = 0
+
+	dim as ASTNODE ptr expr = NULL
+
+	do
+		lgt = lexGetTextLen( )
+
+		if( lexGetType( ) <> FB_DATATYPE_WCHAR ) then
+			'' escaped? convert to internal format..
+			if( lexGetToken( ) = FB_TK_STRLIT_ESC ) then
+				zs = hReEscape( lexGetText( ), lgt, isunicode, wrnmsg )
+				if( wrnmsg <> 0 ) then
+					errReportWarn( wrnmsg )
+				end if
+			else
+				zs = lexGetText( )
+
+				'' any '\'?
+				if( lexGetHasSlash( ) ) then
+					if( fbPdCheckIsSet( FB_PDCHECK_ESCSEQ ) ) then
+						if( lexGetToken( ) <> FB_TK_STRLIT_NOESC ) then
+							if( hHasEscape( zs ) ) then
+								errReportWarn( FB_WARNINGMSG_POSSIBLEESCSEQ, _
+								               zs, _
+								               FB_ERRMSGOPT_ADDCOLON or FB_ERRMSGOPT_ADDQUOTES )
+							end if
+						end if
+					end if
+				end if
+
+				isunicode = FALSE
+			end if
+
+			if( isunicode = FALSE ) then
+				sym = symbAllocStrConst( zs, lgt )
+			'' convert to unicode..
+			else
+				sym = symbAllocWstrConst( wstr( *zs ), lgt )
+			end if
+
+		else
+			'' escaped? convert to internal format..
+			if( lexGetToken( ) = FB_TK_STRLIT_ESC ) then
+				ws = hReEscapeW( lexGetTextW( ), lgt, wrnmsg )
+				if( wrnmsg <> 0 ) then
+					errReportWarn( wrnmsg )
+				end if
+			else
+				ws = lexGetTextW( )
+
+				'' any '\'?
+				if( lexGetHasSlash( ) ) then
+					if( fbPdCheckIsSet( FB_PDCHECK_ESCSEQ ) ) then
+						if( lexGetToken( ) <> FB_TK_STRLIT_NOESC ) then
+							if( hHasEscapeW( ws ) ) then
+								errReportWarn( FB_WARNINGMSG_POSSIBLEESCSEQ )
+							end if
+						end if
+					end if
+				end if
+			end if
+
+			sym = symbAllocWstrConst( ws, lgt )
+		end if
+
+		'' Observe each accepted token before adjacent literals are folded into
+		'' one value. A named constant is not a directly parsed literal token.
+		dim as ASTNODE ptr semantic_literal = astNewVAR( sym )
+		fbSemanticModelStringLiteralInput(semantic_literal, lex.ctx->head)
+		if( expr = NULL ) then
+			expr = semantic_literal
+		else
+			expr = astNewBOP( AST_OP_ADD, expr, semantic_literal )
+		end if
+
+		if( skiptoken ) then
+			lexSkipToken( )
+
+			'' not another literal string?
+			if( lexGetClass( ) <> FB_TKCLASS_STRLITERAL ) then
+				exit do
+			end if
+
+		else
+			exit do
+		end if
+	loop
+
+	function = expr
+end function
+
+function cNumLiteral( byval skiptoken as integer ) as ASTNODE ptr
+	dim as integer dtype = any
+	dim as ASTNODE ptr expr = any
+
+	dtype = lexGetType( )
+
+	select case( dtype )
+	case FB_DATATYPE_DOUBLE
+		expr = astNewCONSTf( val( *lexGetText( ) ), dtype )
+
+	case FB_DATATYPE_SINGLE
+		dim fval as single = val( *lexGetText( ) )
+		expr = astNewCONSTf( fval , dtype )
+
+	case else
+		if( typeIsSigned( dtype ) ) then
+			expr = astNewCONSTi( clngint( *lexGetText( ) ), dtype )
+		else
+			expr = astNewCONSTi( culngint( *lexGetText( ) ), dtype )
+		end if
+	end select
+
+	'' record that it is a suffixed constant
+	expr->val.hassuffix = lexGetLiteralHasSuffix()
+	fbSemanticModelNumericLiteral(lex.ctx->head)
+	fbSemanticModelNumericLiteralExpression(expr, lex.ctx->head)
+
+	if( skiptoken ) then
+		lexSkipToken( )
+	end if
+
+	function = expr
+end function
+
+'' end of parser/expressions/parser-expr-constant.bas

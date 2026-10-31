@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FreeBASIC Android APK template: AndroidManifest.xml.in.
+     Purpose: Declare the generated activity, application identity and permissions.
+     Responsibilities: Package substitution, native loading and notification access.
+     Runtime permission decisions and notification code belong to the activity. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="@PACKAGE@">
+
+    <uses-sdk
+        android:minSdkVersion="@MIN_SDK@"
+        android:targetSdkVersion="@TARGET_SDK@" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:debuggable="true"
+        android:hasCode="true"
+        android:label="@LABEL@"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+        <activity
+            android:name="org.freebasic.android.FreeBasicNativeActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:screenOrientation="@SCREEN_ORIENTATION@"
+            android:windowSoftInputMode="@SOFT_INPUT_MODE@"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="freebasicapp" />
+            <meta-data
+                android:name="org.freebasic.android.keyboard_button"
+                android:value="@KEYBOARD_BUTTON@" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
+<!-- end of AndroidManifest.xml.in -->

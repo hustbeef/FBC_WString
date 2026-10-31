@@ -1,0 +1,147 @@
+{{fbdoc item="title" value="Quick overview of compiler modules"}}----
+
+This is a quick map of the main compiler modules.  It is not a complete list of
+every source file, but it should point new contributors at the right subsystem
+before they start changing code.
+
+The names below are module names. Implementations now live in explicit
+subsystem directories under ##src/compiler## rather than a flat directory:
+
+	- ##driver/##: ##fbc.bas##, the driver phase modules, and ##objinfo.bas##.
+	- ##core/##: ##fb.bas##, ##fb.bi##, and ##fbint.bi##.
+	- ##lexer/## and ##preprocessor/##: ##lex*.bas## and ##pp*.bas##.
+	- ##parser/## and its declaration, expression, procedure, statement, and intrinsic subdirectories: ##parser*.bas##.
+	- ##symbols/##, ##ast/##, and ##runtime/##: ##symb*.bas##, typed AST construction/lowering, and ##rtl*.bas## call builders.
+	- ##backend/##: shared IR interfaces and C, LLVM, GAS64, x86, and debug emission.
+	- ##support/##: allocation, container, string, and numeric helpers.
+	- ##platform/##: compiler-host policies; ##driver/platforms/##: compilation-target driver policies.
+	- ##tooling/##: compiler-derived semantic observations and sidecar publication.
+
+See [[DevSourceCompiler|Compiler source tree]] for the phase map and a complete
+PRINT walkthrough, and [[DevSourceCode|Source code guide]] for the runtime,
+graphics, sound, tools, and test trees. ##mk/compiler-sources.mk## owns the
+selected compiler source groups.
+
+''fbc''
+	Compiler driver and command-line frontend.  It parses driver options, manages
+	the compile/assemble/link pipeline, invokes external tools, adds libraries,
+	and performs final driver-side actions such as linking or post-link commands.
+
+	Generic driver flow belongs in the corresponding ##driver/fbc-*.bas## phase
+	module. Target-specific OS behavior belongs in the platform hooks rather
+	than being added directly to ##driver/fbc.bas##.
+
+''fbc-platform''
+	Compiler-driver platform hook dispatcher.  This module defines the hook table
+	used by ''fbc.bas'' and includes one platform module for each target in the
+	''FB_COMPTARGET'' table.
+
+	The current platform hooks cover:
+		- choosing the linker tool
+		- adding target default library search paths
+		- adding graphics library dependencies
+		- adding sound library dependencies
+		- adding ordinary target default libraries
+		- adding linker framework or target flag fragments
+		- mapping library names when one target needs a different library spelling
+
+	The platform hook layer is for compiler-driver behavior tied to the selected
+	OS target.  It is not the place for parser rules, AST behavior, ABI layout,
+	or backend code generation policy.
+
+''##driver/platforms/<target>/fbc-platform.bi##''
+	Per-target driver hooks. Each platform directory contains a
+	##fbc-platform.bi## implementation included by ##driver/fbc-platform.bas##.
+	These policies describe the user's compilation target. The separate
+	##platform/## tree describes the machine running the compiler.
+
+	These files keep target-specific linking and packaging rules out of
+	''fbc.bas''.  Examples include Win32 default system libraries, Darwin linker
+	tool selection, JavaScript and Wii linker-driver selection, devkitPro library
+	paths, X11 library search paths, OpenBSD library spelling differences, and
+	other target toolchain quirks.
+
+	Read the selected platform directory and the shared driver phase when
+	changing a toolchain rule. Parser, AST, and backend behavior retain their
+	own subsystem owners.
+
+''objinfo''
+	[[DevObjinfo|Object/library information]] section reader/writer, used by
+	''fbc''.  Includes small ELF/COFF object file readers.
+
+''fb''
+	Compiler-wide state and parser interface.  It owns the target information
+	table, initializes target state, and starts the ''parser'' for each
+	input/include file.
+
+''parser''
+	Recursive parser.  It asks ''lex'' for tokens and builds up the ''ast''.
+
+''lex'', ''pp''
+	Lexer/tokenizer and preprocessor directive parsing.
+
+''error''
+	Error reporting functions used by many parts of ''fbc'', especially the
+	''parser''.
+
+''rtl''
+	Helper functions that build ''ast'' nodes for rtlib/gfxlib/sfxlib function
+	calls.  Declarations here must match the actual functions in the runtime,
+	gfxlib2/gfxlib3, and sfxlib source code. These builders describe calls;
+	the runtime libraries implement the functions executed by the user's program.
+
+''symb''
+	Symbol lookup and storage: variables, functions, scopes, namespaces, and name
+	mangling.  Used by the ''parser'', ''ast'', and emitters.
+
+''ast''
+	Abstract syntax tree for per-function code flow and expressions.
+	''astNew*()'' creates and connects nodes for the ''parser''.
+	''astLoad*()'' is the first step in emitting and calls ''ir'' after each
+	function is parsed.
+
+''ir'', ''ir-hlc'', ''ir-llvm'', ''ir-tac'', ''ir-gas64''
+	Intermediate representation layer used to emit the ''ast''.
+	''ir-hlc'' emits high-level C.
+	''ir-llvm'' emits LLVM IR.
+	''ir-tac'' is the three-address-code path used by the asm backend and calls
+	''emit''.
+	''ir-gas64'' contains GAS-oriented 64-bit asm support.
+
+''reg''
+	Register allocator for ''ir-tac''.
+
+''emit'', ''emit_SSE'', ''emit_x86''
+	Assembler emitter abstraction plus the x86/SSE-specific emitters.
+
+''edbg_stab''
+	Stabs debug format emitting for ''emit_x86''.
+
+''dstr''
+	Dynamic z/wstrings, used mostly by ''lex''.
+
+''hash''
+	Generic hash table, used by ''symb'' and ''fbc''.
+
+''hlp'', ''hlp-str''
+	Helper functions used throughout the compiler, plus another dynamic
+	z/wstring implementation.
+
+''list''
+	Generic linked list with built-in memory pool, used heavily throughout the
+	compiler.  It is often used as a pooled allocator, for example for AST nodes
+	or symbols.
+
+''flist''
+	''list''-based container for append-only lists.
+
+''pool''
+	''list''-based allocator using multiple lists with node sizes from small to
+	large.  Used to store symbol identifiers with less wasted memory.
+
+''stack''
+	Generic ''list''-based stack.
+
+{{fbdoc item="back" value="DevSourceCompiler|Compiler source tree"}}
+{{fbdoc item="back" value="DevToc|FreeBASIC Developer Information"}}
+{{fbdoc item="back" value="DocToc|Table of Contents"}}

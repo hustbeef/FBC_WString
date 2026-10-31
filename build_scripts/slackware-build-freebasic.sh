@@ -1,0 +1,578 @@
+#!/usr/bin/env bash
+#
+# Project: FreeBASIC Linux Package Factory
+# ----------------------------------------
+#
+# File: slackware-build-freebasic.sh
+#
+# Purpose:
+#
+#     Build one Slackware FreeBASIC binary package from inside a Slackware
+#     container.
+#
+# Responsibilities:
+#
+#     * install or verify Slackware build tools
+#     * stage a clean FreeBASIC source tree with bootstrap sources
+#     * build and install FreeBASIC into a package root
+#     * emit a Slackware .txz package under out/linux/slackware/<release>/<arch>
+#
+# This file intentionally does NOT contain:
+#
+#     * the top-level Linux package matrix
+#     * target package validation
+#     * Debian/APK/RPM package policy
+#
+
+set -euo pipefail
+trap 'echo "ERROR: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+##############################################################################
+# Locate project root
+##############################################################################
+
+START_DIR="$(pwd)"
+SEARCH_DIR="$START_DIR"
+ROOT=""
+
+while :; do
+    if [ -d "$SEARCH_DIR/build_scripts" ] && { [ -f "$SEARCH_DIR/GNUmakefile" ] || [ -f "$SEARCH_DIR/makefile" ] || [ -f "$SEARCH_DIR/Makefile" ]; }; then
+        ROOT="$SEARCH_DIR"
+        break
+    fi
+    [ "$SEARCH_DIR" = "/" ] && break
+    SEARCH_DIR="$(dirname "$SEARCH_DIR")"
+done
+
+[ -n "$ROOT" ] || { echo "ERROR: could not locate FreeBASIC root"; exit 1; }
+cd "$ROOT"
+. "$ROOT/build_scripts/build-success-cleanup.sh"
+
+CLEANUP_SUCCESS=0
+CLEANUP_DIRS=()
+
+cleanup_build_roots() {
+    local path
+
+    [ "$CLEANUP_SUCCESS" -eq 1 ] || return 0
+
+    for path in "${CLEANUP_DIRS[@]}"; do
+        [ -n "$path" ] || continue
+        fb_remove_build_tree "$ROOT" "$path" || true
+    done
+}
+
+trap cleanup_build_roots EXIT
+
+##############################################################################
+# Helpers
+##############################################################################
+
+run() { echo "==> $*"; "$@"; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+msg() { echo ""; echo "==> $1"; }
+
+usage() {
+    cat <<EOF
+Usage: ./build_scripts/slackware-build-freebasic.sh [options]
+
+Options:
+  --no-build      Reuse the existing source bootstrap tarball
+  --no-package    Stop after ensuring the bootstrap tarball exists
+  --skip-deps     Skip Slackware dependency installation
+  --help          Show this help text
+
+Environment:
+  BUILDROOT       Temporary build root (default: <repo>/.build-slackware)
+  WORKDIR         Workspace for source/package preparation
+  OUTBASE         Output root (default: <repo>/out)
+  JOBS            Parallel make job count
+  FBC_PACKAGE_IPV4_ONLY  Use IPv4 for slackpkg downloads (default: 0)
+
+Artifacts are written under:
+  out/linux/slackware/<release>/<arch>/
+EOF
+}
+
+##############################################################################
+# Options
+##############################################################################
+
+NO_BUILD=0
+NO_PACKAGE=0
+SKIP_DEPS=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --no-build) NO_BUILD=1 ;;
+        --no-package) NO_PACKAGE=1 ;;
+        --skip-deps) SKIP_DEPS=1 ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option: $arg"
+            ;;
+    esac
+done
+
+##############################################################################
+# Tooling and config
+##############################################################################
+
+if command -v gmake >/dev/null 2>&1; then
+    MAKE_CMD="gmake"
+else
+    MAKE_CMD="make"
+fi
+
+if command -v nproc >/dev/null 2>&1; then
+    JOBS="${JOBS:-$(nproc)}"
+else
+    JOBS="${JOBS:-1}"
+fi
+
+BUILDROOT="${BUILDROOT:-$ROOT/.build-slackware}"
+WORKDIR="${WORKDIR:-$BUILDROOT/work}"
+BUILDDIR="${BUILDDIR:-$WORKDIR/package}"
+PKGROOT="${PKGROOT:-$BUILDROOT/pkgroot}"
+OUTBASE="${OUTBASE:-$ROOT/out}"
+PREFIX="${PREFIX:-/usr}"
+CLEANUP_DIRS=("$BUILDROOT")
+SOURCE_COPY_EXCLUDES="$ROOT/mk/source-copy-excludes.rsync"
+
+VERSION="$(sed -n 's/^FBVERSION[[:space:]]*:=[[:space:]]*//p' mk/version.mk | head -n1)"
+REV="$(sed -n 's/^REV[[:space:]]*:=[[:space:]]*//p' mk/version.mk | head -n1)"
+[ -n "$VERSION" ] || die "could not determine FBVERSION"
+[ -n "$REV" ] || REV=1
+
+# A 32-bit x86 container shares its host's 64-bit kernel, so uname alone
+# cannot identify the image's userspace. Matrix builds supply the image CPU.
+MACHINE="${FBC_PACKAGE_HOST_ARCH:-$(uname -m)}"
+case "$MACHINE" in
+    x86_64|amd64)
+        ARCH="x86_64"
+        BOOTKEY="linux-x86_64"
+        FBC_TARGET="linux-x86_64"
+        ;;
+    i386|i486|i586|i686)
+        ARCH="i586"
+        BOOTKEY="linux-x86"
+        FBC_TARGET="linux-x86"
+        ;;
+    aarch64|arm64)
+        ARCH="aarch64"
+        BOOTKEY="linux-aarch64"
+        FBC_TARGET="linux-aarch64"
+        ;;
+    armv7*)
+        ARCH="armv7l"
+        BOOTKEY="linux-arm"
+        FBC_TARGET="linux-arm"
+        ;;
+    *)
+        die "unsupported Slackware architecture: $MACHINE"
+        ;;
+esac
+
+BOOTSTRAP_TAR="$ROOT/FreeBASIC-${VERSION}-source-bootstrap-${BOOTKEY}.tar.xz"
+
+DISTRO_ID="${FBC_PACKAGE_DISTRO_ID:-slackware}"
+CODENAME="${FBC_PACKAGE_CODENAME:-unknown}"
+if [ "$CODENAME" = "unknown" ] && [ -f /etc/slackware-version ]; then
+    CODENAME="$(sed 's/^Slackware[[:space:]]*//' /etc/slackware-version | tr ' ' '-')"
+fi
+
+OUTDIR="${OUTBASE}/linux/${DISTRO_ID}/${CODENAME}/${ARCH}"
+PKGFILE="$OUTDIR/freebasic-${VERSION}-${ARCH}-${REV}.txz"
+
+mkdir -p "$WORKDIR" "$OUTDIR"
+
+##############################################################################
+# Dependencies
+##############################################################################
+
+configure_slackpkg_mirror() {
+    local release="$1"
+    local mirror
+
+    [ -f /etc/slackpkg/mirrors ] || return 0
+
+    if grep -Eq '^[[:space:]]*(http|https|ftp)://' /etc/slackpkg/mirrors; then
+        return 0
+    fi
+
+    case "$release" in
+        current|15.0) ;;
+        *) return 0 ;;
+    esac
+
+    # The x86, x86_64 and ARM repositories have distinct package trees.
+    # Keep an image's configured mirror, but never default an ARM or 32-bit
+    # container to the Slackware64 repository.
+    case "$ARCH" in
+        x86_64) mirror="https://mirrors.slackware.com/slackware/slackware64-${release}/" ;;
+        i586) mirror="https://mirrors.slackware.com/slackware/slackware-${release}/" ;;
+        armv7l) mirror="https://slackware.uk/slackwarearm/slackwarearm-${release}/" ;;
+        aarch64) mirror="https://slackware.uk/slackwarearm/slackwareaarch64-${release}/" ;;
+        *) die "unsupported Slackware mirror architecture: $ARCH" ;;
+    esac
+
+    msg "configuring Slackware mirror: $mirror"
+    printf '%s\n' "$mirror" >> /etc/slackpkg/mirrors
+}
+
+configure_slackpkg_architecture() {
+    local config=/etc/slackpkg/slackpkg.conf
+    local pkgmain=slackware
+    [ -f "$config" ] || die "missing slackpkg configuration: $config"
+    [ "$ARCH" != "x86_64" ] || pkgmain=slackware64
+
+    # slackpkg also uses uname to select its package architecture and tree.
+    # A linux/386 container can report the host's x86_64 kernel, causing
+    # slackpkg to search for slackware64 under the 32-bit mirror.
+    run sed -i '/^[[:space:]]*ARCH=/d; /^[[:space:]]*PKGMAIN=/d' "$config"
+    printf '\nARCH=%s\nPKGMAIN=%s\n' "$ARCH" "$pkgmain" >> "$config"
+}
+
+configure_slackpkg_priority() {
+    [ "$CODENAME" = "15.0" ] || return 0
+
+    local config=/etc/slackpkg/slackpkg.conf
+    [ -f "$config" ] || die "missing slackpkg configuration: $config"
+
+    # Stable mirrors also contain experimental toolchains in testing. Their
+    # GCC can require a newer libc than the release image, so select packages
+    # only from the stable tree, its patches and supported extras.
+    if grep -Eq '^[[:space:]]*PRIORITY=' "$config"; then
+        run sed -i 's/^[[:space:]]*PRIORITY=.*/PRIORITY=( patches %PKGMAIN extra )/' "$config"
+    else
+        printf '\nPRIORITY=( patches %%PKGMAIN extra )\n' >> "$config"
+    fi
+}
+
+configure_slackpkg_network() {
+    [ "${FBC_PACKAGE_IPV4_ONLY:-0}" = "1" ] || return 0
+
+    # The package factory's Docker network has no IPv6 route. Request IPv4
+    # records explicitly, preserving the downloader's other options and all
+    # package checksum/signature checks. Native builds keep their own policy.
+    # Wget treats DNS failures as final unless explicitly retried. Bound those
+    # retries so a transient lookup does not leave slackpkg a missing archive.
+    local config=/etc/slackpkg/slackpkg.conf
+    [ -f "$config" ] || die "missing slackpkg configuration: $config"
+    cat >> "$config" <<'EOF'
+
+WGETFLAGS="${WGETFLAGS:-} --inet4-only --retry-on-host-error --tries=3 --waitretry=5"
+CURLFLAGS="${CURLFLAGS:-} --ipv4"
+EOF
+}
+
+run_slackpkg_changes() {
+    local status=0
+    local attempt
+
+    for attempt in 1 2; do
+        status=0
+        run slackpkg -batch=on -default_answer=y "$@" || status=$?
+
+        # 20 means no changes; 50 means slackpkg upgraded itself and asks
+        # the caller to restart. Allow one restart, keeping genuine download,
+        # signature, and installation failures fatal.
+        case "$status" in
+            0|20) return 0 ;;
+            50) [ "$attempt" -eq 1 ] || return "$status" ;;
+            *) return "$status" ;;
+        esac
+    done
+}
+
+install_deps() {
+    [ "$SKIP_DEPS" -eq 0 ] || return 0
+
+    if [ "$CODENAME" != "current" ] && command -v gcc >/dev/null 2>&1 && command -v "$MAKE_CMD" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    command -v slackpkg >/dev/null 2>&1 || die "missing gcc/make and slackpkg is not available"
+
+    configure_slackpkg_mirror "$CODENAME"
+    configure_slackpkg_architecture
+    configure_slackpkg_priority
+    configure_slackpkg_network
+
+    msg "installing Slackware build dependencies via slackpkg"
+    local packages=(
+        binutils
+        glibc
+        glibc-solibs
+        acl
+        attr
+        kernel-headers
+        'gcc-[0-9]*'
+        gcc-g++
+        gc
+        guile
+        libunistring
+        make
+        pkgconf
+        pkg-config
+        rsync
+        tar
+        xz
+        gzip
+        findutils
+        flex
+        file
+        dos2unix
+        diffutils
+        which
+        coreutils
+        ncurses
+        gpm
+        libffi
+        alsa-lib
+        'pulseaudio-[0-9]*'
+        dbus
+        libsndfile
+        flac
+        libvorbis
+        libogg
+        opus
+        mpg123
+        lame
+        libid3tag
+        libasyncns
+        lz4
+        xxHash
+        xorgproto
+        libxcb
+        libXau
+        libXdmcp
+        libX11
+        libXext
+        libXpm
+        libXrandr
+        libXrender
+        mesa
+        libglvnd
+        glu
+    )
+
+    slackpkg -batch=on -default_answer=y update gpg || true
+    run slackpkg -batch=on -default_answer=y update
+
+    if [ "$CODENAME" = "current" ]; then
+        # The current image can lag behind its rolling repository. Upgrade
+        # libc before the package tools, as required by Slackware's upgrade
+        # procedure, then refresh installed libraries before adding new tools.
+        # Otherwise rsync and dependency install scripts can load old ABIs.
+        run_slackpkg_changes install aaa_glibc-solibs
+        run_slackpkg_changes upgrade aaa_glibc-solibs
+        run_slackpkg_changes upgrade pkgtools tar xz findutils
+        run_slackpkg_changes upgrade-all
+    fi
+
+    run_slackpkg_changes install "${packages[@]}"
+}
+
+##############################################################################
+# Bootstrap generation
+##############################################################################
+
+ensure_host_compiler() {
+    if ! ./bin/fbc -version >/dev/null 2>&1; then
+        msg "building host compiler"
+        run "$MAKE_CMD" clean
+        run "$MAKE_CMD" compiler -j"$JOBS"
+    fi
+
+    ./bin/fbc -version >/dev/null 2>&1 || die "host compiler not available"
+}
+
+build_bootstrap_tarball() {
+    msg "building bootstrap tarball: $(basename "$BOOTSTRAP_TAR")"
+
+    ensure_host_compiler
+
+    rm -f "$BOOTSTRAP_TAR"
+    fb_remove_build_tree "$ROOT" "$ROOT/bootstrap/${BOOTKEY}" || die "could not remove bootstrap/${BOOTKEY}"
+    "$MAKE_CMD" clean-bootstrap-sources >/dev/null 2>&1 || true
+
+    run "$MAKE_CMD" \
+        FBC_TARGET="$FBC_TARGET" \
+        FBTARGET_DIR_OVERRIDE="$BOOTKEY" \
+        BOOTSTRAP_DIST_WORKTREE=1 \
+        bootstrap-dist-target \
+        -j"$JOBS"
+
+    [ -f "$BOOTSTRAP_TAR" ] || die "bootstrap tarball was not created"
+}
+
+##############################################################################
+# Source staging
+##############################################################################
+
+stage_source_tree() {
+    local bootstrap_srcdir
+
+    [ -f "$SOURCE_COPY_EXCLUDES" ] || die "missing source copy excludes: $SOURCE_COPY_EXCLUDES"
+
+    rm -rf "$BUILDDIR" "$WORKDIR/bootstrap-from-tar"
+    mkdir -p "$BUILDDIR"
+
+    bootstrap_srcdir="$ROOT/bootstrap/$BOOTKEY"
+    if [ ! -d "$bootstrap_srcdir" ]; then
+        [ -f "$BOOTSTRAP_TAR" ] || die "missing bootstrap sources: $bootstrap_srcdir and $BOOTSTRAP_TAR"
+        mkdir -p "$WORKDIR/bootstrap-from-tar"
+        run tar -xJf "$BOOTSTRAP_TAR" -C "$WORKDIR/bootstrap-from-tar" \
+            "FreeBASIC-${VERSION}-source-bootstrap-${BOOTKEY}/bootstrap/${BOOTKEY}"
+        bootstrap_srcdir="$WORKDIR/bootstrap-from-tar/FreeBASIC-${VERSION}-source-bootstrap-${BOOTKEY}/bootstrap/${BOOTKEY}"
+    fi
+
+    run rsync -a --no-owner --no-group \
+        --delete \
+        --exclude-from="$SOURCE_COPY_EXCLUDES" \
+        "$ROOT/" "$BUILDDIR/"
+
+    mkdir -p "$BUILDDIR/bootstrap/$BOOTKEY"
+    run rsync -a --no-owner --no-group --delete "$bootstrap_srcdir/" "$BUILDDIR/bootstrap/$BOOTKEY/"
+}
+
+##############################################################################
+# Packaging
+##############################################################################
+
+write_slack_desc() {
+    mkdir -p "$PKGROOT/install"
+    cat > "$PKGROOT/install/slack-desc" <<'EOF'
+         |-----handy-ruler------------------------------------------------------|
+freebasic: freebasic (FreeBASIC compiler)
+freebasic:
+freebasic: FreeBASIC is a free, open source BASIC compiler for modern
+freebasic: platforms. This package includes the compiler, runtime libraries,
+freebasic: headers, examples, and documentation needed to build FreeBASIC
+freebasic: programs on Slackware.
+freebasic:
+freebasic: Homepage: https://www.freebasic.net/
+freebasic:
+freebasic:
+freebasic:
+EOF
+}
+
+package_current_target() {
+    msg "preparing Slackware package build"
+
+    rm -rf "$PKGROOT"
+    stage_source_tree
+
+    msg "building FreeBASIC"
+    (
+        cd "$BUILDDIR"
+        run "$MAKE_CMD" TARGET_TRIPLET="$TARGET_TRIPLET" FBC_TARGET="$FBC_TARGET" FBTARGET_DIR_OVERRIDE="$BOOTKEY" bootstrap-minimal -j"$JOBS"
+        run "$MAKE_CMD" TARGET_TRIPLET="$TARGET_TRIPLET" FBC_TARGET="$FBC_TARGET" FBTARGET_DIR_OVERRIDE="$BOOTKEY" all FBC=bootstrap/fbc BUILD_FBC_TARGET="$FBC_TARGET" -j"$JOBS"
+        mkdir -p .package-smoke
+        cat > .package-smoke/console.bas <<'EOF'
+print "Hello world"
+EOF
+        cat > .package-smoke/gfx.bas <<'EOF'
+screenres 160, 100, 32
+screenset 0, 0
+color rgb(255, 255, 255), rgb(0, 0, 0)
+cls
+draw string (8, 8), "Hello world"
+line (8, 28)-(120, 70), rgb(0, 200, 255), bf
+print "Hello world"
+sleep 50
+screen 0
+EOF
+        cat > .package-smoke/gfx-screen13.bas <<'EOF'
+screen 13
+screenset 0, 0
+pset (8, 8), 12
+print "gfx screen 13"
+screen 0
+EOF
+        cat > .package-smoke/gfx3-screen13.bas <<'EOF'
+screen 13
+screenset 0, 0
+pset (8, 8), 12
+print "gfxlib3 screen 13"
+screen 0
+EOF
+        cat > .package-smoke/sfx.bas <<'EOF'
+print "sfx-start"
+play "ABCDEFG"
+print "sfx-end"
+EOF
+        run bin/fbc -v -prefix "$BUILDDIR" .package-smoke/console.bas -x .package-smoke/console
+        run bin/fbc -v -prefix "$BUILDDIR" .package-smoke/gfx.bas -x .package-smoke/gfx
+        run bin/fbc -v -prefix "$BUILDDIR" .package-smoke/gfx-screen13.bas -x .package-smoke/gfx-screen13
+        run bin/fbc -v -prefix "$BUILDDIR" -i inc -gfx3 .package-smoke/gfx3-screen13.bas -x .package-smoke/gfx3-screen13
+        run bin/fbc -v -prefix "$BUILDDIR" .package-smoke/sfx.bas -x .package-smoke/sfx
+        (
+            cd examples/sfxlib
+            run ../../bin/fbc -v -prefix "$BUILDDIR" showcase.bas -x "$BUILDDIR/.package-smoke/sfx-showcase"
+        )
+        run "$MAKE_CMD" TARGET_TRIPLET="$TARGET_TRIPLET" FBC_TARGET="$FBC_TARGET" FBTARGET_DIR_OVERRIDE="$BOOTKEY" install DESTDIR="$PKGROOT" prefix="$PREFIX" FBC=bootstrap/fbc BUILD_FBC_TARGET="$FBC_TARGET"
+        mkdir -p "$PKGROOT/usr/share/freebasic/examples"
+        cp -a examples/. "$PKGROOT/usr/share/freebasic/examples/"
+        mkdir -p "$PKGROOT/usr/doc/freebasic-$VERSION"
+        cp -a readme.txt changelog.txt doc/gpl.txt doc/lgpl.txt "$PKGROOT/usr/doc/freebasic-$VERSION/"
+        cp -a src/compiler/license.txt "$PKGROOT/usr/doc/freebasic-$VERSION/compiler-license.txt"
+        cp -a src/rtlib/license.txt "$PKGROOT/usr/doc/freebasic-$VERSION/rtlib-license.txt"
+        cp -a src/gfxlib2/license.txt "$PKGROOT/usr/doc/freebasic-$VERSION/gfxlib2-license.txt"
+    )
+
+    write_slack_desc
+
+    rm -f "$PKGFILE"
+    msg "running makepkg"
+    (
+        cd "$PKGROOT"
+        run /sbin/makepkg -l y -c n "$PKGFILE"
+    )
+
+    [ -f "$PKGFILE" ] || die "Slackware package was not created: $PKGFILE"
+
+    echo
+    echo "==> build completed"
+    echo "==> artifact: $PKGFILE"
+    ls -lh "$OUTDIR"
+}
+
+##############################################################################
+# Main
+##############################################################################
+
+install_deps
+
+# Probe after dependency installation. Minimal images may not initially have
+# GCC, and an invented ARM triplet would lose the hard-float ABI information.
+TARGET_TRIPLET="$(gcc -dumpmachine)"
+case "$ARCH/$TARGET_TRIPLET" in
+    x86_64/x86_64-*|i586/i[3456]86-*|armv7l/arm-*|aarch64/aarch64-*) ;;
+    *) die "GCC target $TARGET_TRIPLET does not match Slackware architecture $ARCH" ;;
+esac
+
+if [ "$NO_BUILD" -eq 0 ]; then
+    build_bootstrap_tarball
+else
+    [ -f "$BOOTSTRAP_TAR" ] || die "missing bootstrap tarball: $BOOTSTRAP_TAR"
+fi
+
+if [ "$NO_PACKAGE" -eq 1 ]; then
+    msg "bootstrap tarball ready"
+    CLEANUP_SUCCESS=1
+    echo "==> $BOOTSTRAP_TAR"
+    exit 0
+fi
+
+package_current_target
+CLEANUP_SUCCESS=1
+
+##############################################################################
+# end of slackware-build-freebasic.sh
+##############################################################################

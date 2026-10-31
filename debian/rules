@@ -1,0 +1,781 @@
+#!/usr/bin/make -f
+# ======================================================================
+# debian/rules
+# Purpose: Build and stage the Debian FreeBASIC binary package families.
+# Responsibilities: Target selection, shared payloads and package metadata checks.
+# This file does not install third-party SDKs on the build host.
+# ======================================================================
+
+export DH_VERBOSE=1
+export DEB_BUILD_MAINT_OPTIONS=hardening=+all optimize=-lto
+export DISABLE_NO_PLT := yes
+DEB_BUILD_PROFILES ?=
+
+include /usr/share/dpkg/architecture.mk
+
+BUILD_JS := yes
+ifneq ($(filter pkg.freebasic.nojs,$(DEB_BUILD_PROFILES)),)
+BUILD_JS := no
+endif
+BUILD_ANDROID := no
+ifneq ($(filter pkg.freebasic.android,$(DEB_BUILD_PROFILES)),)
+BUILD_ANDROID := yes
+endif
+BUILD_WII := no
+ifneq ($(filter pkg.freebasic.wii,$(DEB_BUILD_PROFILES)),)
+BUILD_WII := yes
+endif
+
+# ------------------------------------------------------------
+# Parallelism
+# ------------------------------------------------------------
+
+JOBS ?= $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+ifeq ($(strip $(JOBS)),)
+JOBS := 1
+endif
+PARMAKE := $(MAKE) -j$(JOBS)
+
+# ------------------------------------------------------------
+# Debian architecture → GNU triplet mapping
+# ------------------------------------------------------------
+
+MULTILIB :=
+TARGET_TRIPLET :=
+BOOTSTRAP_DIR_KEY :=
+FBC_TARGET_KEY :=
+BUILD_TARGET_TRIPLET :=
+BUILD_BOOTSTRAP_DIR_KEY :=
+BUILD_FBC_TARGET_KEY :=
+ARM_CPU_MAKE_ARGS :=
+ARM_BUILD_FBCFLAGS :=
+
+ifeq ($(DEB_HOST_ARCH),amd64)
+TARGET_TRIPLET := x86_64-linux-gnu
+BOOTSTRAP_DIR_KEY := linux-amd64
+FBC_TARGET_KEY := linux-x86_64
+endif
+
+ifeq ($(DEB_HOST_ARCH),i386)
+TARGET_TRIPLET := i686-linux-gnu
+MULTILIB := 32
+BOOTSTRAP_DIR_KEY := linux-i386
+FBC_TARGET_KEY := linux-x86
+endif
+
+ifeq ($(DEB_HOST_ARCH),arm64)
+TARGET_TRIPLET := aarch64-linux-gnu
+BOOTSTRAP_DIR_KEY := linux-arm64
+FBC_TARGET_KEY := linux-aarch64
+endif
+
+ifeq ($(DEB_HOST_ARCH),armhf)
+TARGET_TRIPLET := arm-linux-gnueabihf
+BOOTSTRAP_DIR_KEY := linux-armhf
+FBC_TARGET_KEY := linux-arm
+endif
+
+ifeq ($(DEB_HOST_ARCH),armhf)
+ARM_CPU_MAKE_ARGS := ARM_VER=v7 ARM_FLOAT_ABI=hf DEFAULT_CPUTYPE_ARM=FB_CPUTYPE_ARMV7A_FP
+ARM_BUILD_FBCFLAGS := -arch armv7-a+fp
+endif
+
+ifeq ($(DEB_HOST_ARCH),armhf)
+ifeq ($(FBC_PACKAGE_ARM_ARCH),armv6+fp)
+ARM_CPU_MAKE_ARGS := ARM_VER=v6 ARM_FLOAT_ABI=hf DEFAULT_CPUTYPE_ARM=FB_CPUTYPE_ARMV6_FP
+ARM_BUILD_FBCFLAGS := -arch armv6+fp
+endif
+endif
+
+ifeq ($(DEB_HOST_ARCH),armel)
+TARGET_TRIPLET := arm-linux-gnueabi
+BOOTSTRAP_DIR_KEY := linux-armel
+FBC_TARGET_KEY := linux-arm
+endif
+
+ifeq ($(DEB_HOST_ARCH),powerpc)
+TARGET_TRIPLET := powerpc-linux-gnu
+BOOTSTRAP_DIR_KEY := linux-powerpc
+FBC_TARGET_KEY := linux-powerpc
+endif
+
+ifeq ($(DEB_HOST_ARCH),ppc64)
+TARGET_TRIPLET := powerpc64-linux-gnu
+BOOTSTRAP_DIR_KEY := linux-powerpc64
+FBC_TARGET_KEY := linux-powerpc64
+endif
+
+ifeq ($(DEB_HOST_ARCH),ppc64el)
+TARGET_TRIPLET := powerpc64le-linux-gnu
+BOOTSTRAP_DIR_KEY := linux-ppc64el
+FBC_TARGET_KEY := linux-powerpc64le
+endif
+
+ifeq ($(DEB_HOST_ARCH),s390x)
+TARGET_TRIPLET := s390x-linux-gnu
+BOOTSTRAP_DIR_KEY := linux-s390x
+FBC_TARGET_KEY := linux-s390x
+endif
+
+ifeq ($(DEB_HOST_ARCH),riscv64)
+TARGET_TRIPLET := riscv64-linux-gnu
+BOOTSTRAP_DIR_KEY := linux-riscv64
+FBC_TARGET_KEY := linux-riscv64
+endif
+
+ifeq ($(DEB_HOST_ARCH),loong64)
+TARGET_TRIPLET := loongarch64-linux-gnu
+BOOTSTRAP_DIR_KEY := linux-loongarch64
+FBC_TARGET_KEY := linux-loongarch64
+endif
+
+ifeq ($(TARGET_TRIPLET),)
+$(error Unsupported DEB_HOST_ARCH $(DEB_HOST_ARCH))
+endif
+
+ifeq ($(DEB_BUILD_ARCH),amd64)
+BUILD_TARGET_TRIPLET := x86_64-linux-gnu
+BUILD_BOOTSTRAP_DIR_KEY := linux-amd64
+BUILD_FBC_TARGET_KEY := linux-x86_64
+endif
+
+ifeq ($(DEB_BUILD_ARCH),i386)
+BUILD_TARGET_TRIPLET := i686-linux-gnu
+BUILD_BOOTSTRAP_DIR_KEY := linux-i386
+BUILD_FBC_TARGET_KEY := linux-x86
+endif
+
+ifeq ($(DEB_BUILD_ARCH),arm64)
+BUILD_TARGET_TRIPLET := aarch64-linux-gnu
+BUILD_BOOTSTRAP_DIR_KEY := linux-arm64
+BUILD_FBC_TARGET_KEY := linux-aarch64
+endif
+
+ifeq ($(DEB_BUILD_ARCH),armhf)
+BUILD_TARGET_TRIPLET := arm-linux-gnueabihf
+BUILD_BOOTSTRAP_DIR_KEY := linux-armhf
+BUILD_FBC_TARGET_KEY := linux-arm
+endif
+
+ifeq ($(DEB_BUILD_ARCH),armel)
+BUILD_TARGET_TRIPLET := arm-linux-gnueabi
+BUILD_BOOTSTRAP_DIR_KEY := linux-armel
+BUILD_FBC_TARGET_KEY := linux-arm
+endif
+
+ifeq ($(DEB_BUILD_ARCH),powerpc)
+BUILD_TARGET_TRIPLET := powerpc-linux-gnu
+BUILD_BOOTSTRAP_DIR_KEY := linux-powerpc
+BUILD_FBC_TARGET_KEY := linux-powerpc
+endif
+
+ifeq ($(DEB_BUILD_ARCH),ppc64)
+BUILD_TARGET_TRIPLET := powerpc64-linux-gnu
+BUILD_BOOTSTRAP_DIR_KEY := linux-powerpc64
+BUILD_FBC_TARGET_KEY := linux-powerpc64
+endif
+
+ifeq ($(DEB_BUILD_ARCH),ppc64el)
+BUILD_TARGET_TRIPLET := powerpc64le-linux-gnu
+BUILD_BOOTSTRAP_DIR_KEY := linux-ppc64el
+BUILD_FBC_TARGET_KEY := linux-powerpc64le
+endif
+
+ifeq ($(DEB_BUILD_ARCH),s390x)
+BUILD_TARGET_TRIPLET := s390x-linux-gnu
+BUILD_BOOTSTRAP_DIR_KEY := linux-s390x
+BUILD_FBC_TARGET_KEY := linux-s390x
+endif
+
+ifeq ($(DEB_BUILD_ARCH),riscv64)
+BUILD_TARGET_TRIPLET := riscv64-linux-gnu
+BUILD_BOOTSTRAP_DIR_KEY := linux-riscv64
+BUILD_FBC_TARGET_KEY := linux-riscv64
+endif
+
+ifeq ($(DEB_BUILD_ARCH),loong64)
+BUILD_TARGET_TRIPLET := loongarch64-linux-gnu
+BUILD_BOOTSTRAP_DIR_KEY := linux-loongarch64
+BUILD_FBC_TARGET_KEY := linux-loongarch64
+endif
+
+ifeq ($(BUILD_TARGET_TRIPLET),)
+$(error Unsupported DEB_BUILD_ARCH $(DEB_BUILD_ARCH))
+endif
+
+CROSS_PACKAGE_BUILD := no
+ifneq ($(DEB_BUILD_ARCH),$(DEB_HOST_ARCH))
+CROSS_PACKAGE_BUILD := yes
+endif
+
+export TARGET=$(TARGET_TRIPLET)
+export TARGET_TRIPLET
+export FBC_TARGET=$(TARGET_TRIPLET)
+export MULTILIB
+export FBTARGET_DIR_OVERRIDE=$(BOOTSTRAP_DIR_KEY)
+
+# ------------------------------------------------------------
+# Bootstrap compiler
+# ------------------------------------------------------------
+
+TARGET_FBC_BOOTSTRAP := $(CURDIR)/bin/fbc -i $(CURDIR)/inc
+TARGET_BUILD_FBC := $(CURDIR)/bin/fbc
+BUILD_FBC_EXE := $(CURDIR)/debian/fbc-build/bin/fbc
+BUILD_FBC_BOOTSTRAP := $(BUILD_FBC_EXE) -i $(CURDIR)/inc
+
+ifeq ($(CROSS_PACKAGE_BUILD),yes)
+PACKAGE_FBC := $(BUILD_FBC_BOOTSTRAP)
+PACKAGE_BUILD_FBC := $(BUILD_FBC_EXE)
+else
+PACKAGE_FBC := $(TARGET_FBC_BOOTSTRAP)
+PACKAGE_BUILD_FBC := $(TARGET_BUILD_FBC)
+endif
+
+# ------------------------------------------------------------
+# Android target toolchain
+# ------------------------------------------------------------
+
+ANDROID_API ?= 26
+ANDROID_ABI_SPECS ?= android-arm:armv7a-linux-androideabi android-aarch64:aarch64-linux-android android-x86_64:x86_64-linux-android
+ANDROID_FBTARGET_KEYS := $(foreach spec,$(ANDROID_ABI_SPECS),$(word 1,$(subst :, ,$(spec))))
+ANDROID_NDK_HOME ?= $(firstword $(wildcard /usr/lib/android-sdk/ndk/* /usr/lib/android-sdk/ndk-bundle /usr/lib/android-ndk* /opt/android-ndk*))
+ANDROID_TOOLCHAIN_PREBUILT ?= $(firstword $(wildcard $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64 $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/*))
+ANDROID_TOOLCHAIN_BINDIR := $(ANDROID_TOOLCHAIN_PREBUILT)/bin
+ANDROID_AR := $(ANDROID_TOOLCHAIN_BINDIR)/llvm-ar
+ANDROID_RANLIB := $(ANDROID_TOOLCHAIN_BINDIR)/llvm-ranlib
+
+# ------------------------------------------------------------
+# Wii target toolchain
+# ------------------------------------------------------------
+
+WII_DEVKITPRO ?= $(or $(DEVKITPRO),/opt/devkitpro)
+WII_DEVKITPPC ?= $(or $(DEVKITPPC),$(WII_DEVKITPRO)/devkitPPC)
+WII_TARGET_TRIPLET ?= powerpc-eabi
+WII_FBTARGET_KEY ?= wii-powerpc
+WII_CC := $(WII_DEVKITPPC)/bin/powerpc-eabi-gcc
+WII_CXX := $(WII_DEVKITPPC)/bin/powerpc-eabi-g++
+WII_AS := $(WII_DEVKITPPC)/bin/powerpc-eabi-as
+WII_AR := $(WII_DEVKITPPC)/bin/powerpc-eabi-ar
+WII_RANLIB := $(WII_DEVKITPPC)/bin/powerpc-eabi-ranlib
+WII_ELF2DOL := $(WII_DEVKITPRO)/tools/bin/elf2dol
+
+# ------------------------------------------------------------
+# Debian hardening flags
+# ------------------------------------------------------------
+
+DPKG_CFLAGS_RAW   := $(shell dpkg-buildflags --get CFLAGS)
+DPKG_CPPFLAGS     := $(shell dpkg-buildflags --get CPPFLAGS)
+DPKG_LDFLAGS_RAW  := $(shell dpkg-buildflags --get LDFLAGS)
+DPKG_BUILD_CFLAGS_RAW   := $(shell DEB_HOST_ARCH=$(DEB_BUILD_ARCH) dpkg-buildflags --get CFLAGS)
+DPKG_BUILD_CPPFLAGS     := $(shell DEB_HOST_ARCH=$(DEB_BUILD_ARCH) dpkg-buildflags --get CPPFLAGS)
+DPKG_BUILD_LDFLAGS_RAW  := $(shell DEB_HOST_ARCH=$(DEB_BUILD_ARCH) dpkg-buildflags --get LDFLAGS)
+
+ifneq ($(strip $(FBC_PACKAGE_SYSROOT)),)
+DPKG_CFLAGS_RAW  += --sysroot=$(FBC_PACKAGE_SYSROOT)
+DPKG_LDFLAGS_RAW += --sysroot=$(FBC_PACKAGE_SYSROOT)
+
+export PKG_CONFIG_PATH :=
+export PKG_CONFIG_SYSROOT_DIR := $(FBC_PACKAGE_SYSROOT)
+export PKG_CONFIG_LIBDIR := $(FBC_PACKAGE_SYSROOT)/usr/lib/$(TARGET_TRIPLET)/pkgconfig:$(FBC_PACKAGE_SYSROOT)/usr/lib/pkgconfig:$(FBC_PACKAGE_SYSROOT)/usr/share/pkgconfig
+endif
+
+# The FreeBASIC bootstrap/compiler build does not currently survive Debian's
+# LTO flags reliably. GCC 14 also emits a non-relaxable GOT relocation for a
+# function address pushed on the stack when -fno-plt is enabled. Trixie's
+# linker relaxes that instruction as a function call, which corrupts callback
+# arguments used by the file runtime. Keep the remaining hardening flags, but
+# drop the incompatible options here.
+DPKG_CFLAGS  := $(filter-out -flto=% -ffat-lto-objects -fno-plt,$(DPKG_CFLAGS_RAW))
+DPKG_LDFLAGS := $(filter-out -flto=% -ffat-lto-objects,$(DPKG_LDFLAGS_RAW))
+DPKG_BUILD_CFLAGS  := $(filter-out -flto=% -ffat-lto-objects -fno-plt,$(DPKG_BUILD_CFLAGS_RAW))
+DPKG_BUILD_LDFLAGS := $(filter-out -flto=% -ffat-lto-objects,$(DPKG_BUILD_LDFLAGS_RAW))
+
+# Force recursive make invocations to use the same sanitized Debian flags.
+export CPPFLAGS := $(DPKG_CPPFLAGS)
+export CFLAGS   := $(DPKG_CFLAGS)
+export CXXFLAGS := $(DPKG_CFLAGS)
+export LDFLAGS  := $(DPKG_LDFLAGS)
+
+# ------------------------------------------------------------
+# Default rule
+# ------------------------------------------------------------
+
+%:
+	dh $@
+
+# ------------------------------------------------------------
+# Clean
+# ------------------------------------------------------------
+
+override_dh_auto_clean:
+
+	rm -rf bin obj
+	rm -rf src/compiler/obj
+	rm -rf src/rtlib/obj
+	rm -rf src/fbrt/obj
+	rm -rf src/gfxlib2/obj
+	rm -rf lib/freebasic
+
+	rm -rf debian/tmp
+	rm -rf debian/.debhelper
+	rm -rf debian/fbc-build
+
+	rm -f debian/*.substvars
+	rm -f debian/files
+	rm -f debian/*.log
+	rm -f debian/debhelper-build-stamp
+
+	mkdir -p debian/source
+	echo "3.0 (quilt)" > debian/source/format
+
+# ------------------------------------------------------------
+# Build
+# ------------------------------------------------------------
+
+override_dh_auto_build:
+
+	rm -f contrib/swig/swig.exe
+
+ifeq ($(CROSS_PACKAGE_BUILD),yes)
+	rm -rf debian/fbc-build
+
+	$(PARMAKE) TARGET_TRIPLET="$(BUILD_TARGET_TRIPLET)" TARGET="$(BUILD_TARGET_TRIPLET)" MULTILIB="" \
+		FBTARGET_DIR_OVERRIDE="$(BUILD_BOOTSTRAP_DIR_KEY)" \
+		FBC_EXE="$(BUILD_FBC_EXE)" \
+		BUILD_FBC_TARGET="$(BUILD_FBC_TARGET_KEY)" \
+		CPPFLAGS="$(DPKG_BUILD_CPPFLAGS)" \
+		CFLAGS="$(DPKG_BUILD_CFLAGS)" \
+		CXXFLAGS="$(DPKG_BUILD_CFLAGS)" \
+		LDFLAGS="$(DPKG_BUILD_LDFLAGS)" \
+		bootstrap-minimal
+
+	@test -x "$(BUILD_FBC_EXE)" || { echo "ERROR: build compiler missing"; exit 1; }
+else
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" \
+		$(ARM_CPU_MAKE_ARGS) \
+		CPPFLAGS="$(CPPFLAGS)" \
+		CFLAGS="$(CFLAGS)" \
+		CXXFLAGS="$(CXXFLAGS)" \
+		LDFLAGS="$(LDFLAGS)" \
+		bootstrap-minimal
+
+	@test -x bin/fbc || { echo "ERROR: bootstrap compiler missing"; exit 1; }
+endif
+
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" \
+		$(ARM_CPU_MAKE_ARGS) \
+		rtlib fbrt gfxlib2 gfxlib3 sfxlib \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(FBC_TARGET_KEY)" \
+		BUILD_FBCFLAGS="$(ARM_BUILD_FBCFLAGS)" \
+		CPPFLAGS="$(CPPFLAGS)" \
+		CFLAGS="$(CFLAGS)" \
+		CXXFLAGS="$(CXXFLAGS)" \
+		LDFLAGS="$(LDFLAGS)"
+
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" \
+		$(ARM_CPU_MAKE_ARGS) \
+		compiler \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(FBC_TARGET_KEY)" \
+		BUILD_FBCFLAGS="$(ARM_BUILD_FBCFLAGS)" \
+		CPPFLAGS="$(CPPFLAGS)" \
+		CFLAGS="$(CFLAGS)" \
+		CXXFLAGS="$(CXXFLAGS)" \
+		LDFLAGS="$(LDFLAGS)"
+
+ifeq ($(BUILD_JS),yes)
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" \
+		$(ARM_CPU_MAKE_ARGS) \
+		compiler-js \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(FBC_TARGET_KEY)" \
+		BUILD_FBCFLAGS="$(ARM_BUILD_FBCFLAGS)" \
+		CPPFLAGS="$(CPPFLAGS)" \
+		CFLAGS="$(CFLAGS)" \
+		CXXFLAGS="$(CXXFLAGS)" \
+		LDFLAGS="$(LDFLAGS)"
+
+	$(PARMAKE) TARGET_TRIPLET="asmjs-unknown-emscripten" TARGET="asmjs-unknown-emscripten" \
+		rtlib fbrt gfxlib2 sfxlib \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		FBTARGET_DIR_OVERRIDE="js-asmjs" \
+		CPPFLAGS= \
+		CFLAGS= \
+		CXXFLAGS= \
+		LDFLAGS=
+endif
+
+ifeq ($(BUILD_ANDROID),yes)
+	@test -n "$(ANDROID_NDK_HOME)" || { echo "ERROR: Android NDK not found. Install google-android-ndk-r28-installer or set ANDROID_NDK_HOME."; exit 1; }
+	@test -x "$(ANDROID_AR)" || { echo "ERROR: Android llvm-ar not found: $(ANDROID_AR)"; exit 1; }
+	@test -x "$(ANDROID_RANLIB)" || { echo "ERROR: Android llvm-ranlib not found: $(ANDROID_RANLIB)"; exit 1; }
+	@set -e; \
+	for spec in $(ANDROID_ABI_SPECS); do \
+		target_key=$${spec%%:*}; \
+		triplet=$${spec#*:}; \
+		cc="$(ANDROID_TOOLCHAIN_BINDIR)/$${triplet}$(ANDROID_API)-clang"; \
+		test -x "$$cc" || { echo "ERROR: Android clang not found for $$target_key: $$cc"; exit 1; }; \
+	done
+
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" \
+		$(ARM_CPU_MAKE_ARGS) \
+		compiler-android \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(FBC_TARGET_KEY)" \
+		BUILD_FBCFLAGS="$(ARM_BUILD_FBCFLAGS)" \
+		CPPFLAGS="$(CPPFLAGS)" \
+		CFLAGS="$(CFLAGS)" \
+		CXXFLAGS="$(CXXFLAGS)" \
+		LDFLAGS="$(LDFLAGS)"
+
+	set -e; \
+	for spec in $(ANDROID_ABI_SPECS); do \
+		target_key=$${spec%%:*}; \
+		triplet=$${spec#*:}; \
+		cc="$(ANDROID_TOOLCHAIN_BINDIR)/$${triplet}$(ANDROID_API)-clang"; \
+		cxx="$(ANDROID_TOOLCHAIN_BINDIR)/$${triplet}$(ANDROID_API)-clang++"; \
+		$(PARMAKE) TARGET_TRIPLET="$$triplet" TARGET="$$triplet" MULTILIB="" \
+			FBTARGET_DIR_OVERRIDE="$$target_key" \
+			BUILD_PREFIX= \
+			CC="$$cc" \
+			CXX="$$cxx" \
+			CLANG="$$cc" \
+			AS="$$cc" \
+			LD="$$cc" \
+			AR="$(ANDROID_AR)" \
+			RANLIB="$(ANDROID_RANLIB)" \
+			rtlib fbrt gfxlib2 gfxlib3 sfxlib \
+			FBC="$(PACKAGE_FBC)" \
+			BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+			BUILD_FBC_TARGET="$$target_key" \
+			BUILD_FBC_BUILDPREFIX= \
+			CPPFLAGS= \
+			CFLAGS= \
+			CXXFLAGS= \
+			LDFLAGS=; \
+	done
+endif
+
+ifeq ($(BUILD_WII),yes)
+	@test -d "$(WII_DEVKITPRO)" || { echo "ERROR: devkitPro not found: $(WII_DEVKITPRO). Install devkitppc/libogc or set DEVKITPRO."; exit 1; }
+	@test -x "$(WII_CC)" || { echo "ERROR: Wii powerpc-eabi-gcc not found: $(WII_CC)"; exit 1; }
+	@test -x "$(WII_AR)" || { echo "ERROR: Wii powerpc-eabi-ar not found: $(WII_AR)"; exit 1; }
+	@test -x "$(WII_RANLIB)" || { echo "ERROR: Wii powerpc-eabi-ranlib not found: $(WII_RANLIB)"; exit 1; }
+	@test -x "$(WII_ELF2DOL)" || { echo "ERROR: Wii elf2dol not found: $(WII_ELF2DOL)"; exit 1; }
+	@test -d "$(WII_DEVKITPRO)/libogc/include" || { echo "ERROR: libogc headers not found under $(WII_DEVKITPRO)/libogc/include"; exit 1; }
+	@test -d "$(WII_DEVKITPRO)/libogc/lib/wii" || { echo "ERROR: libogc Wii libraries not found under $(WII_DEVKITPRO)/libogc/lib/wii"; exit 1; }
+
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" \
+		$(ARM_CPU_MAKE_ARGS) \
+		compiler-wii \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(FBC_TARGET_KEY)" \
+		BUILD_FBCFLAGS="$(ARM_BUILD_FBCFLAGS)" \
+		CPPFLAGS="$(CPPFLAGS)" \
+		CFLAGS="$(CFLAGS)" \
+		CXXFLAGS="$(CXXFLAGS)" \
+		LDFLAGS="$(LDFLAGS)"
+
+	PATH="$(WII_DEVKITPPC)/bin:$(WII_DEVKITPRO)/tools/bin:$$PATH" \
+	$(PARMAKE) TARGET_OS=wii TARGET_TRIPLET="$(WII_TARGET_TRIPLET)" TARGET="$(WII_TARGET_TRIPLET)" MULTILIB="" \
+		FBTARGET_DIR_OVERRIDE="$(WII_FBTARGET_KEY)" \
+		BUILD_PREFIX=powerpc-eabi- \
+		DEVKITPRO="$(WII_DEVKITPRO)" \
+		DEVKITPPC="$(WII_DEVKITPPC)" \
+		ELF2DOL="$(WII_ELF2DOL)" \
+		CC="$(WII_CC)" \
+		CXX="$(WII_CXX)" \
+		AS="$(WII_AS)" \
+		LD="$(WII_CC)" \
+		AR="$(WII_AR)" \
+		RANLIB="$(WII_RANLIB)" \
+		rtlib fbrt gfxlib2 sfxlib \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(WII_FBTARGET_KEY)" \
+		BUILD_FBC_BUILDPREFIX= \
+		CPPFLAGS="-I$(WII_DEVKITPRO)/libogc/include" \
+		CFLAGS="-O2" \
+		CXXFLAGS="-O2" \
+		LDFLAGS=
+endif
+
+# ------------------------------------------------------------
+# Install
+# ------------------------------------------------------------
+
+override_dh_auto_install:
+
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" install \
+		$(ARM_CPU_MAKE_ARGS) \
+		DESTDIR=$(CURDIR)/debian/tmp \
+		prefix=/usr \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(FBC_TARGET_KEY)" \
+		BUILD_FBCFLAGS="$(ARM_BUILD_FBCFLAGS)"
+
+ifeq ($(BUILD_JS),yes)
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" install-js \
+		$(ARM_CPU_MAKE_ARGS) \
+		DESTDIR=$(CURDIR)/debian/tmp \
+		prefix=/usr \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(FBC_TARGET_KEY)" \
+		BUILD_FBCFLAGS="$(ARM_BUILD_FBCFLAGS)"
+endif
+
+ifeq ($(BUILD_ANDROID),yes)
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" install-android \
+		$(ARM_CPU_MAKE_ARGS) \
+		DESTDIR=$(CURDIR)/debian/tmp \
+		prefix=/usr \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(FBC_TARGET_KEY)" \
+		BUILD_FBCFLAGS="$(ARM_BUILD_FBCFLAGS)" \
+		FB_ANDROID_TARGETS="$(ANDROID_FBTARGET_KEYS)" \
+		ANDROID_BUILD_LIBROOT="$(CURDIR)/lib/freebasic"
+endif
+
+ifeq ($(BUILD_WII),yes)
+	$(PARMAKE) TARGET_TRIPLET="$(TARGET_TRIPLET)" TARGET="$(TARGET)" MULTILIB="$(MULTILIB)" install-wii \
+		$(ARM_CPU_MAKE_ARGS) \
+		DESTDIR=$(CURDIR)/debian/tmp \
+		prefix=/usr \
+		FBC="$(PACKAGE_FBC)" \
+		BUILD_FBC="$(PACKAGE_BUILD_FBC)" \
+		BUILD_FBC_TARGET="$(FBC_TARGET_KEY)" \
+		BUILD_FBCFLAGS="$(ARM_BUILD_FBCFLAGS)" \
+		WII_BUILD_LIBDIR="$(CURDIR)/lib/freebasic/$(WII_FBTARGET_KEY)"
+endif
+
+	if [ -d debian/tmp/usr/lib/freebasic ]; then \
+		cd debian/tmp/usr/lib/freebasic; \
+		case "$(DEB_HOST_ARCH)" in \
+			amd64)   ln -sfn linux-amd64 linux-x86_64 ;; \
+			i386)    ln -sfn linux-i386 linux-x86 ;; \
+			arm64)   ln -sfn linux-arm64 linux-aarch64 ;; \
+			armel)   ln -sfn linux-armel linux-arm ;; \
+			armhf)   ln -sfn linux-armhf linux-arm ;; \
+			ppc64el) ln -sfn linux-ppc64el linux-powerpc64le ;; \
+		esac; \
+	fi
+
+# ------------------------------------------------------------
+# Cleanup packaging artifacts
+# ------------------------------------------------------------
+
+	find debian/tmp -name ".git*" -delete || true
+	find debian/tmp -name ".svn" -type d -exec rm -rf {} + || true
+	find debian/tmp -name ".hg" -type d -exec rm -rf {} + || true
+
+	rm -rf debian/tmp/usr/share/doc/freebasic/manual/cache* || true
+	rm -f debian/tmp/usr/share/freebasic/contrib/swig/swig.exe || true
+	mkdir -p debian/tmp/usr/share/freebasic
+	cp -a examples debian/tmp/usr/share/freebasic/
+	find debian/tmp/usr/share/freebasic/examples -type f \
+		\( -name '*.o' -o -name '*.obj' -o -name '*.exe' -o -name '*.dll' -o -name '*.so' \) \
+		-delete
+	rm -f debian/tmp/usr/share/freebasic/examples/sfxlib/showcase
+	find debian/tmp/usr/share/freebasic/examples -type f -perm /111 \
+		! -name '*.sh' ! -name '*.ps1' ! -name '*.bat' ! -name '*.cmd' \
+		-delete
+	find debian/tmp/usr/share/freebasic/examples -type f \
+		\( -path '*/data/*' -name '*.txt' -o -path '*/data/*' -name 'License' \
+		   -o -path '*/obj/*' -name 'deleteme.txt' \
+		   -o -path '*/COM/*' -name '*.html' \) \
+		-delete || true
+	# Both SDL versions open data/Vera.ttf from the font package already
+	# required by freebasic-examples.
+	for sdl in SDL1 SDL2; do \
+		font="debian/tmp/usr/share/freebasic/examples/graphics/$$sdl/data/Vera.ttf"; \
+		if [ -f "$$font" ]; then \
+			rm -f "$$font" || exit 1; \
+			ln -s ../../../../../fonts/truetype/ttf-bitstream-vera/Vera.ttf "$$font" || exit 1; \
+		fi; \
+	done
+	find debian/tmp/usr/share/freebasic/examples -type d -empty -delete || true
+
+# ------------------------------------------------------------
+# NuttX module workflow SDK
+# ------------------------------------------------------------
+
+	rm -rf debian/tmp/usr/share/freebasic/nuttx-sdk
+	mkdir -p debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts
+	mkdir -p debian/tmp/usr/share/freebasic/nuttx-sdk/examples
+	mkdir -p debian/tmp/usr/share/freebasic/nuttx-sdk/src
+	touch debian/tmp/usr/share/freebasic/nuttx-sdk/.nuttx-sdk-root
+	printf '%s\n' '# Installed FreeBASIC NuttX SDK root.' \
+		> debian/tmp/usr/share/freebasic/nuttx-sdk/GNUmakefile
+	cp -a build_scripts/fbc-nuttx-esp32p4.sh \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/
+	cp -a build_scripts/fbc-nuttx-esp32p4-firmware.sh \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/
+	cp -a build_scripts/nuttx-rp2350-* \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/
+	cp -a build_scripts/nuttx-riscv32-qemu-smoke.sh \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/
+	cp -a build_scripts/nuttx-remote-console.bas \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/
+	cp -a build_scripts/nuttx-http-server.bas \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/
+	cp -a build_scripts/nuttx-patches \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/
+	chmod 755 \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/fbc-nuttx-esp32p4.sh \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/fbc-nuttx-esp32p4-firmware.sh \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/nuttx-rp2350-build-fbmodule.sh \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/build_scripts/nuttx-riscv32-qemu-smoke.sh
+	cp -a examples/nuttx \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/examples/
+	cp -a src/rtlib \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/src/
+	cp -a src/gfxlib2 \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/src/
+	cp -a src/sfxlib \
+		debian/tmp/usr/share/freebasic/nuttx-sdk/src/
+	find debian/tmp/usr/share/freebasic/nuttx-sdk -type f \
+		\( -name '*.o' -o -name '*.obj' -o -name '*.a' -o -name '*.dll' \
+		   -o -name '*.exe' -o -name '*.so' -o -name '*.d' \) \
+		-delete
+	find debian/tmp/usr/share/freebasic/nuttx-sdk -type d -empty -delete
+	mkdir -p debian/tmp/usr/bin
+	printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'exec bash /usr/share/freebasic/nuttx-sdk/build_scripts/fbc-nuttx-esp32p4.sh "$$@"' \
+		> debian/tmp/usr/bin/fbc-nuttx-esp32p4
+	printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'exec bash /usr/share/freebasic/nuttx-sdk/build_scripts/fbc-nuttx-esp32p4-firmware.sh "$$@"' \
+		> debian/tmp/usr/bin/fbc-nuttx-esp32p4-firmware
+	printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'exec bash /usr/share/freebasic/nuttx-sdk/build_scripts/nuttx-riscv32-qemu-smoke.sh "$$@"' \
+		> debian/tmp/usr/bin/nuttx-riscv32-qemu-smoke
+	printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'set -e' \
+		'cache="$${XDG_CACHE_HOME:-$${HOME:-/tmp}/.cache}/freebasic/nuttx-tools"' \
+		'src=/usr/share/freebasic/nuttx-sdk/build_scripts/nuttx-remote-console.bas' \
+		'exe="$$cache/nuttx-remote-console"' \
+		'worksrcdir="$$cache/src"' \
+		'worksrc="$$worksrcdir/nuttx-remote-console.bas"' \
+		'mkdir -p "$$worksrcdir"' \
+		'if [ ! -f "$$worksrc" ] || [ "$$src" -nt "$$worksrc" ]; then' \
+		'	cp -p "$$src" "$$worksrc"' \
+		'fi' \
+		'if [ ! -x "$$exe" ] || [ "$$worksrc" -nt "$$exe" ]; then' \
+		'	fbc -noobjinfo "$$worksrc" -x "$$exe"' \
+		'fi' \
+		'exec "$$exe" "$$@"' \
+		> debian/tmp/usr/bin/nuttx-remote-console
+	printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'set -e' \
+		'cache="$${XDG_CACHE_HOME:-$${HOME:-/tmp}/.cache}/freebasic/nuttx-tools"' \
+		'src=/usr/share/freebasic/nuttx-sdk/build_scripts/nuttx-http-server.bas' \
+		'exe="$$cache/nuttx-http-server"' \
+		'worksrcdir="$$cache/src"' \
+		'worksrc="$$worksrcdir/nuttx-http-server.bas"' \
+		'mkdir -p "$$worksrcdir"' \
+		'if [ ! -f "$$worksrc" ] || [ "$$src" -nt "$$worksrc" ]; then' \
+		'	cp -p "$$src" "$$worksrc"' \
+		'fi' \
+		'if [ ! -x "$$exe" ] || [ "$$worksrc" -nt "$$exe" ]; then' \
+		'	fbc -noobjinfo "$$worksrc" -x "$$exe"' \
+		'fi' \
+		'exec "$$exe" "$$@"' \
+		> debian/tmp/usr/bin/nuttx-http-server
+	chmod 755 \
+		debian/tmp/usr/bin/fbc-nuttx-esp32p4 \
+		debian/tmp/usr/bin/fbc-nuttx-esp32p4-firmware \
+		debian/tmp/usr/bin/nuttx-riscv32-qemu-smoke \
+		debian/tmp/usr/bin/nuttx-remote-console \
+		debian/tmp/usr/bin/nuttx-http-server
+
+# ------------------------------------------------------------
+# FLTK license relocation
+# ------------------------------------------------------------
+
+	for incroot in freebasic freebasic-js freebasic-android freebasic-wii; do \
+		if [ -f "debian/tmp/usr/include/$$incroot/FLTK/LICENSE" ]; then \
+			docpkg=freebasic-bindings; \
+			case "$$incroot" in \
+				freebasic-js) docpkg=freebasic-js ;; \
+				freebasic-android) docpkg=freebasic-android ;; \
+				freebasic-wii) docpkg=freebasic-wii ;; \
+			esac; \
+			mkdir -p "debian/tmp/usr/share/doc/$$docpkg"; \
+			mv "debian/tmp/usr/include/$$incroot/FLTK/LICENSE" \
+			   "debian/tmp/usr/share/doc/$$docpkg/FLTK-LICENSE"; \
+			ln -sf "../../../share/doc/$$docpkg/FLTK-LICENSE" \
+			   "debian/tmp/usr/include/$$incroot/FLTK/LICENSE"; \
+		fi; \
+	done
+
+# ------------------------------------------------------------
+# Remove duplicate GPL texts
+# ------------------------------------------------------------
+
+	rm -f debian/tmp/usr/share/doc/freebasic/*/gpl.txt.gz || true
+
+# ------------------------------------------------------------
+# Tests
+# ------------------------------------------------------------
+
+override_dh_auto_test:
+	true
+
+execute_before_dh_gencontrol:
+	python3 build_scripts/check-debian-optional-packages.py
+
+override_dh_strip:
+
+	# Ubuntu jammy's debugedit has been observed to segfault while creating
+	# automatic dbgsym packages for cross-built s390x fbc binaries. Keep the
+	# package strip step, but avoid letting that host tool crash block the
+	# target package build.
+ifeq ($(DEB_HOST_ARCH),s390x)
+	dh_strip --no-automatic-dbgsym
+else
+	dh_strip
+endif
+
+ifneq ($(strip $(FBC_PACKAGE_TARGET_SHLIBS)),)
+override_dh_shlibdeps:
+	dh_shlibdeps \
+		-l$(FBC_PACKAGE_SYSROOT)/lib/$(TARGET_TRIPLET) \
+		-l$(FBC_PACKAGE_SYSROOT)/usr/lib/$(TARGET_TRIPLET) \
+		-- -L$(FBC_PACKAGE_TARGET_SHLIBS)
+endif
+
+execute_after_dh_installdocs:
+	find debian/freebasic-doc/usr/share/doc/freebasic -name ".git*" -delete || true
+	rm -rf debian/freebasic-doc/usr/share/doc/freebasic/manual/cache* || true
+	find debian/freebasic-doc/usr/share/doc/freebasic \
+		\( -name gpl.txt -o -name lgpl.txt \) -delete || true
+	if cmp -s debian/freebasic-doc/usr/share/doc/freebasic/manual/html/images/putgfx2.png \
+	         debian/freebasic-doc/usr/share/doc/freebasic/manual/html/images/sample.png; then \
+		rm -f debian/freebasic-doc/usr/share/doc/freebasic/manual/html/images/sample.png; \
+		ln -s putgfx2.png debian/freebasic-doc/usr/share/doc/freebasic/manual/html/images/sample.png; \
+	fi
+	if cmp -s debian/freebasic-doc/usr/share/doc/freebasic/manual/templates/default/code/fbhelp_doctoc.tpl.txt \
+	         debian/freebasic-doc/usr/share/doc/freebasic/manual/templates/default/code/texinfo_doctoc.tpl.texinfo; then \
+		rm -f debian/freebasic-doc/usr/share/doc/freebasic/manual/templates/default/code/texinfo_doctoc.tpl.texinfo; \
+		ln -s fbhelp_doctoc.tpl.txt debian/freebasic-doc/usr/share/doc/freebasic/manual/templates/default/code/texinfo_doctoc.tpl.texinfo; \
+	fi
+	find debian/freebasic-doc/usr/share/doc/freebasic -type d -empty -delete || true
+
+
+# ======================================================================
+# End of debian/rules
+# ======================================================================

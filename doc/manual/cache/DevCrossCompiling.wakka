@@ -1,0 +1,31 @@
+﻿{{fbdoc item="title" value="Cross-compiling FreeBASIC"}}
+
+Cross-compiling is controlled by the same modular make system as native builds.
+The preferred identity knob is ##TARGET_TRIPLET##. Old short names still exist in
+places, but new build and package work should prefer the triplet form when a
+real target identity is needed.
+
+{{fbdoc item="subsect" value="Basic direct build"}}
+
+%%(sh)
+make print-config TARGET_TRIPLET=x86_64-pc-linux-gnu
+make TARGET_TRIPLET=x86_64-pc-linux-gnu
+%%
+
+Always inspect ##print-config## before a long cross build. If host, target, CPU,
+binary names, library directories, or tool names look wrong there, fix the
+configuration before building.
+
+{{fbdoc item="subsect" value="Important variables"}}
+
+	##TARGET_TRIPLET## selects the target identity.
+	##BUILD_FBC_TARGET## selects the compiler used to build generated tools when needed.
+	##FBTARGET_DIR_OVERRIDE## can override the installed target directory for package layouts.
+	##FBC## can point to the bootstrap compiler used by the build.
+
+{{fbdoc item="subsect" value="When to use scripts"}}
+
+Use the target package scripts for Android, JavaScript, Wii, Xbox, and distro
+packages. Those scripts set more than a target CPU. They also set external SDK
+paths, package layout, archive names, installer behavior, and smoke-test
+expectations.

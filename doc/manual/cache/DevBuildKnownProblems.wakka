@@ -1,0 +1,27 @@
+﻿{{fbdoc item="title" value="Build troubleshooting notes"}}
+
+Most build failures become easier to diagnose if the selected configuration is
+checked before rebuilding.
+
+%%(sh)
+make print-config
+make prereqs-fbc
+%%
+
+{{fbdoc item="subsect" value="Common causes"}}
+
+	Missing bootstrap compiler or wrong ##FBC## path.
+	Wrong host shell for the script being run.
+	MSYS2, Cygwin, and Windows paths mixed in one command line.
+	Target triplet does not match the installed cross toolchain.
+	Old generated objects remain after a platform, backend, or bootstrap change.
+	Android SDK/NDK tools are installed but not on the path expected by the script.
+	Installer tests pass in-tree but fail from an installed layout because a file
+	was not packaged.
+
+{{fbdoc item="subsect" value="First fixes to try"}}
+
+Use the build script for the platform when one exists. If working directly with
+make, clean only the affected output directory first. Save full clean rebuilds
+for cases where platform identity, bootstrap output, or generated headers have
+changed.

@@ -1,0 +1,158 @@
+###################
+# build-layout.mk #
+###################
+
+##############################################################################
+# Build layout derivation
+#
+# Responsibilities:
+#   1) Define canonical per-target build directories
+#   2) Define build-tree artifact locations
+#   3) Export build paths for other build rules
+#
+# Provided by earlier layers:
+#   platform.mk → FBTARGET
+#   layout.mk   → libdirname
+#
+# IMPORTANT:
+#   This file must NOT define install layout. That belongs in layout.mk.
+##############################################################################
+
+##############################################################################
+# Canonical per-target build directories
+##############################################################################
+
+# Canonical runtime/layout key
+libsubdir := $(FBTARGET)
+
+# Object subdir mirrors runtime identity
+objsubdir := $(libsubdir)
+
+ifeq ($(THREAD_MODEL),pdmlwp)
+# Provider objects must not reuse cached objects from the default DOS build.
+objsubdir := $(libsubdir)/pdmlwp
+endif
+
+
+##############################################################################
+# BUILD TREE LAYOUT
+##############################################################################
+
+ifdef ENABLE_STANDALONE
+
+# Standalone builds keep executables at root
+build_bindir := .
+build_libdir := lib/$(libsubdir)
+
+FBC_EXE    := fbc$(EXEEXT)
+FBCNEW_EXE := fbc-new$(EXEEXT)
+FBC_JS_EXE := fbc-js$(EXEEXT)
+FBC_ANDROID_EXE := fbc-android-compiler$(EXEEXT)
+FBC_WII_EXE := fbc-wii-compiler$(EXEEXT)
+
+else
+
+# Standard build layout
+build_bindir := bin
+build_libdir := $(libdirname)/$(FBNAME)/$(libsubdir)
+
+FBC_EXE    := $(build_bindir)/fbc$(ENABLE_SUFFIX)$(EXEEXT)
+FBCNEW_EXE := $(build_bindir)/fbc$(ENABLE_SUFFIX)-new$(EXEEXT)
+FBC_JS_EXE := $(build_bindir)/fbc-js$(EXEEXT)
+FBC_ANDROID_EXE := $(build_bindir)/fbc-android-compiler$(EXEEXT)
+FBC_WII_EXE := $(build_bindir)/fbc-wii-compiler$(EXEEXT)
+
+endif
+
+
+##############################################################################
+# Canonical build runtime directory
+##############################################################################
+
+# Runtime libraries used during build
+libdir := $(build_libdir)
+
+
+##############################################################################
+# Object directory layout
+#
+# IMPORTANT:
+# Object rules and dependency lists use these variables. Keep each variant's
+# relative layout stable when adding an isolated build prefix below.
+##############################################################################
+
+# Compiler objects
+fbcobjdir := src/compiler/obj/$(FBTARGET)
+fbcjsobjdir := src/compiler/obj/$(FBTARGET)-jsdriver
+fbcandroidobjdir := src/compiler/obj/$(FBTARGET)-androiddriver
+fbcwiiobjdir := src/compiler/obj/$(FBTARGET)-wiidriver
+
+# Runtime objects
+libfbobjdir	 := src/rtlib/obj/$(objsubdir)
+libfbpicobjdir      := src/rtlib/obj/$(objsubdir)/pic
+libfbmtobjdir       := src/rtlib/obj/$(objsubdir)/mt
+libfbmtpicobjdir    := src/rtlib/obj/$(objsubdir)/mt/pic
+
+# FB runtime layer
+libfbrtobjdir       := src/fbrt/obj/$(objsubdir)
+libfbrtpicobjdir    := src/fbrt/obj/$(objsubdir)/pic
+libfbrtmtobjdir     := src/fbrt/obj/$(objsubdir)/mt
+libfbrtmtpicobjdir  := src/fbrt/obj/$(objsubdir)/mt/pic
+
+# Graphics runtime
+libfbgfxobjdir      := src/gfxlib2/obj/$(objsubdir)
+libfbgfxpicobjdir   := src/gfxlib2/obj/$(objsubdir)/pic
+libfbgfxmtobjdir    := src/gfxlib2/obj/$(objsubdir)/mt
+libfbgfxmtpicobjdir := src/gfxlib2/obj/$(objsubdir)/mt/pic
+
+# Experimental GPU graphics runtime
+libfbgfx3objdir      := src/gfxlib3/obj/$(objsubdir)
+libfbgfx3picobjdir   := src/gfxlib3/obj/$(objsubdir)/pic
+libfbgfx3mtobjdir    := src/gfxlib3/obj/$(objsubdir)/mt
+libfbgfx3mtpicobjdir := src/gfxlib3/obj/$(objsubdir)/mt/pic
+
+# Sound runtime
+
+libsfxobjdir       := src/sfxlib/obj/$(objsubdir)
+libsfxpicobjdir    := src/sfxlib/obj/$(objsubdir)/pic
+libsfxmtobjdir     := src/sfxlib/obj/$(objsubdir)/mt
+libsfxmtpicobjdir  := src/sfxlib/obj/$(objsubdir)/mt/pic
+
+##############################################################################
+# Optional isolated output tree
+##############################################################################
+
+# Independent Make processes must use distinct roots. Keeping every product
+# under build/<name> lets them share maintained sources without sharing objects,
+# archives, executable publication or configuration records. Spaces in Make
+# target names are not supported by the existing object graph.
+BUILD_OUTPUT_PREFIX :=
+ifneq ($(strip $(BUILD_ROOT)),)
+build_root_absolute := $(abspath $(BUILD_ROOT))
+ifeq ($(filter $(rootdir)/build/%,$(build_root_absolute)),)
+$(error BUILD_ROOT must name a directory below $(rootdir)/build)
+endif
+ifneq ($(words $(build_root_absolute)),1)
+$(error BUILD_ROOT must not contain whitespace)
+endif
+BUILD_OUTPUT_PREFIX := $(patsubst $(rootdir)/%,%,$(build_root_absolute))/
+$(foreach variable,build_bindir build_libdir libdir FBC_EXE FBCNEW_EXE FBC_JS_EXE FBC_ANDROID_EXE FBC_WII_EXE \
+fbcobjdir fbcjsobjdir fbcandroidobjdir fbcwiiobjdir \
+libfbobjdir libfbpicobjdir libfbmtobjdir libfbmtpicobjdir \
+libfbrtobjdir libfbrtpicobjdir libfbrtmtobjdir libfbrtmtpicobjdir \
+libfbgfxobjdir libfbgfxpicobjdir libfbgfxmtobjdir libfbgfxmtpicobjdir \
+libfbgfx3objdir libfbgfx3picobjdir libfbgfx3mtobjdir libfbgfx3mtpicobjdir \
+libsfxobjdir libsfxpicobjdir libsfxmtobjdir libsfxmtpicobjdir,\
+$(eval $(variable) := $(BUILD_OUTPUT_PREFIX)$($(variable))))
+endif
+
+
+##############################################################################
+# Export useful build paths
+##############################################################################
+
+export libdir
+
+##########################
+# end of build-layout.mk #
+##########################

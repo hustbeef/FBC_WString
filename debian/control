@@ -1,0 +1,633 @@
+Source: freebasic
+Section: devel
+Priority: optional
+Maintainer: SJ_Zero <sj@fbxl.net>
+Build-Depends:
+ debhelper-compat (= 13),
+ binutils,
+ dos2unix,
+ git,
+ pkgconf,
+ python3,
+ xz-utils,
+ libncurses-dev,
+ libgpm-dev,
+ libffi-dev,
+ libasound2-dev,
+ libpulse-dev,
+ libgl-dev,
+ libx11-dev,
+ libxext-dev,
+ libxrender-dev,
+ libxrandr-dev,
+ libxpm-dev,
+ emscripten <!pkg.freebasic.nojs>,
+ nodejs <!pkg.freebasic.nojs>,
+ openjdk-17-jdk-headless <pkg.freebasic.android>,
+ android-sdk <pkg.freebasic.android>,
+ android-sdk-platform-tools <pkg.freebasic.android>,
+ android-sdk-build-tools <pkg.freebasic.android>,
+ dalvik-exchange <pkg.freebasic.android>,
+ android-sdk-platform-23 <pkg.freebasic.android> | google-android-platform-26-installer <pkg.freebasic.android>,
+ google-android-ndk-r28-installer <pkg.freebasic.android>,
+ aapt <pkg.freebasic.android>,
+ apksigner <pkg.freebasic.android>,
+ zip <pkg.freebasic.android>,
+ unzip <pkg.freebasic.android>
+Standards-Version: 4.6.2
+Homepage: https://freebasic.net/
+Vcs-Browser: https://github.com/freebasic/fbc
+Vcs-Git: https://github.com/freebasic/fbc.git
+Rules-Requires-Root: no
+
+Package: freebasic
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ gcc,
+ libc-dev,
+ libncurses-dev,
+ libasound2-dev,
+ libpulse-dev
+Recommends:
+ freebasic-bindings (= ${binary:Version})
+Breaks:
+ freebasic-runtime (<< ${binary:Version}),
+ freebasic-dev (<< ${binary:Version})
+Replaces:
+ freebasic-runtime (<< ${binary:Version}),
+ freebasic-dev (<< ${binary:Version})
+Description: BASIC compiler compatible with QuickBASIC (fbc)
+ FreeBASIC is a free/open source BASIC compiler largely compatible with
+ Microsoft QuickBASIC.
+ .
+ This package provides the fbc compiler executable, native runtime libraries,
+ startup objects, and core include files needed to compile and link
+ FreeBASIC programs on Debian-based systems.
+
+Package: freebasic-runtime
+Section: oldlibs
+Architecture: all
+Depends:
+ ${misc:Depends},
+ freebasic (>= ${source:Version})
+Description: transitional package for the FreeBASIC runtime
+ This transitional package depends on freebasic, which now contains the
+ compiler, runtime libraries, startup objects, and core include files needed
+ for a usable native FreeBASIC installation.
+
+Package: freebasic-dev
+Section: oldlibs
+Architecture: all
+Depends:
+ ${misc:Depends},
+ freebasic-bindings (= ${binary:Version})
+Description: transitional package for FreeBASIC bindings
+ This transitional package depends on freebasic-bindings. The FreeBASIC base
+ compiler package now contains the core development files, while optional
+ third-party binding headers are packaged separately.
+
+Package: freebasic-bindings
+Section: libdevel
+Architecture: all
+Depends:
+ ${misc:Depends},
+ freebasic (>= ${source:Version})
+Breaks:
+ freebasic-dev (<< ${binary:Version})
+Replaces:
+ freebasic-dev (<< ${binary:Version})
+Recommends:
+ pkgconf,
+ zlib1g-dev,
+ libbz2-dev,
+ libzip-dev,
+ libpng-dev,
+ libjpeg-dev,
+ libgif-dev,
+ libx11-dev,
+ libxext-dev,
+ libxpm-dev,
+ libxrandr-dev,
+ libxrender-dev,
+ libglu1-mesa-dev | libglu-dev,
+ libsdl2-dev,
+ libsdl2-image-dev,
+ libsdl2-mixer-dev,
+ libsdl2-ttf-dev,
+ libopenal-dev,
+ libalut-dev,
+ libasound2-dev,
+ libpulse-dev,
+ libcairo2-dev,
+ libfontconfig-dev,
+ libfreetype-dev,
+ libcurl4-gnutls-dev | libcurl4-openssl-dev,
+ libdevil-dev,
+ libgoocanvas-2.0-dev,
+ liblua5.3-dev,
+ libmng-dev
+Suggests:
+ libpcre2-dev,
+ libtre-dev,
+ libxml2-dev,
+ libexpat1-dev,
+ liballegro4-dev,
+ liballegro5-dev,
+ libgtk-3-dev,
+ libglib2.0-dev,
+ libsqlite3-dev,
+ libpq-dev,
+ default-libmysqlclient-dev,
+ libgsl-dev,
+ binutils-dev,
+ flite1-dev,
+ g++,
+ liballegro-acodec5-dev,
+ liballegro-audio5-dev,
+ liballegro-dialog5-dev,
+ liballegro-image5-dev,
+ liballegro-physfs5-dev,
+ liballegro-ttf5-dev,
+ liballegro-video5-dev,
+ libart-2.0-dev,
+ libaspell-dev,
+ libatk1.0-dev,
+ libcaca-dev,
+ libchipmunk-dev,
+ libclang-dev,
+ libcunit1-dev,
+ libfcgi-dev,
+ libffi-dev,
+ libfltk1.3-dev,
+ libfreeimage-dev,
+ libgd-dev,
+ libgdbm-dev,
+ libgdk-pixbuf-2.0-dev,
+ libgettextpo-dev,
+ libgio-2.0-dev,
+ libgl-dev,
+ libgles-dev,
+ libglfw3-dev,
+ libglut-dev,
+ libgmp-dev,
+ libgpm-dev,
+ libgtk2.0-dev,
+ libjpgalleg4-dev,
+ libjson-c-dev,
+ libltdl-dev,
+ liblzma-dev,
+ liblzo2-dev,
+ libmariadb-dev,
+ libmediainfo-dev,
+ libmikmod-dev,
+ libmodplug-dev,
+ libmpg123-dev,
+ libmxml-dev,
+ libncurses-dev,
+ libode-dev,
+ libogg-dev,
+ libopengl-dev,
+ libopenmpt-dev,
+ libpango1.0-dev,
+ libpipewire-0.3-dev,
+ libsdl-gfx1.2-dev,
+ libsdl-image1.2-dev,
+ libsdl-mixer1.2-dev,
+ libsdl-net1.2-dev,
+ libsdl-sound1.2-dev,
+ libsdl-ttf2.0-dev,
+ libsdl1.2-dev,
+ libsdl2-gfx-dev,
+ libsdl2-net-dev,
+ libsdl3-dev,
+ libsdl3-image-dev,
+ libsdl3-ttf-dev,
+ libsndfile1-dev,
+ libtiff-dev,
+ libvlc-dev,
+ libvorbis-dev,
+ libxcb1-dev,
+ libxcomposite-dev,
+ libxcursor-dev,
+ libxdamage-dev,
+ libxfixes-dev,
+ libxft-dev,
+ libxi-dev,
+ libxinerama-dev,
+ libxmp-dev,
+ libxmu-dev,
+ libxres-dev,
+ libxslt1-dev,
+ libxss-dev,
+ libxt-dev,
+ libxv-dev,
+ libxxf86vm-dev,
+ libzmq3-dev,
+ llvm-dev,
+ portaudio19-dev,
+ uuid-dev,
+ libraylib-dev,
+ libsdl3-mixer-dev,
+ libsdl3-net-dev
+Description: third-party FreeBASIC binding headers
+ This package contains optional FreeBASIC bindings for common third-party
+ C libraries and platform APIs.
+ .
+ Installing this package is recommended for compiling programs that use
+ external libraries such as SDL, OpenGL, zlib, curl, SQLite, GTK, or similar
+ bindings.
+
+Package: freebasic-examples
+Section: doc
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ttf-bitstream-vera
+Recommends:
+ freebasic (= ${binary:Version}),
+ freebasic-bindings (= ${binary:Version}),
+ pkgconf,
+ zlib1g-dev,
+ libbz2-dev,
+ libzip-dev,
+ libcurl4-gnutls-dev | libcurl4-openssl-dev,
+ libpng-dev,
+ libjpeg-dev,
+ libgif-dev,
+ libx11-dev,
+ libxext-dev,
+ libxpm-dev,
+ libxrandr-dev,
+ libxrender-dev,
+ libglu1-mesa-dev | libglu-dev,
+ libsdl2-dev,
+ libsdl2-image-dev,
+ libsdl2-mixer-dev,
+ libsdl2-ttf-dev,
+ libopenal-dev,
+ libalut-dev,
+ libasound2-dev,
+ libpulse-dev,
+ libcairo2-dev,
+ libfontconfig-dev,
+ libfreetype-dev,
+ libpcre2-dev,
+ libtre-dev,
+ libxml2-dev,
+ libexpat1-dev,
+ liballegro4-dev,
+ liballegro5-dev,
+ libgtk-3-dev,
+ libglib2.0-dev,
+ libsqlite3-dev,
+ libpq-dev,
+ default-libmysqlclient-dev,
+ libgsl-dev,
+ libdevil-dev,
+ libgoocanvas-2.0-dev,
+ liblua5.3-dev,
+ libmng-dev,
+ default-jdk-headless
+Suggests:
+ binutils-dev,
+ flite1-dev,
+ g++,
+ liballegro-acodec5-dev,
+ liballegro-audio5-dev,
+ liballegro-dialog5-dev,
+ liballegro-image5-dev,
+ liballegro-physfs5-dev,
+ liballegro-ttf5-dev,
+ liballegro-video5-dev,
+ libart-2.0-dev,
+ libaspell-dev,
+ libatk1.0-dev,
+ libcaca-dev,
+ libchipmunk-dev,
+ libclang-dev,
+ libcunit1-dev,
+ libfcgi-dev,
+ libffi-dev,
+ libfltk1.3-dev,
+ libfreeimage-dev,
+ libgd-dev,
+ libgdbm-dev,
+ libgdk-pixbuf-2.0-dev,
+ libgettextpo-dev,
+ libgio-2.0-dev,
+ libgl-dev,
+ libgles-dev,
+ libglfw3-dev,
+ libglut-dev,
+ libgmp-dev,
+ libgpm-dev,
+ libgtk2.0-dev,
+ libjpgalleg4-dev,
+ libjson-c-dev,
+ libltdl-dev,
+ liblzma-dev,
+ liblzo2-dev,
+ libmariadb-dev,
+ libmediainfo-dev,
+ libmikmod-dev,
+ libmodplug-dev,
+ libmpg123-dev,
+ libmxml-dev,
+ libncurses-dev,
+ libode-dev,
+ libogg-dev,
+ libopengl-dev,
+ libopenmpt-dev,
+ libpango1.0-dev,
+ libpipewire-0.3-dev,
+ libsdl-gfx1.2-dev,
+ libsdl-image1.2-dev,
+ libsdl-mixer1.2-dev,
+ libsdl-net1.2-dev,
+ libsdl-sound1.2-dev,
+ libsdl-ttf2.0-dev,
+ libsdl1.2-dev,
+ libsdl2-gfx-dev,
+ libsdl2-net-dev,
+ libsdl3-dev,
+ libsdl3-image-dev,
+ libsdl3-ttf-dev,
+ libsndfile1-dev,
+ libtiff-dev,
+ libvlc-dev,
+ libvorbis-dev,
+ libxcb1-dev,
+ libxcomposite-dev,
+ libxcursor-dev,
+ libxdamage-dev,
+ libxfixes-dev,
+ libxft-dev,
+ libxi-dev,
+ libxinerama-dev,
+ libxmp-dev,
+ libxmu-dev,
+ libxres-dev,
+ libxslt1-dev,
+ libxss-dev,
+ libxt-dev,
+ libxv-dev,
+ libxxf86vm-dev,
+ libzmq3-dev,
+ llvm-dev,
+ portaudio19-dev,
+ uuid-dev,
+ libraylib-dev,
+ libsdl3-mixer-dev,
+ libsdl3-net-dev
+Description: FreeBASIC example source programs
+ This package contains the FreeBASIC example source tree, including console,
+ graphics, networking, sfxlib, and third-party binding examples.
+
+Package: freebasic-doc
+Section: doc
+Architecture: all
+Depends:
+ ${misc:Depends}
+Suggests:
+ freebasic
+Description: FreeBASIC documentation and manual
+ This package contains the FreeBASIC documentation, including the official
+ manual, language reference, and additional text files distributed with the
+ compiler. The documentation is installed under /usr/share/doc/freebasic/.
+
+Package: freebasic-js
+Architecture: any
+Build-Profiles: <!pkg.freebasic.nojs>
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ emscripten,
+ nodejs
+Description: FreeBASIC compiler driver for Emscripten/JavaScript
+ This package provides fbc-js, a native FreeBASIC compiler executable that
+ defaults to the js-asmjs/Emscripten target, plus the target runtime libraries
+ and JavaScript support assets needed to build browser or Node.js output.
+ It also includes fbc-js-app, a small helper for browser game directories with
+ preloaded current-directory assets.
+
+Package: freebasic-android
+Architecture: amd64
+Build-Profiles: <pkg.freebasic.android>
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ openjdk-17-jdk-headless | default-jdk-headless,
+ android-sdk,
+ android-sdk-platform-tools,
+ android-sdk-build-tools,
+ dalvik-exchange,
+ android-sdk-platform-23 | google-android-platform-26-installer,
+ google-android-ndk-r28-installer,
+ aapt,
+ apksigner,
+ zip,
+ unzip
+Recommends:
+ adb,
+ google-android-emulator-installer,
+ google-android-cmdline-tools-19.0-installer
+Description: FreeBASIC compiler driver for Android APKs
+ This package provides fbc-android, a native FreeBASIC compiler driver that
+ defaults to building universal APKs for Android ARMv7, AArch64, and x86_64,
+ plus Android runtime libraries, headers, and APK build templates needed to
+ produce signed debug APK files.
+
+Package: freebasic-wii
+Architecture: any
+Build-Profiles: <pkg.freebasic.wii>
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends}
+Recommends:
+ dolphin-emu
+Description: FreeBASIC compiler driver for Nintendo Wii homebrew
+ This package provides fbc-wii, a native FreeBASIC compiler driver that
+ defaults to the Nintendo Wii/powerpc target, plus Wii runtime libraries
+ and headers needed to build libogc homebrew programs. The driver can also
+ stage a boot.dol folder with relative-path assets for older game code.
+ .
+ Building programs requires devkitPPC, libogc, and gamecube-tools from an
+ official devkitPro installation under /opt/devkitpro or DEVKITPRO.
+
+Package: freebasic-nuttx
+Architecture: all
+Depends:
+ ${misc:Depends},
+ freebasic (>= ${source:Version}),
+ make,
+ python3,
+ git,
+ patch,
+ kconfig-frontends-nox,
+ curl | wget,
+ gcc-riscv64-unknown-elf,
+ binutils-riscv64-unknown-elf,
+ picolibc-riscv64-unknown-elf,
+ xxd
+Recommends:
+ qemu-system-riscv
+Description: FreeBASIC NuttX/RISC-V board workflow tools
+ This package provides helper commands and the source SDK needed to build
+ FreeBASIC programs as NuttX RISC-V loadable modules. The ESP32-P4 and
+ Waveshare RP2350-PiZero workflows can fetch and build matching NuttX
+ firmware images, and the ESP32-P4 workflow can deploy programs to an
+ Ethernet-connected board over its NuttX console. The lower-level RISC-V
+ helper can also drive QEMU smoke tests.
+
+Package: freebasic-full
+Section: metapackages
+Architecture: all
+Depends:
+ freebasic (>= ${source:Version}),
+ freebasic-bindings (= ${binary:Version}),
+ freebasic-examples (= ${binary:Version}),
+ freebasic-doc (= ${binary:Version}),
+ ${misc:Depends},
+ pkgconf
+Recommends:
+ freebasic-js (= ${binary:Version}),
+ freebasic-wii (= ${binary:Version}),
+ freebasic-nuttx (= ${binary:Version}),
+ zlib1g-dev,
+ libbz2-dev,
+ libzip-dev,
+ libcurl4-gnutls-dev | libcurl4-openssl-dev,
+ libpng-dev,
+ libjpeg-dev,
+ libgif-dev,
+ libx11-dev,
+ libxext-dev,
+ libxpm-dev,
+ libxrandr-dev,
+ libxrender-dev,
+ libglu1-mesa-dev | libglu-dev,
+ libsdl2-dev,
+ libsdl2-image-dev,
+ libsdl2-mixer-dev,
+ libsdl2-ttf-dev,
+ libopenal-dev,
+ libalut-dev,
+ libasound2-dev,
+ libpulse-dev,
+ libcairo2-dev,
+ libfontconfig-dev,
+ libfreetype-dev,
+ libpcre2-dev,
+ libtre-dev,
+ libxml2-dev,
+ libexpat1-dev,
+ liballegro4-dev,
+ liballegro5-dev,
+ libgtk-3-dev,
+ libglib2.0-dev,
+ libsqlite3-dev,
+ libpq-dev,
+ default-libmysqlclient-dev,
+ libgsl-dev,
+ libdevil-dev,
+ libgoocanvas-2.0-dev,
+ liblua5.3-dev,
+ libmng-dev,
+ default-jdk-headless,
+ binutils-dev,
+ flite1-dev,
+ g++,
+ liballegro-acodec5-dev,
+ liballegro-audio5-dev,
+ liballegro-dialog5-dev,
+ liballegro-image5-dev,
+ liballegro-physfs5-dev,
+ liballegro-ttf5-dev,
+ liballegro-video5-dev,
+ libart-2.0-dev,
+ libaspell-dev,
+ libatk1.0-dev,
+ libcaca-dev,
+ libchipmunk-dev,
+ libclang-dev,
+ libcunit1-dev,
+ libfcgi-dev,
+ libffi-dev,
+ libfltk1.3-dev,
+ libfreeimage-dev,
+ libgd-dev,
+ libgdbm-dev,
+ libgdk-pixbuf-2.0-dev,
+ libgettextpo-dev,
+ libgio-2.0-dev,
+ libgl-dev,
+ libgles-dev,
+ libglfw3-dev,
+ libglut-dev,
+ libgmp-dev,
+ libgpm-dev,
+ libgtk2.0-dev,
+ libjpgalleg4-dev,
+ libjson-c-dev,
+ libltdl-dev,
+ liblzma-dev,
+ liblzo2-dev,
+ libmariadb-dev,
+ libmediainfo-dev,
+ libmikmod-dev,
+ libmodplug-dev,
+ libmpg123-dev,
+ libmxml-dev,
+ libncurses-dev,
+ libode-dev,
+ libogg-dev,
+ libopengl-dev,
+ libopenmpt-dev,
+ libpango1.0-dev,
+ libsdl-gfx1.2-dev,
+ libsdl-image1.2-dev,
+ libsdl-mixer1.2-dev,
+ libsdl-net1.2-dev,
+ libsdl-sound1.2-dev,
+ libsdl-ttf2.0-dev,
+ libsdl1.2-dev,
+ libsdl2-gfx-dev,
+ libsdl2-net-dev,
+ libsdl3-dev,
+ libsdl3-image-dev,
+ libsdl3-ttf-dev,
+ libsndfile1-dev,
+ libtiff-dev,
+ libvlc-dev,
+ libvorbis-dev,
+ libxcb1-dev,
+ libxcomposite-dev,
+ libxcursor-dev,
+ libxdamage-dev,
+ libxfixes-dev,
+ libxft-dev,
+ libxi-dev,
+ libxinerama-dev,
+ libxmp-dev,
+ libxmu-dev,
+ libxres-dev,
+ libxslt1-dev,
+ libxss-dev,
+ libxt-dev,
+ libxv-dev,
+ libxxf86vm-dev,
+ libzmq3-dev,
+ llvm-dev,
+ portaudio19-dev,
+ uuid-dev
+Suggests:
+ libpipewire-0.3-dev,
+ libraylib-dev,
+ libsdl3-mixer-dev,
+ libsdl3-net-dev
+Description: Full FreeBASIC installation (metapackage)
+ This metapackage installs the full FreeBASIC toolchain including compiler,
+ runtime, headers, and documentation, plus a broad set of common development
+ libraries used by FreeBASIC examples.

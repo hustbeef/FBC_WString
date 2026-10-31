@@ -1,0 +1,144 @@
+/*
+ * Project: FreeBASIC runtime library
+ * File: fb_config.h
+ * Purpose: Provide fb config runtime support.
+ * Responsibilities: Shared runtime types, ABI declarations and internal contracts.
+ * This file intentionally does NOT contain: Platform implementations or compiler parsing.
+ */
+#ifndef __FB_CONFIG_H__
+#define __FB_CONFIG_H__
+
+#if defined HOST_XBOX
+#elif defined HOST_NUTTX || defined __NuttX__
+	#ifndef HOST_NUTTX
+		#define HOST_NUTTX
+	#endif
+#elif defined GEKKO
+	#define HOST_WII
+#elif defined __DJGPP__
+	#define HOST_DOS
+	#define HOST_DJGPP
+#elif defined __MINGW32CE__
+	/*
+	 * CeGCC defines the normal MinGW symbols in addition to its WinCE
+	 * identity.  Detect it first so platform headers and source replacements
+	 * do not accidentally select the desktop Win32 implementation.
+	 */
+	#define HOST_WINCE
+	#define HOST_MINGW
+	#define HOST_WIN32
+	#define WIN32_LEAN_AND_MEAN
+	#define FB_UNICODE_HEADER "drivers/wince/fb_unicode.h"
+#elif defined __MINGW32__ /* MinGW, MinGW-w64, TDM-GCC */
+	#define HOST_MINGW
+	#define HOST_WIN32
+	/* We prefer using non-oldnames functions, see also win32/fb_win32.h */
+	#define NO_OLDNAMES
+	#define _NO_OLDNAMES
+	/* Tell windows.h to omit many headers we don't need */
+	#define WIN32_LEAN_AND_MEAN
+#elif defined __CYGWIN__
+	#define HOST_CYGWIN
+	#define HOST_WIN32
+	#define WIN32_LEAN_AND_MEAN
+#elif defined __HAIKU__
+	/* Native Haiku support */
+	#define HOST_HAIKU
+	#define HOST_UNIX
+#elif defined __ANDROID__
+	/* Omit HOST_LINUX; Android isn't GNU/Linux. */
+	#define HOST_ANDROID
+	#define HOST_UNIX
+#elif defined __AROS__
+	/* AROS exposes a POSIX compatibility surface around native Exec/DOS APIs. */
+	#define HOST_AROS
+	#define HOST_UNIX
+#elif defined __amigaos__ || defined __AMIGA__
+	/* Amiga newlib supplies the portable C layer; native replacements own DOS. */
+	#define HOST_AMIGA
+	#define HOST_UNIX
+#elif defined __riscos__
+	/* GCCSDK/UnixLib presents RISC OS as an ELF Unix-like target. */
+	#define HOST_RISCOS
+	#define HOST_UNIX
+	#define FB_UNICODE_HEADER "drivers/riscos/fb_unicode.h"
+#elif defined __linux__
+	/* GNU/Linux, i.e. glibc */
+	#define HOST_LINUX
+	#define HOST_UNIX
+#elif defined __FreeBSD__
+	#define HOST_FREEBSD
+	#define HOST_UNIX
+#elif defined __NetBSD__
+	#define HOST_NETBSD
+	#define HOST_UNIX
+#elif defined __OpenBSD__
+	#define HOST_OPENBSD
+	#define HOST_UNIX
+#elif defined __DragonFly__
+	#define HOST_DRAGONFLY
+	#define HOST_UNIX
+#elif defined __APPLE__
+	#define HOST_DARWIN
+	#define HOST_UNIX
+#elif (defined sun || defined __sun) && defined __SVR4
+	#define HOST_SOLARIS
+	#define HOST_UNIX
+#elif defined __EMSCRIPTEN__
+	#define HOST_JS
+	#define HOST_UNIX
+#else
+	#error "Couldn't identify target system!"
+#endif
+
+#if defined HOST_UNIX
+	/* Map off_t/fopen/fseeko/etc. to their 64bit versions */
+	#define _FILE_OFFSET_BITS 64
+#endif
+
+#if defined __i386__
+	#define HOST_X86
+#elif defined __x86_64__
+	#define HOST_X86_64
+	#define HOST_64BIT
+#elif defined __sparc__
+	#ifdef __LP64__
+		#define HOST_64BIT
+	#endif
+#elif defined __ppc64__ || defined __powerpc64__ || defined _ARCH_PPC64
+	#define HOST_64BIT
+#elif defined __riscv
+	#if __riscv_xlen == 64
+		#define HOST_64BIT
+	#endif
+#elif defined __s390x__
+	#define HOST_64BIT
+#elif defined __loongarch64
+	#define HOST_64BIT
+#elif defined __mips__ || defined __mips || defined mips
+	#define HOST_MIPS
+	#if defined __mips64 || defined __mips64__ || defined __LP64__
+		#define HOST_64BIT
+	#endif
+#elif defined __mc68000__ || defined __m68k__
+	#define HOST_M68K
+#elif defined __aarch64__
+	#define HOST_64BIT
+#endif
+
+#if defined HOST_MINGW && !defined HOST_WINCE
+	/* work around gcc bug 52991 */
+	/* Since MinGW gcc 4.7, structs default to "ms_struct" instead of
+	   "gcc_struct" as on Linux, and it seems like "packed" is broken in
+	   combination with "ms_struct", so it's necessary to specify
+	   "gcc_struct" explicitly. "gcc_struct" isn't recognized on all gcc
+	   targets though, so we can't use it *all* the time. Thus we use it
+	   only for MinGW (both 32bit and 64bit). */
+	#define FBPACKED __attribute__((gcc_struct, packed))
+#else
+	#define FBPACKED __attribute__((packed))
+#endif
+
+#endif
+
+/* end of fb_config.h */

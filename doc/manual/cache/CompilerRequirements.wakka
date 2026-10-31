@@ -1,0 +1,45 @@
+{{fbdoc item="title" value="Requirements"}}----
+
+FreeBASIC's requirements depend on whether the compiler runs natively on the host or produces code for another target.  A compiler package, its target runtime archives, C compiler or assembler/linker tools, and external development libraries must all match the selected target ABI.
+
+{{fbdoc item="section" value="Packaged installations"}}
+	Use a package or standalone archive built for the host whenever possible.  The package metadata supplies the compiler's ordinary runtime, graphics, sound, and linker dependencies.  Optional examples and third-party bindings can need additional development packages.
+
+	The FBXL package repository guide records current host and target packages, checksums, and known limits.  A binding file in ##inc/## does not prove that the matching external library exists on every target.
+
+{{fbdoc item="section" value="Windows"}}
+	- Current packages cover x86, x86-64, and Windows-on-ARM64 host or target combinations.  The selected package must contain a matching MinGW or clang toolchain and runtime archives.
+	- The separate Windows 95 package includes the older CRT and binutils pieces needed by that system.  Normal modern Windows packages must not be assumed to run on Windows 95, 98, or ME.
+	- gfxlib2 selects an available Direct2D, OpenGL, DirectX, or GDI backend.  The Windows 95 path uses the compatible GDI and WinMM implementations.  gfxlib3 requires a supported modern OpenGL or Vulkan environment.
+	- Windows 95/98/ME use the documented ANSI filesystem and reduced wide-character compatibility paths.  NT-family Windows retains native Unicode paths.
+
+{{fbdoc item="section" value="Linux and hosted Unix systems"}}
+	- Console programs normally need the platform C runtime, math, threading, dynamic-loading, and terminal libraries selected by the package.  Building from source also needs GNU make and a supported GCC or clang toolchain.
+	- gfxlib2 desktop programs normally use X11 and the X extension libraries installed by the package.  gfxlib3 on Linux/X11 needs a working OpenGL or Vulkan loader and driver.  Its SDL2 KMSDRM path also needs SDL2 with the KMSDRM video driver and a working EGL/OpenGL ES 3 implementation.
+	- sfxlib links the platform audio interfaces selected at package build time.  Linux packages commonly use ALSA and PulseAudio development link interfaces; BSD, Haiku, Darwin, Solaris/illumos, and other targets use their own backends.
+	- Cross-architecture packages need a target sysroot, linker, and development libraries for the target architecture.  Host libraries with the same names are not substitutes.
+
+{{fbdoc item="section" value="DOS"}}
+	- The DOS compiler and generated programs are 32-bit protected-mode DJGPP applications.  A 80386 or newer CPU and a DPMI server such as CWSDPMI or HDPMI are required.
+	- About 4 MiB of memory is a practical minimum for small programs; compiler and graphics workloads need more.  Floating-point code needs a hardware FPU or a compatible emulator.
+	- Long filenames require the Windows 95 LFN API or a DOS LFN provider.  Otherwise the package and working directory must remain valid under 8.3 filename rules.
+	- DOS graphics and Sound Blaster, MIDI, serial, and PC-speaker behavior depend on the emulator or hardware configuration.  See the ##[[FaqDOS|DOS FAQ]]##.
+
+{{fbdoc item="section" value="Cross and experimental targets"}}
+	- Android APK creation needs the matching Android SDK, NDK, platform jar, resource packager, dexer, Java tools, and signing tool.  The packaged ##fbc-android## wrapper checks these components.
+	- JavaScript builds need the packaged Emscripten toolchain used by ##fbc-js##.  Browser graphics, audio, input, WebSockets, and asynchronous sleep must be tested in a browser, not only under Node.js.
+	- Wii builds need devkitPPC and libogc.  Original Xbox builds need nxdk and the packaged XBE/XISO tools.  These are homebrew targets and do not use proprietary SDK contents from this tree.
+	- NuttX needs an external Apache NuttX and apps workspace configured for the selected board or QEMU machine.  RISC OS, AROS, Windows CE, MIPS Linux, BSD, Haiku, illumos, and Solaris builds need the target toolchain, system image or emulator, and libraries named by their build guide.
+	- A successful cross link proves the compiler and toolchain path.  Hardware graphics, audio, GPIO, controller, serial, firmware, and driver behavior still needs the corresponding device or a faithful emulator.
+
+{{fbdoc item="section" value="Memory, disk, and build capacity"}}
+	Large source files, generated C, bootstrap matrices, package roots, emulated guests, and complete fbctests or Exampleageddon runs can use substantial memory, disk space, and inodes.  Use a 64-bit build host where possible, keep release output outside temporary source copies, and preserve failed test logs before cleaning a workspace.
+
+{{fbdoc item="see"}}
+	- ##[[CompilerInstalling|Installing FreeBASIC]]##
+	- ##[[CompilerOpttarget|Compiler Option: -target]]##
+	- ##[[DevBuild|Building FreeBASIC from source]]##
+	- ##[[CompilerRelease120History|FreeBASIC 1.10 to 1.20 development history]]##
+	- [[https://deb.fbxl.net/docs/guides/packages.md|FBXL package repository guide]]
+
+{{fbdoc item="back" value="DocToc|Table of Contents"}}

@@ -1,0 +1,567 @@
+##############################################################################
+# compile-rules.mk
+#
+# Object compilation rules for FreeBASIC build system
+# Project: FreeBASIC build system
+# Purpose: Compile selected sources with the target's toolchain contracts.
+# Responsibilities: Preserve flags, dependency files, and per-object overrides.
+# This file intentionally does NOT select sources or link final artifacts.
+#
+# Consumes canonical object lists from source-graph.mk
+##############################################################################
+
+##############################################################################
+# Source search paths
+##############################################################################
+
+VPATH := \
+$(FBC_DIRS) \
+$(RTLIB_DIRS) \
+$(FBRT_DIRS) \
+$(GFXLIB2_DIRS) \
+$(GFXLIB3_DIRS) \
+$(SFXLIB_DIRS)
+
+.SUFFIXES:
+
+# Ensure bootstrap/self-hosted fbc uses this source tree's bin/lib paths
+# instead of any compiled-in installation prefix.
+FBC_BUILD_ROOT := $(rootdir)
+ifneq ($(filter MSYS% MINGW% CYGWIN%,$(shell uname -s 2>/dev/null)),)
+FBC_BUILD_ROOT := $(shell cygpath -m "$(rootdir)")
+endif
+FBC_PREFIX_OPT := -prefix $(FBC_BUILD_ROOT)
+TOOLCHAIN_BINDIR := $(call tool_bindir,$(CC))
+FBC_ENV_TOOLCHAIN_BINDIR := $(TOOLCHAIN_BINDIR)
+FBC_ENV_PATH := $$PATH
+FBC_ENV_PATH_SEP := :
+FBC_ENV_AS := $(AS)
+FBC_ENV_AR := $(AR)
+FBC_ENV_LD := $(LD)
+FBC_ENV_CC := $(CC)
+FBC_ENV_CLANG := $(CLANG)
+FBC_ENV_LLC := $(LLC)
+FBC_ENV_DLLTOOL := $(DLLTOOL)
+FBC_ENV_WINDRES := $(WINDRES)
+FBC_ENV_GORC := $(GORC)
+FBC_ENV_EMAS := $(EMAS)
+FBC_ENV_EMAR := $(EMAR)
+FBC_ENV_EMLD := $(EMLD)
+FBC_ENV_EMCC := $(EMCC)
+FBC_ENV_CXBE := $(CXBE)
+FBC_ENV_DXEGEN := $(DXEGEN)
+FBC_ENV_ELF2DOL := $(ELF2DOL)
+FBC_ENV_ELF2HUNK := $(ELF2HUNK)
+ifneq ($(filter MSYS% MINGW% CYGWIN%,$(shell uname -s 2>/dev/null)),)
+#
+# BUILD_FBC is often a native Windows executable even when make is running
+# from MSYS2 or Cygwin.  fbc consults tool-specific environment variables such
+# as GCC and AS directly, so convert those to absolute Windows-style paths.
+# Keep PATH in the shell's native POSIX form because the shell tools expect
+# that environment after fbc launches them.
+#
+fbc_msys_tool = $(strip $(if $(strip $(1)),$(shell tool='$(call tool_cmd,$(1))'; args='$(call tool_args,$(1))'; if command -v "$$tool" >/dev/null 2>&1; then tool="$$(cygpath -m "$$(command -v "$$tool")")"; else tool="$$(cygpath -m "$$tool" 2>/dev/null || printf '%s' "$$tool")"; fi; if [ -n "$$args" ]; then printf '%s %s' "$$tool" "$$args"; else printf '%s' "$$tool"; fi)))
+FBC_ENV_AS := $(call fbc_msys_tool,$(AS))
+FBC_ENV_AR := $(call fbc_msys_tool,$(AR))
+FBC_ENV_LD := $(call fbc_msys_tool,$(LD))
+FBC_ENV_CC := $(call fbc_msys_tool,$(CC))
+FBC_ENV_CLANG := $(call fbc_msys_tool,$(CLANG))
+FBC_ENV_LLC := $(call fbc_msys_tool,$(LLC))
+FBC_ENV_DLLTOOL := $(call fbc_msys_tool,$(DLLTOOL))
+FBC_ENV_WINDRES := $(call fbc_msys_tool,$(WINDRES))
+FBC_ENV_GORC := $(call fbc_msys_tool,$(GORC))
+FBC_ENV_EMAS := $(call fbc_msys_tool,$(EMAS))
+FBC_ENV_EMAR := $(call fbc_msys_tool,$(EMAR))
+FBC_ENV_EMLD := $(call fbc_msys_tool,$(EMLD))
+FBC_ENV_EMCC := $(call fbc_msys_tool,$(EMCC))
+FBC_ENV_CXBE := $(call fbc_msys_tool,$(CXBE))
+FBC_ENV_DXEGEN := $(call fbc_msys_tool,$(DXEGEN))
+FBC_ENV_ELF2DOL := $(call fbc_msys_tool,$(ELF2DOL))
+FBC_ENV_ELF2HUNK := $(call fbc_msys_tool,$(ELF2HUNK))
+endif
+FBC_TOOL_PATH_ENV := $(if $(strip $(FBC_ENV_TOOLCHAIN_BINDIR)),$(FBC_ENV_TOOLCHAIN_BINDIR)$(FBC_ENV_PATH_SEP),)$(FBC_ENV_PATH)
+TOOLCHAIN_PATH_ENV :=
+ifneq ($(strip $(TOOLCHAIN_BINDIR)),)
+# Quote the runtime PATH separately. Some macOS applications install PATH
+# entries containing spaces, and an unquoted $$PATH makes env treat the split
+# path fragment as the command to execute.
+TOOLCHAIN_PATH_ENV := env PATH="$(TOOLCHAIN_BINDIR):$$PATH"
+endif
+FBC_TOOL_ENV := env \
+	$(TOOLCHAIN_FBC_ENV) \
+	PATH="$(FBC_TOOL_PATH_ENV)" \
+	AS='$(FBC_ENV_AS)' \
+	AR='$(FBC_ENV_AR)' \
+	LD='$(FBC_ENV_LD)' \
+	GCC='$(FBC_ENV_CC)' \
+	CLANG='$(FBC_ENV_CLANG)' \
+	LLC='$(FBC_ENV_LLC)' \
+	DLLTOOL='$(FBC_ENV_DLLTOOL)' \
+	WINDRES='$(FBC_ENV_WINDRES)' \
+	GORC='$(FBC_ENV_GORC)' \
+	EMAS='$(FBC_ENV_EMAS)' \
+	EMAR='$(FBC_ENV_EMAR)' \
+	EMLD='$(FBC_ENV_EMLD)' \
+	EMCC='$(FBC_ENV_EMCC)' \
+	CXBE='$(FBC_ENV_CXBE)' \
+	DXEGEN='$(FBC_ENV_DXEGEN)' \
+	ELF2DOL='$(FBC_ENV_ELF2DOL)' \
+	ELF2HUNK='$(FBC_ENV_ELF2HUNK)'
+RUN_CC := $(TOOLCHAIN_PATH_ENV) $(CC)
+RUN_CXX := $(TOOLCHAIN_PATH_ENV) $(CXX)
+DARWIN_CLANG ?= clang
+ifeq ($(TARGET_OS),darwin)
+DARWIN_CLANG := $(strip $(shell xcrun --find clang 2>/dev/null || command -v clang 2>/dev/null || echo clang))
+endif
+RUN_DARWIN_CLANG := $(TOOLCHAIN_PATH_ENV) $(DARWIN_CLANG)
+DARWIN_SDKROOT :=
+ifeq ($(TARGET_OS),darwin)
+DARWIN_SDKROOT := $(strip $(shell xcrun --show-sdk-path 2>/dev/null))
+endif
+DARWIN_BLOCKS_CFLAGS := -fblocks
+ifneq ($(strip $(DARWIN_SDKROOT)),)
+DARWIN_BLOCKS_CFLAGS += -isysroot $(DARWIN_SDKROOT)
+endif
+BUILD_FBC_TARGET_OPT :=
+BUILD_FBC_BUILDPREFIX_OPT :=
+BUILD_FBC_COMPAT_DEFINES :=
+BUILD_FBC_COMPAT_TARGET := $(TARGET_ARCH) $(BUILD_FBC_TARGET)
+
+ifneq ($(strip $(BUILD_FBC_TARGET)),)
+BUILD_FBC_TARGET_OPT := -target $(BUILD_FBC_TARGET)
+endif
+
+ifneq ($(strip $(BUILD_FBC_BUILDPREFIX)),)
+BUILD_FBC_BUILDPREFIX_OPT := -buildprefix $(BUILD_FBC_BUILDPREFIX)
+endif
+
+ifneq ($(filter aarch64 linux-aarch64,$(BUILD_FBC_COMPAT_TARGET)),)
+BUILD_FBC_COMPAT_DEFINES += -d __FB_AARCH64__
+endif
+
+BUILD_FBCFLAGS ?=
+
+# Version defines come from version.mk. Rebuild existing compiler objects when
+# they change so an incremental build cannot retain the previous release banner.
+
+$(fbcobjdir)/%.o: %.bas $(FBC_BI) $(mkpath)/version.mk | $(fbcobjdir)
+	@mkdir -p "$(dir $@)"
+	$(FBC_TOOL_ENV) $(BUILD_FBC) $(BUILD_FBC_TARGET_OPT) $(BUILD_FBC_BUILDPREFIX_OPT) $(BUILD_FBC_COMPAT_DEFINES) $(BUILD_FBCFLAGS) $(FBC_PREFIX_OPT) $(ALLFBCFLAGS) -i $(srcdir)/compiler $(FBC_INCLUDE_FLAGS) -c $< -o $@
+
+FBC_JS_DEFINES := \
+	-d BUILD_FB_DEFAULT_TARGET=FB_COMPTARGET_JS \
+	-d BUILD_FB_DEFAULT_CPUTYPE=FB_CPUTYPE_ASMJS \
+	-d ENABLE_SUFFIX=\"-js\"
+
+$(fbcjsobjdir)/%.o: %.bas $(FBC_BI) $(mkpath)/version.mk | $(fbcjsobjdir)
+	@mkdir -p "$(dir $@)"
+	$(FBC_TOOL_ENV) $(BUILD_FBC) $(BUILD_FBC_TARGET_OPT) $(BUILD_FBC_BUILDPREFIX_OPT) $(BUILD_FBC_COMPAT_DEFINES) $(BUILD_FBCFLAGS) $(FBC_PREFIX_OPT) $(ALLFBCFLAGS) $(FBC_JS_DEFINES) -i $(srcdir)/compiler -i $(rootdir)/inc -c $< -o $@
+
+FBC_ANDROID_DEFINES := \
+	-d BUILD_FB_DEFAULT_TARGET=FB_COMPTARGET_ANDROID \
+	-d BUILD_FB_DEFAULT_CPUTYPE=FB_CPUTYPE_AARCH64 \
+	-d ENABLE_SUFFIX=\"-android\"
+
+$(fbcandroidobjdir)/%.o: %.bas $(FBC_BI) $(mkpath)/version.mk | $(fbcandroidobjdir)
+	@mkdir -p "$(dir $@)"
+	$(FBC_TOOL_ENV) $(BUILD_FBC) $(BUILD_FBC_TARGET_OPT) $(BUILD_FBC_BUILDPREFIX_OPT) $(BUILD_FBC_COMPAT_DEFINES) $(BUILD_FBCFLAGS) $(FBC_PREFIX_OPT) $(ALLFBCFLAGS) $(FBC_ANDROID_DEFINES) -i $(srcdir)/compiler -i $(rootdir)/inc -c $< -o $@
+
+FBC_WII_DEFINES := \
+	-d BUILD_FB_DEFAULT_TARGET=FB_COMPTARGET_WII \
+	-d BUILD_FB_DEFAULT_CPUTYPE=FB_CPUTYPE_PPC \
+	-d ENABLE_SUFFIX=\"-wii\"
+
+$(fbcwiiobjdir)/%.o: %.bas $(FBC_BI) $(mkpath)/version.mk | $(fbcwiiobjdir)
+	@mkdir -p "$(dir $@)"
+	$(FBC_TOOL_ENV) $(BUILD_FBC) $(BUILD_FBC_TARGET_OPT) $(BUILD_FBC_BUILDPREFIX_OPT) $(BUILD_FBC_COMPAT_DEFINES) $(BUILD_FBCFLAGS) $(FBC_PREFIX_OPT) $(ALLFBCFLAGS) $(FBC_WII_DEFINES) -i $(srcdir)/compiler -i $(rootdir)/inc -c $< -o $@
+
+##############################################################################
+# rtlib (C runtime)
+##############################################################################
+
+# Portable implementations include shared contracts relative to src/rtlib.
+# Scope this search root to runtime objects so a platform SDK used by another
+# library cannot accidentally resolve one of our private headers.
+# Append it even when a caller supplies CPPFLAGS on the Make command line.
+$(RTLIB_OBJ) $(RTLIB_PIC_OBJ) $(RTLIB_MT_OBJ) $(RTLIB_MT_PIC_OBJ): override CPPFLAGS += -I$(srcdir)/rtlib
+
+RTLIB_GOSUB_CFLAGS :=
+ifeq ($(TARGET_OS),win32)
+  ifeq ($(TARGET_ARCH),x86_64)
+    RTLIB_GOSUB_CFLAGS := -funwind-tables
+  endif
+endif
+
+$(libfbobjdir)/%.o: $(srcdir)/rtlib/%.c $(LIBFB_H) | $(libfbobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbpicobjdir)/%.o: $(srcdir)/rtlib/%.c $(LIBFB_H) | $(libfbpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbmtobjdir)/%.o: $(srcdir)/rtlib/%.c $(LIBFB_H) | $(libfbmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbmtpicobjdir)/%.o: $(srcdir)/rtlib/%.c $(LIBFB_H) | $(libfbmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MTPIC_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbobjdir)/core/gosub.o: $(srcdir)/rtlib/core/gosub.c $(LIBFB_H) | $(libfbobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(RTLIB_GOSUB_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbpicobjdir)/core/gosub.o: $(srcdir)/rtlib/core/gosub.c $(LIBFB_H) | $(libfbpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) $(RTLIB_GOSUB_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbmtobjdir)/core/gosub.o: $(srcdir)/rtlib/core/gosub.c $(LIBFB_H) | $(libfbmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MT_CFLAGS) $(RTLIB_GOSUB_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbmtpicobjdir)/core/gosub.o: $(srcdir)/rtlib/core/gosub.c $(LIBFB_H) | $(libfbmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MTPIC_CFLAGS) $(RTLIB_GOSUB_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbobjdir)/%.o: $(srcdir)/rtlib/%.s $(LIBFB_H) | $(libfbobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) -x assembler-with-cpp -MMD -MP -c $< -o $@
+
+$(libfbpicobjdir)/%.o: $(srcdir)/rtlib/%.s $(LIBFB_H) | $(libfbpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) -x assembler-with-cpp -MMD -MP -c $< -o $@
+
+$(libfbmtobjdir)/%.o: $(srcdir)/rtlib/%.s $(LIBFB_H) | $(libfbmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MT_CFLAGS) -x assembler-with-cpp -MMD -MP -c $< -o $@
+
+$(libfbmtpicobjdir)/%.o: $(srcdir)/rtlib/%.s $(LIBFB_H) | $(libfbmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MTPIC_CFLAGS) -x assembler-with-cpp -MMD -MP -c $< -o $@
+
+##############################################################################
+# Static runtime startup
+##############################################################################
+
+# Platform directories may replace the complete startup source.  Startup is
+# intentionally selected by filename, matching the replacement model used by
+# rtlib, gfxlib2, and sfxlib instead of accumulating OS conditionals here.
+FBRT0_SOURCE := $(or $(wildcard $(RTLIB_DRIVER_DIR)/$(SOURCE_OS)/static/fbrt0.c),$(srcdir)/rtlib/static/fbrt0.c)
+FBRT1_SOURCE := $(or $(wildcard $(RTLIB_DRIVER_DIR)/$(SOURCE_OS)/static/fbrt1.c),$(srcdir)/rtlib/static/fbrt1.c)
+FBRT2_SOURCE := $(or $(wildcard $(RTLIB_DRIVER_DIR)/$(SOURCE_OS)/static/fbrt2.c),$(srcdir)/rtlib/static/fbrt2.c)
+
+$(libdir)/fbrt0.o: $(FBRT0_SOURCE) $(LIBFB_H) | $(libdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) -c $< -o $@
+	$(call publish_build_config)
+
+$(libdir)/fbrt0pic.o: $(FBRT0_SOURCE) $(LIBFB_H) | $(libdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) -c $< -o $@
+	$(call publish_build_config)
+
+$(libdir)/fbrt1.o: $(FBRT1_SOURCE) $(LIBFB_H) | $(libdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) -c $< -o $@
+	$(call publish_build_config)
+
+$(libdir)/fbrt1pic.o: $(FBRT1_SOURCE) $(LIBFB_H) | $(libdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) -c $< -o $@
+	$(call publish_build_config)
+
+$(libdir)/fbrt2.o: $(FBRT2_SOURCE) $(LIBFB_H) | $(libdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) -c $< -o $@
+	$(call publish_build_config)
+
+$(libdir)/fbrt2pic.o: $(FBRT2_SOURCE) $(LIBFB_H) | $(libdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) -c $< -o $@
+	$(call publish_build_config)
+
+##############################################################################
+# fbrt (FreeBASIC runtime layer)
+##############################################################################
+
+$(libfbrtobjdir)/%.o: $(srcdir)/fbrt/%.bas $(LIBFBRT_BI) | $(libfbrtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(FBC_TOOL_ENV) $(BUILD_FBC) $(BUILD_FBC_TARGET_OPT) $(BUILD_FBC_BUILDPREFIX_OPT) $(BUILD_FBCFLAGS) $(FBC_PREFIX_OPT) $(ALLFBRTCFLAGS) $(FBC_INCLUDE_FLAGS) -c $< -o $@
+
+$(libfbrtpicobjdir)/%.o: $(srcdir)/fbrt/%.bas $(LIBFBRT_BI) | $(libfbrtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(FBC_TOOL_ENV) $(BUILD_FBC) $(BUILD_FBC_TARGET_OPT) $(BUILD_FBC_BUILDPREFIX_OPT) $(BUILD_FBCFLAGS) $(FBC_PREFIX_OPT) $(ALLFBRTCFLAGS) -pic $(FBC_INCLUDE_FLAGS) -c $< -o $@
+
+$(libfbrtmtobjdir)/%.o: $(srcdir)/fbrt/%.bas $(LIBFBRT_BI) | $(libfbrtmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(FBC_TOOL_ENV) $(BUILD_FBC) $(BUILD_FBC_TARGET_OPT) $(BUILD_FBC_BUILDPREFIX_OPT) $(BUILD_FBCFLAGS) $(FBC_PREFIX_OPT) $(ALLFBRTCFLAGS) $(DOS_THREAD_FBCFLAGS) -mt -d ENABLE_MT $(FBC_INCLUDE_FLAGS) -c $< -o $@
+
+$(libfbrtmtpicobjdir)/%.o: $(srcdir)/fbrt/%.bas $(LIBFBRT_BI) | $(libfbrtmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(FBC_TOOL_ENV) $(BUILD_FBC) $(BUILD_FBC_TARGET_OPT) $(BUILD_FBC_BUILDPREFIX_OPT) $(BUILD_FBCFLAGS) $(FBC_PREFIX_OPT) $(ALLFBRTCFLAGS) $(DOS_THREAD_FBCFLAGS) -mt -pic -d ENABLE_MT $(FBC_INCLUDE_FLAGS) -c $< -o $@
+
+##############################################################################
+# gfxlib2 (C sources)
+##############################################################################
+
+ifeq ($(TARGET_OS),dos)
+# Only gfx_dos.c consumes this profile. A content-checked stamp rebuilds that
+# object when the option changes, then its archive, without duplicating the
+# entire runtime or requiring a clean rebuild of the compiler and libraries.
+DOS_GFX_TIMER_PROFILE_STAMP := $(libfbgfxobjdir)/.timer-profile
+.PHONY: dos-gfx-timer-profile-force
+dos-gfx-timer-profile-force:
+
+$(DOS_GFX_TIMER_PROFILE_STAMP): dos-gfx-timer-profile-force | $(libfbgfxobjdir)
+	@current="$$(cat "$@" 2>/dev/null || :)"; \
+	if [ "$$current" != "timer=$(ENABLE_DOS_GFX_LOW_POWER)" ]; then \
+		printf '%s\n' "timer=$(ENABLE_DOS_GFX_LOW_POWER)" > "$@"; \
+	fi
+
+$(libfbgfxobjdir)/drivers/dos/gfx_dos.o \
+$(libfbgfxpicobjdir)/drivers/dos/gfx_dos.o \
+$(libfbgfxmtobjdir)/drivers/dos/gfx_dos.o \
+$(libfbgfxmtpicobjdir)/drivers/dos/gfx_dos.o: $(DOS_GFX_TIMER_PROFILE_STAMP)
+endif
+
+GFXLIB2_ARCH_CFLAGS :=
+GFXLIB2_SIMD_CFLAGS :=
+ifeq ($(TARGET_ARCH),arm)
+  # ARMv6 is still supported and does not have NEON.  ARMv7 kernels are
+  # compiled separately and selected through AT_HWCAP at run time, so generic
+  # gfxlib2 objects retain the package's normal baseline and floating ABI.
+  ifneq ($(filter v7 v8,$(ARM_VER)),)
+GFXLIB2_ARCH_CFLAGS := -DFB_GFX_ARM_NEON
+GFXLIB2_SIMD_CFLAGS := -march=armv7-a -mfpu=neon
+  endif
+endif
+
+GFXLIB2_SIMD_OBJECTS := \
+$(filter %/arm/gfx_simd.o %/aarch64/gfx_simd.o %/x86_64/gfx_simd.o, \
+$(GFX_OBJ) $(GFX_PIC_OBJ) $(GFX_MT_OBJ) $(GFX_MT_PIC_OBJ))
+
+$(GFXLIB2_SIMD_OBJECTS): private GFXLIB2_OBJECT_CFLAGS := \
+$(GFXLIB2_SIMD_CFLAGS)
+
+ifeq ($(TARGET_OS),darwin)
+
+$(libfbgfxobjdir)/drivers/darwin/%.o: $(srcdir)/gfxlib2/drivers/darwin/%.c $(LIBFBGFX_H) | $(libfbgfxobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfxpicobjdir)/drivers/darwin/%.o: $(srcdir)/gfxlib2/drivers/darwin/%.c $(LIBFBGFX_H) | $(libfbgfxpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfxmtobjdir)/drivers/darwin/%.o: $(srcdir)/gfxlib2/drivers/darwin/%.c $(LIBFBGFX_H) | $(libfbgfxmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(MT_CFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfxmtpicobjdir)/drivers/darwin/%.o: $(srcdir)/gfxlib2/drivers/darwin/%.c $(LIBFBGFX_H) | $(libfbgfxmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(MTPIC_CFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+endif
+
+$(libfbgfxobjdir)/%.o: $(srcdir)/gfxlib2/%.c $(LIBFBGFX_H) | $(libfbgfxobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(GFXLIB2_ARCH_CFLAGS) $(GFXLIB2_OBJECT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfxpicobjdir)/%.o: $(srcdir)/gfxlib2/%.c $(LIBFBGFX_H) | $(libfbgfxpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) $(GFXLIB2_ARCH_CFLAGS) $(GFXLIB2_OBJECT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfxmtobjdir)/%.o: $(srcdir)/gfxlib2/%.c $(LIBFBGFX_H) | $(libfbgfxmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MT_CFLAGS) $(GFXLIB2_ARCH_CFLAGS) $(GFXLIB2_OBJECT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfxmtpicobjdir)/%.o: $(srcdir)/gfxlib2/%.c $(LIBFBGFX_H) | $(libfbgfxmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MTPIC_CFLAGS) $(GFXLIB2_ARCH_CFLAGS) $(GFXLIB2_OBJECT_CFLAGS) -MMD -MP -c $< -o $@
+
+##############################################################################
+# gfxlib2 (C++ sources)
+##############################################################################
+
+ifneq ($(USE_RUNTIME_CXX),)
+
+$(libfbgfxobjdir)/%.o: $(srcdir)/gfxlib2/%.cpp $(LIBFBGFX_H) | $(libfbgfxobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CXX) $(CPPFLAGS) $(ALLCXXFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfxpicobjdir)/%.o: $(srcdir)/gfxlib2/%.cpp $(LIBFBGFX_H) | $(libfbgfxpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CXX) $(CPPFLAGS) $(ALLCXXFLAGS) $(PIC_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfxmtobjdir)/%.o: $(srcdir)/gfxlib2/%.cpp $(LIBFBGFX_H) | $(libfbgfxmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CXX) $(CPPFLAGS) $(ALLCXXFLAGS) $(MT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfxmtpicobjdir)/%.o: $(srcdir)/gfxlib2/%.cpp $(LIBFBGFX_H) | $(libfbgfxmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CXX) $(CPPFLAGS) $(ALLCXXFLAGS) $(MTPIC_CFLAGS) -MMD -MP -c $< -o $@
+
+endif
+
+$(libfbgfxobjdir)/%.o: $(srcdir)/gfxlib2/%.s $(LIBFBGFX_H) | $(libfbgfxobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) -x assembler-with-cpp -MMD -MP -c $< -o $@
+
+$(libfbgfxpicobjdir)/%.o: $(srcdir)/gfxlib2/%.s $(LIBFBGFX_H) | $(libfbgfxpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) -x assembler-with-cpp -MMD -MP -c $< -o $@
+
+$(libfbgfxmtobjdir)/%.o: $(srcdir)/gfxlib2/%.s $(LIBFBGFX_H) | $(libfbgfxmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MT_CFLAGS) -x assembler-with-cpp -MMD -MP -c $< -o $@
+
+$(libfbgfxmtpicobjdir)/%.o: $(srcdir)/gfxlib2/%.s $(LIBFBGFX_H) | $(libfbgfxmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MTPIC_CFLAGS) -x assembler-with-cpp -MMD -MP -c $< -o $@
+
+##############################################################################
+# gfxlib3 common core (C sources)
+##############################################################################
+
+# libdrm keeps its development headers in a pkg-config include directory on
+# distributions such as Debian. The Linux DRM adapter remains optional when
+# libdrm development headers are not installed.
+GFX3_LINUX_DRM_CFLAGS :=
+ifeq ($(TARGET_OS),linux)
+GFX3_LINUX_DRM_CFLAGS := $(strip $(shell pkg-config --cflags libdrm 2>/dev/null))
+endif
+
+ifeq ($(TARGET_OS),darwin)
+
+$(libfbgfx3objdir)/drivers/darwin/%.o: $(srcdir)/gfxlib3/drivers/darwin/%.c $(LIBFBGFX3_H) | $(libfbgfx3objdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfx3picobjdir)/drivers/darwin/%.o: $(srcdir)/gfxlib3/drivers/darwin/%.c $(LIBFBGFX3_H) | $(libfbgfx3picobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfx3mtobjdir)/drivers/darwin/%.o: $(srcdir)/gfxlib3/drivers/darwin/%.c $(LIBFBGFX3_H) | $(libfbgfx3mtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(MT_CFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfx3mtpicobjdir)/drivers/darwin/%.o: $(srcdir)/gfxlib3/drivers/darwin/%.c $(LIBFBGFX3_H) | $(libfbgfx3mtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(MTPIC_CFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+endif
+
+$(libfbgfx3objdir)/%.o: $(srcdir)/gfxlib3/%.c $(LIBFBGFX3_H) | $(libfbgfx3objdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(GFX3_LINUX_DRM_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfx3picobjdir)/%.o: $(srcdir)/gfxlib3/%.c $(LIBFBGFX3_H) | $(libfbgfx3picobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(GFX3_LINUX_DRM_CFLAGS) $(PIC_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfx3mtobjdir)/%.o: $(srcdir)/gfxlib3/%.c $(LIBFBGFX3_H) | $(libfbgfx3mtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(GFX3_LINUX_DRM_CFLAGS) $(MT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libfbgfx3mtpicobjdir)/%.o: $(srcdir)/gfxlib3/%.c $(LIBFBGFX3_H) | $(libfbgfx3mtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(GFX3_LINUX_DRM_CFLAGS) $(MTPIC_CFLAGS) -MMD -MP -c $< -o $@
+
+##############################################################################
+# sfxlib (C sources)
+##############################################################################
+
+SFXLIB_ARCH_CFLAGS :=
+SFXLIB_NEON_CFLAGS :=
+ifeq ($(TARGET_ARCH),x86)
+SFXLIB_ARCH_CFLAGS := -DFB_SFX_X86_SIMD
+endif
+ifeq ($(TARGET_ARCH),arm)
+  # Keep ordinary sfxlib objects on the selected ARM baseline.  ARMv7 NEON
+  # code is isolated in one object and protected by the runtime HWCAP test.
+  ifneq ($(filter v7 v8,$(ARM_VER)),)
+SFXLIB_ARCH_CFLAGS := -DFB_SFX_ARM_NEON
+SFXLIB_NEON_CFLAGS := -march=armv7-a -mfpu=neon
+  endif
+endif
+
+SFXLIB_NEON_OBJECTS := \
+$(filter %/arm/sfx_simd.o, \
+$(SFX_OBJ) $(SFX_PIC_OBJ) $(SFX_MT_OBJ) $(SFX_MT_PIC_OBJ))
+SFXLIB_MMX_OBJECTS := \
+$(filter %/x86/sfx_mmx.o, \
+$(SFX_OBJ) $(SFX_PIC_OBJ) $(SFX_MT_OBJ) $(SFX_MT_PIC_OBJ))
+SFXLIB_SSE2_OBJECTS := \
+$(filter %/x86/sfx_sse2.o, \
+$(SFX_OBJ) $(SFX_PIC_OBJ) $(SFX_MT_OBJ) $(SFX_MT_PIC_OBJ))
+
+$(SFXLIB_NEON_OBJECTS): private SFXLIB_OBJECT_CFLAGS := \
+$(SFXLIB_NEON_CFLAGS)
+$(SFXLIB_MMX_OBJECTS): private SFXLIB_OBJECT_CFLAGS := \
+-mmmx -msse -mno-sse2
+$(SFXLIB_SSE2_OBJECTS): private SFXLIB_OBJECT_CFLAGS := -msse2
+
+ifeq ($(TARGET_OS),darwin)
+
+$(libsfxobjdir)/darwin/%.o: $(srcdir)/sfxlib/darwin/%.c $(LIBSFX_H) | $(libsfxobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libsfxpicobjdir)/darwin/%.o: $(srcdir)/sfxlib/darwin/%.c $(LIBSFX_H) | $(libsfxpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libsfxmtobjdir)/darwin/%.o: $(srcdir)/sfxlib/darwin/%.c $(LIBSFX_H) | $(libsfxmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(MT_CFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libsfxmtpicobjdir)/darwin/%.o: $(srcdir)/sfxlib/darwin/%.c $(LIBSFX_H) | $(libsfxmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_DARWIN_CLANG) $(CPPFLAGS) $(ALLCFLAGS) $(MTPIC_CFLAGS) $(DARWIN_BLOCKS_CFLAGS) -MMD -MP -c $< -o $@
+
+endif
+
+$(libsfxobjdir)/%.o: $(srcdir)/sfxlib/%.c $(LIBSFX_H) | $(libsfxobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(SFXLIB_ARCH_CFLAGS) $(SFXLIB_OBJECT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libsfxpicobjdir)/%.o: $(srcdir)/sfxlib/%.c $(LIBSFX_H) | $(libsfxpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(PIC_CFLAGS) $(SFXLIB_ARCH_CFLAGS) $(SFXLIB_OBJECT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libsfxmtobjdir)/%.o: $(srcdir)/sfxlib/%.c $(LIBSFX_H) | $(libsfxmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MT_CFLAGS) $(SFXLIB_ARCH_CFLAGS) $(SFXLIB_OBJECT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libsfxmtpicobjdir)/%.o: $(srcdir)/sfxlib/%.c $(LIBSFX_H) | $(libsfxmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CC) $(CPPFLAGS) $(ALLCFLAGS) $(MTPIC_CFLAGS) $(SFXLIB_ARCH_CFLAGS) $(SFXLIB_OBJECT_CFLAGS) -MMD -MP -c $< -o $@
+
+##############################################################################
+# sfxlib (C++ sources)
+##############################################################################
+
+ifneq ($(USE_RUNTIME_CXX),)
+
+$(libsfxobjdir)/%.o: $(srcdir)/sfxlib/%.cpp $(LIBSFX_H) | $(libsfxobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CXX) $(CPPFLAGS) $(ALLCXXFLAGS) -MMD -MP -c $< -o $@
+
+$(libsfxpicobjdir)/%.o: $(srcdir)/sfxlib/%.cpp $(LIBSFX_H) | $(libsfxpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CXX) $(CPPFLAGS) $(ALLCXXFLAGS) $(PIC_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libsfxmtobjdir)/%.o: $(srcdir)/sfxlib/%.cpp $(LIBSFX_H) | $(libsfxmtobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CXX) $(CPPFLAGS) $(ALLCXXFLAGS) $(MT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(libsfxmtpicobjdir)/%.o: $(srcdir)/sfxlib/%.cpp $(LIBSFX_H) | $(libsfxmtpicobjdir)
+	@mkdir -p "$(dir $@)"
+	$(RUN_CXX) $(CPPFLAGS) $(ALLCXXFLAGS) $(MTPIC_CFLAGS) -MMD -MP -c $< -o $@
+
+endif
+
+##############################################################################
+# END compile-rules.mk
+##############################################################################

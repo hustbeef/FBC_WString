@@ -1,0 +1,87 @@
+﻿{{fbdoc item="title" value="Developer pages"}}
+
+This chapter collects the pages used by developers working on the compiler,
+runtime libraries, build system, package scripts, and platform ports.
+
+{{fbdoc item="section" value="Source code and source trees"}}
+
+	- [[DevSourceCode|Repository map and compilation-to-runtime flow]]
+	- [[DevSourceCompiler|Compiler phases, source tree, and PRINT walkthrough]]
+	- [[DevSourceRuntime|Core runtime, descriptors, startup, and native layers]]
+	- [[DevSourceGraphics|Software and queued graphics source trees]]
+	- [[DevSourceSound|Sound commands, mixing, buffers, and audio drivers]]
+	- [[DevSourceTools|Target tools, declarations, build ownership, and tests]]
+
+{{fbdoc item="section" value="Building FreeBASIC"}}
+<<
+<table class="fb_box"><tr><td><ul>
+<li> [[DevBuild|Building FreeBASIC from source]]
+<li> [[DevGettingTheSourceCode|Getting the source code]]
+<li> [[DevBuildDos|Building for DOS]]
+<li> [[DevBuildLinux|Building on Linux and package distros]]
+<li> [[DevBuildWindows|Building on Windows/MSYS2]]
+<li> [[DevBuildEmscripten|Building for JavaScript]]
+<li> [[DevBuildAndroid|Building for Android]]
+<li> [[DevBuildWii|Building for Wii]]
+<li> [[DevBuildXbox|Building for Xbox]]
+<li> [[DevNuttX|NuttX and RISC-V board workflow]]
+<li> [[DevRebuildAfterUpdates|Getting source code updates and rebuilding FreeBASIC]]
+</ul></td><td><ul>
+<li> [[DevDebuggingFb|Debugging FreeBASIC]]
+<li> [[DevBuildConfig|FreeBASIC build configuration]]
+<li> [[DevBuiltinBi|The builtin.bi include]]
+<li> [[DevBuildKnownProblems|Build troubleshooting notes]]
+<li> [[DevGccToolchainChoice|Toolchain choice notes]]
+<li> [[DevFbcTestSuite|The FreeBASIC test suite]]
+<li> [[DevNormalVsStandalone|Normal vs standalone compilers]]
+<li> [[DevGlossary|Developer glossary]]
+<li> [[DevMakingReleases|Making releases]]
+<li> [[DevCrossCompiling|Cross-compiling FreeBASIC]]
+<li> [[DevBootstrap|Bootstrapping FreeBASIC]]
+</ul></td></tr></table>
+>>::c::
+
+{{fbdoc item="section" value="Headers, bindings, and libraries"}}
+<<
+<table class="fb_box"><tr><td><ul>
+<li> [[DevBindingCreation|Creating bindings]]
+<li> [[DevTranslateHeader|Translating C headers]]
+<li> [[DevHeaderStyleGuide|Header style guide]]
+<li> [[ExtLibTOC|External library bindings]]
+<li> [[ProPgFberror|Runtime error constants]]
+<li> [[ProPgGpiopins|Digital GPIO interface]]
+<li> [[ProPgEmscriptenWebsocket|Emscripten WebSocket interface]]
+<li> [[ProPgSfxAdvanced|Advanced sfxlib headers]]
+</ul></td></tr></table>
+>>::c::
+
+{{fbdoc item="section" value="Compiler internals"}}
+<<
+<table class="fb_box"><tr><td><ul>
+<li> [[DevFbcModules|Compiler modules and source paths]]
+<li> [[DevObjinfo|Object information]]
+<li> [[DevFbcMem|Compiler memory management]]
+<li> [[DevFbcLexer|Lexer]]
+<li> [[DevFbcParser|Parser]]
+<li> [[DevFbcParserToplevel|Top-level parser]]
+</ul></td><td><ul>
+<li> [[DevFbcParserSymbols|Symbol parser]]
+<li> [[DevFbcTypes|Compiler type system]]
+<li> [[DevArrays|Array implementation notes]]
+<li> [[DevSelectCase|SELECT CASE implementation notes]]
+<li> [[ProPgProfilingFbProfiler|Profiling with fb profiler]]
+<li> [[ProPgProfilingGmonGprof|Profiling with gprof]]
+</ul></td></tr></table>
+>>::c::
+
+{{fbdoc item="section" value="Runtime and graphics internals"}}
+<<
+<table class="fb_box"><tr><td><ul>
+<li> [[DevStructLayout|Structure layout]]
+<li> [[DevRtlInkey|INKEY runtime notes]]
+<li> [[GfxLib|Graphics library overview]]
+<li> [[GfxInternalFormats|Graphics internal formats]]
+</ul></td></tr></table>
+>>::c::
+
+{{fbdoc item="back" value="DocToc|Table of Contents"}}

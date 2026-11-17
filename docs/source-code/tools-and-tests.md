@@ -121,5 +121,25 @@ records linked to each other, with each retaining its own purpose.
 `make source-docs-test` checks source-guide links and native manual navigation.
 `make source-docs-render-test FBDOC=/path/to/fbdoc` also generates fresh HTML,
 fbhelp and text pages in disposable storage and checks their output.
+`python3 -B build_scripts/check-source-docs.py --revision HEAD` checks the
+committed navigation and destinations without trusting local drafts. To check
+staged changes, pass the tree from `git write-tree` instead of `HEAD`.
+The [CI recovery guide](../ci-recovery.md) explains independent validation after
+a successful native build and why every test failure still fails qualification.
+
+## Shared native ABI names
+
+`build_scripts/check-rtlib-structure.py --abi-names-only` checks C, C++ and
+included driver templates across all platform directories and native test
+helpers. It derives ordinary data names from the shared headers' ABI labels;
+quoted labels and assembly retain their original linker spellings. The
+standalone NuttX ABI implementation and old-header link control have explicit
+exceptions because they supply their own legacy declarations.
+
+`build_scripts/test-rtlib-abi-names.py` exercises those boundaries and compiles
+the sound test helper in a minimal staged source tree. Both CI planners run
+this small check before native or VM jobs. Partial test trees must also stage
+`src/rtlib/fb_abi.h` alongside sound headers. These host checks do not replace
+native SDK builds or platform execution.
 
 <!-- end of source-code/tools-and-tests.md -->

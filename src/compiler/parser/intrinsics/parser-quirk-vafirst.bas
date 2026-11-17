@@ -29,8 +29,9 @@
 #include once "ast/ast.bi"
 #include once "tooling/semantic-hooks.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-recovery.bi"
 
-declare sub fbSemanticModelExportExpression _
+declare sub fbSemanticModelExportParserExpression _
 	( _
 		byval expr as ASTNODE ptr, _
 		byref source_start as LEX_LOCATION, _
@@ -60,7 +61,7 @@ private sub hExportValistOperation _
 
 	if( (tree = NULL) or (operands = 0) or (complete_range = FALSE) ) then exit sub
 	fbSemanticModelAttachOperands(tree, operands)
-	fbSemanticModelExportExpression(tree, source_start, source_end, _
+	fbSemanticModelExportParserExpression(tree, source_start, source_end, _
 		nonphysical_tokens_at_start, nonphysical_tokens_at_end, op)
 end sub
 
@@ -288,7 +289,9 @@ function cVAFunct() as ASTNODE ptr
 		errReport( FB_ERRMSG_STMTUNSUPPORTEDINC, TRUE )
 
 		'' error recovery: fake an expr
-		function = astNewCONSTi( 0 )
+		function = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/intrinsics/parser-quirk-vafirst.bas", __LINE__)
 	case else
 		'' @param
 		var expr = astNewADDROF( astNewVAR( vararg_sym ) )
@@ -342,7 +345,9 @@ function cVALISTFunct _
 		'' error recovery: skip until ')' and fake a node
 		hSkipUntil( CHAR_RPRNT, TRUE )
 		astDelTree( expr )
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/intrinsics/parser-quirk-vafirst.bas", __LINE__)
 	end if
 
 	'' ','
@@ -358,7 +363,9 @@ function cVALISTFunct _
 		'' error recovery: skip until ')' and fake a node
 		hSkipUntil( CHAR_RPRNT, TRUE )
 		astDelTree( expr )
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/intrinsics/parser-quirk-vafirst.bas", __LINE__)
 	end if
 
 	'' ')'

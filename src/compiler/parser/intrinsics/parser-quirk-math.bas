@@ -29,9 +29,10 @@
 #include once "ast/ast.bi"
 #include once "tooling/semantic-hooks.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-recovery.bi"
 
 
-declare sub fbSemanticModelExportExpression _
+declare sub fbSemanticModelExportParserExpression _
 	( _
 		byval expr as ASTNODE ptr, _
 		byref source_start as LEX_LOCATION, _
@@ -68,7 +69,9 @@ private function hMathOp(byval op as AST_OP) as ASTNODE ptr
 	fbSemanticModelAttachOperands(expr, operands)
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_INVALIDDATATYPES )
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/intrinsics/parser-quirk-math.bas", __LINE__)
 	else
 		if( semantic_model_enabled andalso has_closing_parenthesis ) then
 			fbSemanticModelExportOperation(expr, op, source_start)
@@ -84,7 +87,7 @@ private function hMathOp(byval op as AST_OP) as ASTNODE ptr
 			if( is_overloaded_operator ) then semantic_operator_override = -1
 			source_end = lexGetLastLocation( )
 			nonphysical_tokens_at_end = lexGetNonphysicalTokenCount( )
-			fbSemanticModelExportExpression(expr, source_start, source_end, _
+			fbSemanticModelExportParserExpression(expr, source_start, source_end, _
 				nonphysical_tokens_at_start, nonphysical_tokens_at_end, _
 				semantic_operator_override)
 		end if
@@ -121,7 +124,9 @@ private function hAtan2() as ASTNODE ptr
 	fbSemanticModelAttachOperands(expr, operands)
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_INVALIDDATATYPES )
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/intrinsics/parser-quirk-math.bas", __LINE__)
 	elseif( semantic_model_enabled andalso has_closing_parenthesis ) then
 		fbSemanticModelExportOperation(expr, AST_OP_ATAN2, source_start)
 		if( (expr->class = AST_NODECLASS_CALL) or _
@@ -134,7 +139,7 @@ private function hAtan2() as ASTNODE ptr
 		if( is_overloaded_operator ) then semantic_operator_override = -1
 		source_end = lexGetLastLocation( )
 		nonphysical_tokens_at_end = lexGetNonphysicalTokenCount( )
-		fbSemanticModelExportExpression(expr, source_start, source_end, _
+		fbSemanticModelExportParserExpression(expr, source_start, source_end, _
 			nonphysical_tokens_at_start, nonphysical_tokens_at_end, _
 			semantic_operator_override)
 	end if
@@ -303,7 +308,7 @@ private function hLenSizeof( byval tk as integer, byval isasm as integer ) as AS
 	if( semantic_enabled andalso semantic_has_close andalso (expr <> NULL) ) then
 		semantic_end = lexGetLastLocation( )
 		semantic_nonphysical_end = lexGetNonphysicalTokenCount( )
-		fbSemanticModelExportExpression(expr, semantic_start, semantic_end, _
+		fbSemanticModelExportParserExpression(expr, semantic_start, semantic_end, _
 			semantic_nonphysical_start, semantic_nonphysical_end, -1)
 		fbSemanticModelSizeQuery(expr->semantic_expression, semantic_dtype, semantic_subtype, _
 			semantic_operand, semantic_kind, semantic_input)

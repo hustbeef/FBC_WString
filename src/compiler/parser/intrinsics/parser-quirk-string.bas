@@ -30,6 +30,27 @@
 #include once "ast/ast.bi"
 #include once "tooling/semantic-hooks.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-recovery.bi"
+
+declare sub fbSemanticModelStringSearch(byval result as ASTNODE ptr, byref kind as const string, _
+	byval haystack as longint, byval pattern as longint, byval start_at as longint, _
+	byval is_any as integer, byref first as LEX_LOCATION, byval nonphysical_start as longint)
+
+'' Capture each operand before the runtime lowering can replace or coerce its AST.
+private function hSemanticSearchInput(byref expr as ASTNODE ptr, byval dtype as integer) as longint
+	dim as LEX_LOCATION first = lexGetCurrentLocation()
+	dim as longint nonphysical_start = lexGetNonphysicalTokenCount()
+	hMatchExpressionEx(expr, dtype)
+	return fbSemanticModelOriginalExpression(expr, first, nonphysical_start, _
+		lexGetLastLocation(), lexGetNonphysicalTokenCount())
+end function
+
+declare function fbSemanticModelFullEnabled( ) as integer
+declare sub fbSemanticModelNativeByteInput _
+	( byval result as ASTNODE ptr, byval operand_id as longint, _
+	  byval token_id as integer, byval byte_width as integer, _
+	  byref kind as const string, byref source_start as LEX_LOCATION, _
+	  byval nonphysical_start as longint )
 
 private function hCVIntConst _
 	( _
@@ -459,6 +480,8 @@ end function
 ''              |   CVLONGINT '(' Expression{str} ')'
 ''
 function cCVXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
+	dim as LEX_LOCATION semantic_start = lexGetCurrentLocation( )
+	dim as longint semantic_nonphysical = lexGetNonphysicalTokenCount( )
 	'' CVD | CVS | CVI | CVL | CVSHORT | CVLONGINT
 	lexSkipToken( LEXCHECK_POST_SUFFIX )
 
@@ -470,8 +493,14 @@ function cCVXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		'' expr
 		var lgt = cConstIntExpr( cGtInParensOnlyExpr( ) )
 
-		 '' disallow BYTEs here (would need to use ASC)
-		if( lgt = 8 ) then lgt = 0
+		'' Byte conversions use ASC; native numeric byte helpers only
+		'' implement 16, 32 and 64 bits. The general type parser also accepts
+		'' 128, which must not select a missing or narrower runtime helper.
+		select case lgt
+		case 16, 32, 64
+		case else
+			lgt = 0
+		end select
 
 		dtype = hIntegerTypeFromBitSize( lgt, FALSE )
 
@@ -486,7 +515,15 @@ function cCVXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 
 	'' string expression
 	dim as ASTNODE ptr expr1 = any
+	dim as LEX_LOCATION semantic_operand_start = lexGetCurrentLocation( )
+	dim as longint semantic_operand_nonphysical = lexGetNonphysicalTokenCount( )
 	hMatchExpressionEx( expr1, FB_DATATYPE_STRING )
+	dim as longint semantic_operand
+	if( fbSemanticModelFullEnabled( ) ) then
+		dim as LEX_LOCATION semantic_operand_end = lexGetLastLocation( )
+		semantic_operand = fbSemanticModelOriginalExpression(expr1, semantic_operand_start, _
+			semantic_operand_nonphysical, semantic_operand_end, lexGetNonphysicalTokenCount( ))
+	end if
 
 	'' ')'
 	hMatchRPRNT( )
@@ -613,6 +650,11 @@ function cCVXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		errReport( FB_ERRMSG_INVALIDDATATYPES )
 	end if
 
+	'' Numeric-only CV overloads reinterpret bits without a byte sequence.
+	if( is_str or (functype = FB_DATATYPE_SHORT) ) then
+		fbSemanticModelNativeByteInput(funcexpr, semantic_operand, tk, typeGetSize(functype), _
+			"unpack", semantic_start, semantic_nonphysical)
+	end if
 	function = funcexpr
 end function
 
@@ -625,6 +667,8 @@ end function
 ''              |   MKLONGINT '(' Expression{longint} ')'
 ''
 function cMKXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
+	dim as LEX_LOCATION semantic_start = lexGetCurrentLocation( )
+	dim as longint semantic_nonphysical = lexGetNonphysicalTokenCount( )
 	'' MKD | MKS | MKI | MKL | MKSHORT | MKLONGINT
 	lexSkipToken( LEXCHECK_POST_STRING_SUFFIX )
 
@@ -636,8 +680,14 @@ function cMKXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		'' expr
 		var lgt = cConstIntExpr( cGtInParensOnlyExpr( ) )
 
-		 '' disallow BYTEs here (would need to use CHR)
-		if( lgt = 8 ) then lgt = 0
+		'' Byte conversions use CHR; native numeric byte helpers only
+		'' implement 16, 32 and 64 bits. The general type parser also accepts
+		'' 128, which must not select a missing or narrower runtime helper.
+		select case lgt
+		case 16, 32, 64
+		case else
+			lgt = 0
+		end select
 
 		dtype = hIntegerTypeFromBitSize( lgt, FALSE )
 
@@ -651,11 +701,20 @@ function cMKXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 	hMatchLPRNT( )
 
 	dim as ASTNODE ptr expr1 = any
+	dim as LEX_LOCATION semantic_operand_start = lexGetCurrentLocation( )
+	dim as longint semantic_operand_nonphysical = lexGetNonphysicalTokenCount( )
 	hMatchExpressionEx( expr1, FB_DATATYPE_STRING )
+	dim as longint semantic_operand
+	if( fbSemanticModelFullEnabled( ) ) then
+		dim as LEX_LOCATION semantic_operand_end = lexGetLastLocation( )
+		semantic_operand = fbSemanticModelOriginalExpression(expr1, semantic_operand_start, _
+			semantic_operand_nonphysical, semantic_operand_end, lexGetNonphysicalTokenCount( ))
+	end if
 
 	hMatchRPRNT( )
 
 	dim as ASTNODE ptr funcexpr = NULL
+	dim as integer semantic_width
 
 	#macro doMKX( token )
 		select case as const astGetDataType( expr1 )
@@ -699,13 +758,16 @@ function cMKXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		select case as const tk
 		case FB_TK_MKD
 			funcexpr = astNewCALL( PROCLOOKUP( MKD ) )
+			semantic_width = 8
 		case FB_TK_MKS
 			funcexpr = astNewCALL( PROCLOOKUP( MKS ) )
+			semantic_width = 4
 		case FB_TK_MKI
 			if( dtype = FB_DATATYPE_INVALID ) then
 				dtype = env.lang.integerkeyworddtype
 			end if
 
+			semantic_width = typeGetSize(dtype)
 			if( typeGetDtAndPtrOnly( dtype ) = FB_DATATYPE_INTEGER ) then
 				'' fb_MKI() is for INTEGERs, both on 32bit and on 64bit
 				funcexpr = astNewCALL( PROCLOOKUP( MKI ) )
@@ -722,11 +784,14 @@ function cMKXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 
 		case FB_TK_MKL
 			funcexpr = astNewCALL( PROCLOOKUP( MKL ) )
+			semantic_width = 4
 		case FB_TK_MKSHORT
 			funcexpr = astNewCALL( PROCLOOKUP( MKSHORT ) )
+			semantic_width = 2
 		case else
 			assert(tk = FB_TK_MKLONGINT)
 			funcexpr = astNewCALL( PROCLOOKUP( MKLONGINT ) )
+			semantic_width = 8
 		end select
 
 		'' byval expr as {type}
@@ -740,6 +805,8 @@ function cMKXFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		errReport( FB_ERRMSG_INVALIDDATATYPES )
 	end if
 
+	fbSemanticModelNativeByteInput(funcexpr, semantic_operand, tk, semantic_width, _
+		"pack", semantic_start, semantic_nonphysical)
 	function = funcexpr
 end function
 
@@ -817,7 +884,9 @@ function cStringFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		end if
 		if( expr1 = NULL ) then
 			errReport( FB_ERRMSG_INVALIDDATATYPES )
-			expr1 = astNewCONSTi( 0 )
+			expr1 = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/intrinsics/parser-quirk-string.bas", __LINE__)
 		end if
 
 		dim as string format_kind = iif(is_wstr, "wstr", iif(fbLangIsSet(FB_LANG_QB), "str-qb", "str"))
@@ -869,7 +938,9 @@ function cStringFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		end if
 		if( expr1 = NULL ) then
 			errReport( FB_ERRMSG_INVALIDDATATYPES )
-			expr1 = astNewCONSTi( 0 )
+			expr1 = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/intrinsics/parser-quirk-string.bas", __LINE__)
 		end if
 
 		function = expr1
@@ -893,7 +964,9 @@ function cStringFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		end if
 		if( expr1 = NULL ) then
 			errReport( FB_ERRMSG_INVALIDDATATYPES )
-			expr1 = astNewCONSTi( 0 )
+			expr1 = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/intrinsics/parser-quirk-string.bas", __LINE__)
 		end if
 
 		function = expr1
@@ -915,28 +988,40 @@ function cStringFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		lexSkipToken( LEXCHECK_POST_SUFFIX )
 
 		hMatchLPRNT( )
-		hMatchExpressionEx( expr1, FB_DATATYPE_INTEGER )
+		dim as longint search_first = hSemanticSearchInput(expr1, FB_DATATYPE_INTEGER)
 		hMatchCOMMA( )
 		is_any = hMatch( FB_TK_ANY, LEXCHECK_POST_SUFFIX )
-		hMatchExpressionEx( expr2, FB_DATATYPE_STRING )
+		dim as longint search_second = hSemanticSearchInput(expr2, FB_DATATYPE_STRING)
+		dim as longint search_third, search_haystack, search_pattern, search_start
 		expr3 = NULL
 		if( is_any = FALSE ) then
 			if( hMatch( CHAR_COMMA ) ) then
 				is_any = hMatch( FB_TK_ANY, LEXCHECK_POST_SUFFIX )
-				hMatchExpressionEx( expr3, FB_DATATYPE_STRING )
+				search_third = hSemanticSearchInput(expr3, FB_DATATYPE_STRING)
 			end if
 		end if
 		if( expr3 = NULL ) then
+			search_haystack = search_first
+			search_pattern = search_second
 			expr3 = expr2
 			expr2 = expr1
 			expr1 = astNewCONSTi( 1 )
+		else
+			search_haystack = search_second
+			search_pattern = search_third
+			search_start = search_first
 		end if
 		hMatchRPRNT( )
 
 		expr1 = rtlStrInstr( expr1, expr2, expr3, is_any )
 		if( expr1 = NULL ) then
 			errReport( FB_ERRMSG_INVALIDDATATYPES )
-			expr1 = astNewCONSTi( 0 )
+			expr1 = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/intrinsics/parser-quirk-string.bas", __LINE__)
+		else
+			fbSemanticModelStringSearch(expr1, "instr", search_haystack, search_pattern, _
+				search_start, is_any, intrinsic_start, intrinsic_nonphysical_start)
 		end if
 
 		function = expr1
@@ -945,12 +1030,13 @@ function cStringFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		lexSkipToken( LEXCHECK_POST_SUFFIX )
 
 		hMatchLPRNT( )
-		hMatchExpressionEx( expr1, FB_DATATYPE_STRING )
+		dim as longint reverse_haystack = hSemanticSearchInput(expr1, FB_DATATYPE_STRING)
 		hMatchCOMMA( )
 		is_any = hMatch( FB_TK_ANY, LEXCHECK_POST_SUFFIX )
-		hMatchExpressionEx( expr2, FB_DATATYPE_STRING )
+		dim as longint reverse_pattern = hSemanticSearchInput(expr2, FB_DATATYPE_STRING)
+		dim as longint reverse_start
 		if( hMatch( CHAR_COMMA ) ) then
-			hMatchExpressionEx( expr3, FB_DATATYPE_INTEGER )
+			reverse_start = hSemanticSearchInput(expr3, FB_DATATYPE_INTEGER)
 		else
 			expr3 = astNewCONSTi( -1 )
 		end if
@@ -959,7 +1045,12 @@ function cStringFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 		expr1 = rtlStrInstrRev( expr3, expr1, expr2, is_any )
 		if( expr1 = NULL ) then
 			errReport( FB_ERRMSG_INVALIDDATATYPES )
-			expr1 = astNewCONSTi( 0 )
+			expr1 = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/intrinsics/parser-quirk-string.bas", __LINE__)
+		else
+			fbSemanticModelStringSearch(expr1, "instrrev", reverse_haystack, reverse_pattern, _
+				reverse_start, is_any, intrinsic_start, intrinsic_nonphysical_start)
 		end if
 
 		function = expr1
@@ -1007,7 +1098,9 @@ function cStringFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 
 		if( expr1 = NULL ) then
 			errReport( FB_ERRMSG_INVALIDDATATYPES )
-			expr1 = astNewCONSTi( 0 )
+			expr1 = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/intrinsics/parser-quirk-string.bas", __LINE__)
 		end if
 		dim as string intrinsic_kind = iif(tk = FB_TK_TRIM, "trim", iif(tk = FB_TK_LTRIM, "ltrim", "rtrim"))
 		fbSemanticModelStringIntrinsic(expr1, intrinsic_kind, trim_argument_count, trim_arguments(), is_any, intrinsic_start, intrinsic_nonphysical_start)

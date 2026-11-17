@@ -22,8 +22,8 @@
         - CPU FB.IMAGE compatibility storage
 */
 
-#ifndef __FB_GFX3_COMPAT_H__
-#define __FB_GFX3_COMPAT_H__
+#ifndef FB_GFX3_COMPAT_H
+#define FB_GFX3_COMPAT_H
 
 #include "gfx3_context.h"
 #include "gfx3_input.h"
@@ -46,6 +46,25 @@ enum FB_GFX3_LINE_TYPE {
 	FB_GFX3_LINE_TYPE_BOX = 1,
 	FB_GFX3_LINE_TYPE_FILLED_BOX = 2
 };
+
+typedef struct FB_GFX3_COMPAT_LINE {
+	int32_t x1;
+	int32_t y1;
+	int32_t x2;
+	int32_t y2;
+	uint32_t color;
+	uint32_t style;
+} FB_GFX3_COMPAT_LINE;
+
+typedef struct FB_GFX3_COMPAT_RECTANGLE {
+	int32_t x1;
+	int32_t y1;
+	int32_t x2;
+	int32_t y2;
+	uint32_t color;
+	uint32_t style;
+	uint32_t filled;
+} FB_GFX3_COMPAT_RECTANGLE;
 
 enum FB_GFX3_DRAW_STATE_FLAGS {
 	FB_GFX3_WINDOW_ACTIVE = 0x00000001u,
@@ -76,6 +95,7 @@ typedef struct FB_GFX3_POINT_CACHE {
 	uint32_t color;
 	uint32_t read_modify_pairs;
 	unsigned char valid;
+	unsigned char tail_padding[3];
 } FB_GFX3_POINT_CACHE;
 
 typedef struct FB_GFX3_MODE {
@@ -104,6 +124,9 @@ typedef struct FB_GFX3_MODE {
 	unsigned char *paint_visited;
 	size_t *paint_queue;
 	size_t paint_scratch_capacity;
+	/* Reused to convert ordered line/rectangle batches while mode->mutex is held. */
+	void *primitive_scratch;
+	size_t primitive_scratch_capacity;
 	FBMUTEX *mutex;
 	uint64_t generation;
 	uint64_t resize_serial;
@@ -261,6 +284,10 @@ int fb_gfx3_compat_resolve_point(FB_GFX3_DRAW_STATE *state, float *x,
 	float *y, uint32_t flags, int *translated_x, int *translated_y);
 int fb_gfx3_compat_points_logical(FB_GFX3_DRAW_STATE *state,
 	const FB_GFX3_POINT *points, uint32_t count);
+int fb_gfx3_compat_lines_logical(FB_GFX3_DRAW_STATE *state,
+	const FB_GFX3_COMPAT_LINE *lines, uint32_t count);
+int fb_gfx3_compat_rectangles_logical(FB_GFX3_DRAW_STATE *state,
+	const FB_GFX3_COMPAT_RECTANGLE *rectangles, uint32_t count);
 int fb_gfx3_compat_points_absolute(FB_GFX3_DRAW_STATE *state,
 	const FB_GFX3_POINT *points, uint32_t count);
 int fb_gfx3_compat_glyphs_absolute(FB_GFX3_DRAW_STATE *state,

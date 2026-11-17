@@ -7,14 +7,14 @@
  */
 typedef void (FBCALL *FB_THREADPROC)( void *param );
 
-struct _FBTHREAD;
-typedef struct _FBTHREAD FBTHREAD;
+struct FBTHREAD_;
+typedef struct FBTHREAD_ FBTHREAD;
 
-struct _FBMUTEX;
-typedef struct _FBMUTEX FBMUTEX;
+struct FBMUTEX_;
+typedef struct FBMUTEX_ FBMUTEX;
 
-struct _FBCOND;
-typedef struct _FBCOND FBCOND;
+struct FBCOND_;
+typedef struct FBCOND_ FBCOND;
 
 FBCALL FBTHREAD         *fb_ThreadCreate( FB_THREADPROC proc, void *param, ssize_t stack_size );
 FBCALL FBTHREAD         *fb_ThreadSelf  ( void );
@@ -47,19 +47,26 @@ enum {
 	FB_TLSKEY_FBTHREAD,
 	FB_TLSKEY_PROFILE,
 	FB_TLSKEY_USERVAR,
+	/* Append keys so old objects keep their existing TLS indices. */
+	FB_TLSKEY_ERRORFRAME,
+#ifdef HOST_AMIGA
+	FB_TLSKEY_AMIGA_TCP,
+#endif
 	FB_TLSKEYS
 };
 
 typedef void ( *FB_TLS_DESTRUCTOR )( void* tlsData );
 
-typedef struct _FB_TLS_CTX_HEADER {
+typedef struct FB_TLS_CTX_HEADER_ {
 
 	FB_TLS_DESTRUCTOR destructor;
 
 } FB_TLS_CTX_HEADER;
 
 FBCALL void             *fb_TlsGetCtx        ( int index, size_t len, FB_TLS_DESTRUCTOR destructor );
+FBCALL void             *fb_TlsGetCtxExisting( int index );
 FBCALL void             *fb_TlsGetVar        ( const char *name, unsigned int len, unsigned int align, uintptr_t initial );
+FBCALL void             *fb_TlsGetVarKey     ( const void *key, unsigned int len, unsigned int align, uintptr_t initial );
 FBCALL void              fb_TlsDelCtx        ( int index );
 FBCALL void              fb_TlsFreeCtxTb     ( void );
 #ifdef ENABLE_MT

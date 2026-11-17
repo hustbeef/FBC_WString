@@ -113,7 +113,6 @@ end function
 
 private function hAllocTempWstrPtr _
 	( _
-		byval parent as ASTNODE ptr, _
 		byval n as ASTNODE ptr _
 	) as ASTNODE ptr
 
@@ -325,7 +324,7 @@ private sub hStrArgToStrPtrParam _
 		'' If it's a WSTRING function result, copy to temp WSTRING so
 		'' that the result is automatically freed later.
 		if( astIsCALL( n->l ) ) then
-			n->l = hAllocTempWstrPtr( parent, n->l )
+			n->l = hAllocTempWstrPtr( n->l )
 		else
 			n->l = astNewADDROF( n->l )
 		end if
@@ -341,9 +340,29 @@ sub hBuildByrefArg( byval param as FBSYMBOL ptr, byval n as ASTNODE ptr )
 	n->arg.mode = FB_PARAMMODE_BYVAL
 end sub
 
+private function hByrefArgNeedsTemp( byval tree as ASTNODE ptr ) as integer
+
+	tree = astSkipConstCASTs(tree)
+	if( astCanTakeAddrOf(tree) = FALSE ) then return TRUE
+	'' IIF and TYPEINI expose addresses only after materializing their value.
+	'' A pointer value there still owns a fresh slot, not the selected source
+	'' variable's slot. Links retain the value category of their result branch.
+	select case tree->class
+	case AST_NODECLASS_IIF, AST_NODECLASS_TYPEINI
+		return typeIsPtr(astGetFullType(tree))
+	case AST_NODECLASS_LINK
+		select case tree->link.ret
+		case AST_LINK_RETURN_LEFT
+			return hByrefArgNeedsTemp(tree->l)
+		case AST_LINK_RETURN_RIGHT
+			return hByrefArgNeedsTemp(tree->r)
+		end select
+	end select
+	return FALSE
+end function
+
 private sub hCheckByrefParam _
 	( _
-		byval proc as FBSYMBOL ptr, _
 		byval param as FBSYMBOL ptr, _
 		byval n as ASTNODE ptr, _
 		byval is_byref_void as boolean _
@@ -372,9 +391,8 @@ private sub hCheckByrefParam _
 	'' that (BYREF semantics). For other expressions though (especially
 	'' BOPs, CONSTs, etc.) we have to create a temp var to hold the arg's
 	'' value and then pass the temp var byref.
-	if( astCanTakeAddrOf( t ) = FALSE ) then
+	if( hByrefArgNeedsTemp(t) ) then
 		assert( param->class = FB_SYMBCLASS_PARAM )
-		assert( symbIsProc( proc ) )
 
 		''
 		'' Show warning for suspicious cases where using the temp var was probably not intended.
@@ -401,8 +419,20 @@ private sub hCheckByrefParam _
 			errReportWarn( FB_WARNINGMSG_BYREFTEMPVAR )
 		end if
 
+		'' The temporary is a fresh pointer slot, not an alias of caller
+		'' storage. Apply safe value qualification before taking its address,
+		'' so the C ABI does not need an incompatible pointer-to-pointer cast.
+		dim as integer temp_dtype = n->l->dtype
+		if( (is_byref_void = FALSE) andalso typeIsPtr(temp_dtype) andalso _
+		    (n->l->subtype = symbGetSubtype(param)) ) then
+			var param_dtype = symbGetFullType(param)
+			if( typeGetDtAndPtrOnly(temp_dtype) = typeGetDtAndPtrOnly(param_dtype) andalso _
+			    symbHasUnsafeConstAddition(param_dtype, temp_dtype) = FALSE ) then
+				temp_dtype = param_dtype
+			end if
+		end if
 		n->l = astNewASSIGN( _
-			astNewVAR( symbAddTempVar( n->l->dtype, n->l->subtype ) ), _
+			astNewVAR( symbAddTempVar( temp_dtype, n->l->subtype ) ), _
 			n->l, _
 			AST_OPOPT_DONTCHKPTR or AST_OPOPT_ISINI )
 	end if
@@ -567,7 +597,6 @@ end function
 private function hCheckVarargParam _
 	( _
 		byval parent as ASTNODE ptr, _
-		byval param as FBSYMBOL ptr, _
 		byval n as ASTNODE ptr _
 	) as integer
 
@@ -585,13 +614,11 @@ private function hCheckVarargParam _
 			hStrArgToStrPtrParam( parent, n, FALSE )
 
 		case else
-			'' if < sizeof(int), convert to int (C ABI)
-			'' Even for 64bit, varargs are promoted to 32bit int.
+			'' C promotes every integer type narrower than int to int when all
+			'' its values fit. These targets use a 32-bit C int, so both signed
+			'' and unsigned 8- and 16-bit arguments fit without changing value.
 			if( typeGetSize( arg_dtype ) < 4 ) then
-				n->l = astNewCONV( iif( typeIsSigned( arg_dtype ), _
-							FB_DATATYPE_LONG, _
-							FB_DATATYPE_ULONG ), _
-						NULL, n->l )
+				n->l = astNewCONV( FB_DATATYPE_LONG, NULL, n->l )
 			end if
 		end select
 
@@ -600,6 +627,12 @@ private function hCheckVarargParam _
 		if( arg_dtype = FB_DATATYPE_SINGLE ) then
 			n->l = astNewCONV( FB_DATATYPE_DOUBLE, NULL, n->l )
 		end if
+
+	case FB_DATACLASS_UDT
+		'' C variadic arguments may carry aggregates by value. Their layout and
+		'' register classification are preserved by the selected call backend.
+		'' The GAS32 stack emitter needs the aggregate byte count to copy it.
+		n->arg.lgt = symbGetSizeOf( astGetSubType( n->l ) )
 
 	case else
 		errReport( FB_ERRMSG_PARAMTYPEMISMATCHAT )
@@ -631,7 +664,8 @@ private sub hCheckVoidParam _
 	end if
 
 	'' pass BYREF, check if a temp param isn't needed
-	hCheckByrefParam( parent->sym, param, n, TRUE )
+	assert( symbIsProc( parent->sym ) )
+	hCheckByrefParam( param, n, TRUE )
 end sub
 
 private function hCheckStrParam _
@@ -711,8 +745,9 @@ private sub hUDTPassByval _
 		if( astIsCALL( t ) ) then
 			n->l = astRemoveNoConvCAST( n->l )
 			assert( astIsCALL( n->l ) )
-			if( symbProcReturnsOnStack( n->l->sym ) ) then
-				'' Returning on stack, access the temp result var
+			if( symbProcReturnsOnStack( n->l->sym ) orElse _
+			    symbIsGAS32CLongDoubleCAbiResult( n->l->sym ) ) then
+				'' Copy from the caller-owned result slot.
 				n->l = astBuildCallResultVar( n->l )
 				hByteByByte( param, n )
 			else
@@ -915,6 +950,21 @@ private function hCheckParam _
 	param_dtype = symbGetType( param )
 	arg_dtype   = astGetDatatype( n->l )
 
+	'' Diagnose the selected argument before conversions hide its original
+	'' qualifiers. A value temporary has no caller-owned slot to alias; real
+	'' BYREF results and variables retain their storage and the stricter check.
+	if( symbGetSubtype(param) = astGetSubtype(n->l) ) then
+		dim as FB_PARAMMODE qualification_mode = symbGetParamMode(param)
+		if( n->arg.mode = FB_PARAMMODE_BYVAL ) then
+			qualification_mode = FB_PARAMMODE_BYVAL
+		elseif( qualification_mode = FB_PARAMMODE_BYREF ) then
+			if( hByrefArgNeedsTemp(n->l) ) then qualification_mode = FB_PARAMMODE_BYVAL
+		end if
+		if( symbHasUnsafeConstAddition(symbGetFullType(param), astGetFullType(n->l), qualification_mode) ) then
+			errReportWarn( FB_WARNINGMSG_UNSAFECONSTADDITION )
+		end if
+	end if
+
 	'' An incomplete object can only cross a call boundary by reference.
 	if( astTypeIsIncompleteValue( arg_dtype ) ) then
 		if( (symbGetParamMode( param ) <> FB_PARAMMODE_BYREF) or _
@@ -936,7 +986,7 @@ private function hCheckParam _
 
 	'' vararg?
 	case FB_PARAMMODE_VARARG
-		return hCheckVarargParam( parent, param, n )
+		return hCheckVarargParam( parent, n )
 
 	case FB_PARAMMODE_BYREF
 		'' as any?
@@ -1147,7 +1197,8 @@ private function hCheckParam _
 
 	'' byref arg? check if a temp param isn't needed
 	if( symbGetParamMode( param ) = FB_PARAMMODE_BYREF ) then
-		hCheckByrefParam( parent->sym, param, n, FALSE )
+		assert( symbIsProc( parent->sym ) )
+		hCheckByrefParam( param, n, FALSE )
 		'' it's an implicit pointer
 	end if
 

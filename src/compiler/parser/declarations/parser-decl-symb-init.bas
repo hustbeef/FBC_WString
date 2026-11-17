@@ -29,6 +29,7 @@
 #include once "backend/ir.bi"
 #include once "symbols/symb.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-recovery.bi"
 
 declare function fbSemanticModelFullEnabled( ) as integer
 
@@ -113,8 +114,14 @@ private function hDoAssign _
 		case FB_DATATYPE_BOOLEAN, FB_DATATYPE_BYTE, FB_DATATYPE_UBYTE, _
 			FB_DATATYPE_SHORT, FB_DATATYPE_USHORT, FB_DATATYPE_INTEGER, FB_DATATYPE_UINT, _
 			FB_DATATYPE_LONG, FB_DATATYPE_ULONG, FB_DATATYPE_LONGINT, FB_DATATYPE_ULONGINT, _
-			FB_DATATYPE_SINGLE, FB_DATATYPE_DOUBLE, FB_DATATYPE_STRING
+			FB_DATATYPE_INTEGER128, FB_DATATYPE_UINTEGER128, _
+			FB_DATATYPE_SINGLE, FB_DATATYPE_DOUBLE, FB_DATATYPE_STRING, FB_DATATYPE_FIXSTR, FB_DATATYPE_ENUM
 			scalar_copy = TRUE
+		case FB_DATATYPE_STRUCT
+			'' Capture one accepted same-type value copy, never a field initializer
+			'' or a constructor selection that can consume/rewrite the original RHS.
+			scalar_copy = (ctx.subtype <> NULL) and (astGetDataType(expr) = FB_DATATYPE_STRUCT) and _
+				(astGetSubType(expr) = ctx.subtype) and (symbHasCtor(ctx.sym) = FALSE)
 		end select
 		if( scalar_copy ) then
 			dim as ASTNODE ptr semantic_left = astNewVAR(ctx.sym)
@@ -141,7 +148,9 @@ private function hDoAssign _
 			errReport( FB_ERRMSG_INVALIDDATATYPES, TRUE )
 			'' error recovery: create a fake expression
 			astDelTree( expr )
-			expr = astNewCONSTz( ctx.dtype, ctx.subtype )
+			expr = fbSemanticModelRecoveryNode( _
+				astNewCONSTz( ctx.dtype, ctx.subtype ), "replacement-zero", __FUNCTION__, _
+				"parser/declarations/parser-decl-symb-init.bas", __LINE__)
 		end if
 
 	else
@@ -152,8 +161,19 @@ private function hDoAssign _
 		check_upcast = TRUE
 	end if
 
+	'' Diagnose the accepted source initializer here. Its later TYPEINI store
+	'' bypasses pointer checks, while assignment probes must stay diagnostic-free.
+	if( ctx.subtype = astGetSubtype(expr) andalso _
+	    symbHasUnsafeConstAddition(ctx.dtype, astGetFullType(expr)) ) then
+		errReportWarn( FB_WARNINGMSG_UNSAFECONSTADDITION )
+	end if
 	var semantic_initializer = astTypeIniAddAssign( ctx.tree, expr, ctx.sym, ctx.dtype, ctx.subtype, check_upcast )
-	if( (semantic_initializer <> NULL) and (len(semantic_inputs) > 0) ) then
+	'' NEW also uses this parser with a compiler-created temporary pointer.
+	'' Keep its original expression capture above, because lowering consumes
+	'' those operands. Only source variables commit declaration assignment
+	'' observations; the enclosing source assignment owns a NEW result.
+	if( (semantic_initializer <> NULL) and (len(semantic_inputs) > 0) and _
+	    (symbIsTemp(ctx.sym) = FALSE) ) then
 		fbSemanticModelRecordAssignmentInputs(semantic_inputs, "initializer", "assign", "builtin", 0, _
 			semantic_destination, @semantic_destination)
 	end if
@@ -201,7 +221,9 @@ private function hElmInit _
 		hSkipUntil( CHAR_COMMA )
 
 		'' generate an expression matching the symbol's type
-		expr = astNewCONSTz( ctx.dtype, ctx.subtype )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTz( ctx.dtype, ctx.subtype ), "replacement-zero", __FUNCTION__, _
+			"parser/declarations/parser-decl-symb-init.bas", __LINE__)
 	end if
 
 	'' to hand it back if necessary
@@ -457,7 +479,9 @@ private function hUDTInitObject( byref ctx as FB_INITCTX ) as integer
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 		'' error recovery: fake an expr
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/declarations/parser-decl-symb-init.bas", __LINE__)
 	end if
 
 	'' Constructor selection can replace the parsed input with a call node.

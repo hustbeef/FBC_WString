@@ -103,6 +103,44 @@ namespace fb
 		alpha as ulong
 	end type
 
+	'' One opaque line segment for Gfx3DrawLines. Coordinates follow the active
+	'' VIEW and WINDOW mapping; style uses the low 16-bit gfxlib line pattern.
+	type Gfx3Line
+		x1 as long
+		y1 as long
+		x2 as long
+		y2 as long
+		color as ulong
+		style as ulong
+	end type
+	'' One opaque bitmap glyph up to 8 pixels wide and 16 pixels high.
+	'' Row bit zero is the leftmost pixel; background is transparent by default.
+	const GFX3_GLYPH_BACKGROUND = &h00000001u
+	const GFX3_GLYPH_MAXIMUM = 8191
+	type Gfx3Glyph
+		x as long
+		y as long
+		foreground as ulong
+		background as ulong
+		width as ulong
+		height as ulong
+		flags as ulong
+		reserved as ulong
+		row(0 to 15) as ulong
+	end type
+
+	'' One opaque screen rectangle for Gfx3DrawRectangles. Coordinates follow
+	'' the active VIEW and WINDOW mapping; style uses the low 16-bit pattern.
+	type Gfx3Rectangle
+		x1 as long
+		y1 as long
+		x2 as long
+		y2 as long
+		color as ulong
+		style as ulong
+		filled as ulong
+	end type
+
 	extern "C"
 	declare function Gfx3SurfaceCreate GFX3CALL alias "fb_Gfx3SurfaceCreate" _
 		( byval width as long, byval height as long, byval depth as long = 0, _
@@ -222,6 +260,20 @@ namespace fb
 	declare function Gfx3DrawPoints GFX3CALL alias "fb_Gfx3DrawPoints" _
 		( byval destination as any ptr, _
 		  byval points as const Gfx3Point ptr, byval count as long ) as long
+	'' Submit opaque line segments for the current work page as one bounded batch.
+	'' The active VIEW clips each segment, and input order is preserved.
+	declare function Gfx3DrawLines GFX3CALL alias "fb_Gfx3DrawLines" _
+		( byval lines as const Gfx3Line ptr, byval count as long ) as long
+	'' Submit compact opaque bitmap glyphs. Unsupported renderers expand them
+	'' to ordered points, retaining the same screen-page drawing contract.
+	declare function Gfx3DrawGlyphs GFX3CALL alias "fb_Gfx3DrawGlyphs" _
+		( byval glyphs as const Gfx3Glyph ptr, byval count as long ) as long
+	'' Submit opaque rectangles for the current work page as one bounded batch.
+	'' The active VIEW clips every rectangle, and input order is preserved.
+	declare function Gfx3DrawRectangles GFX3CALL _
+		alias "fb_Gfx3DrawRectangles" _
+		( byval rectangles as const Gfx3Rectangle ptr, _
+		  byval count as long ) as long
 	declare function Gfx3RunOnRenderThread GFX3CALL _
 		alias "fb_Gfx3RunOnRenderThread" _
 		( byval callback as Gfx3RenderCallback ptr, _

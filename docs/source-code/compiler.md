@@ -57,6 +57,11 @@ grammar in comments, but its branches, dialect checks and recovery behavior
 determine what is accepted. An accepted parse is only part of compilation:
 symbol and AST checks still enforce types, argument modes and lifetime rules.
 
+Runtime-backed fixed-array variables supply a computed storage address. The
+variable parser lowers indexing through that address with the existing byte
+bias, retaining bounds checks and single evaluation. See
+[TLS arrays and terminating C epilogues](../c-emitter-runtime-tls-arrays.md).
+
 ## Trace PRINT from syntax to runtime
 
 For a string-valued `PRINT` argument, the useful path is:
@@ -92,6 +97,68 @@ different emission and ABI details. Check the affected backend's implementation
 and interoperability tests before changing parameter layout, aggregate
 passing, inline assembly or debug emission. A fix in one emitter does not
 automatically cover the others.
+
+The C emitter uses stateless adapters for eligible static `ThreadCreate`
+workers with typed pointer parameters. It preserves the user pointer and other
+uses of the source function address, and retains explicit integer narrowing.
+The regression in
+[c-thread-callback-types.bas](../../tests/compiler-support/c-thread-callback-types.bas)
+also checks GAS64 address narrowing and the existing semantic call-ABI contract.
+
+Debug C keeps formal argument names even when a calling contract requires an
+ignored value. The late body inspection records an unevaluated address size in
+a local enum declaration, without changing source warning 54, runtime storage
+or debug line mappings. See [ignored debug parameters](../c-emitter-debug-parameters.md)
+and [the regression](../../tests/compiler-support/c-debug-unused-parameters.bas).
+Private entries retained solely for debugging also carry native code retention,
+matching retained debug globals. A separate graph walk closes native-call roots
+before adding debug roots. Called source bodies and read-only implementations
+retain their existing optimization. When late compaction removes an unneeded
+retention attribute, it updates the owned ABI header and argument offsets too.
+Semantic definition headers wait for that decision even when the procedure has
+no arguments, so exported headers match the actual C definition.
+Optimized debug objects can grow because debugger-only entries now have code.
+
+`backend/c/c-debug-locals.bi` records local reads in the reachable optimized AST,
+including hidden call storage and address escapes. Unread named debug locals
+keep declarations and stores, with an unevaluated address-size enum on the same
+line. Compiler-owned scratch from a discarded `TYPEOF` can instead be omitted
+when no statement or lifetime code uses it. The hash owns its keys and borrows
+procedure symbols until cleanup. Source warnings and opaque-assembly behavior
+remain unchanged. See [unread debug storage](../c-emitter-debug-locals.md) and
+[the regression](../../tests/compiler-support/c-debug-local-storage.bas).
+
+`backend/c/c-member-access.bi` retains a declared pointer field as the source
+of a scalar byte copy when optimized IR carries its bytes in an integer word
+of exactly the target pointer size. Only the copy address is recovered; the
+loaded value type and copied width remain unchanged. This avoids losing the
+field's storage identity through integer address arithmetic. Other widths and
+unknown origins keep their existing lowering. See
+[pointer-field words](../c-emitter-pointer-field-words.md) and
+[the regression](../../tests/compiler-support/c-pointer-field-words.bas).
+
+`ast/nodes/ast-node-arg.bas` gives fresh pointer argument slots their safely
+qualified parameter type before taking their address. Real variables and
+ByRef results retain caller storage. `symbHasUnsafeConstAddition` is a pure
+predicate over intermediate pointer qualifiers; selected calls, assignments,
+initializers and reference declarations issue warning 58 separately from
+overload ranking. See [qualified pointer slots](../c-emitter-const-slots.md),
+[the value regression](../../tests/compiler-support/c-byref-qualified-temporaries.bas)
+and [the diagnostic fixture](../../tests/compiler-support/source-const-qualification.bas).
+
+`backend/c/c-asm-addresses.bi` owns borrowed assembly-visible parameter
+identities during procedure emission. The reachable-storage walk collects
+homes before the native definition header is written; the emitter then keeps
+source addresses stable for the entire call. Intel static address operands
+and automatic memory operands have distinct constraints. See
+[assembly storage addresses](../c-emitter-asm-addresses.md) and
+[the live-address regression](../../tests/compiler-support/c-asm-real-addresses.bas).
+
+`backend/c/c-callback-representation.bi` distinguishes erased code addresses
+from typed calls. It also recognizes exact signature identity when a terminating
+procedure address is assigned to an ordinary callback. See
+[terminating callbacks](../c-emitter-noreturn-callbacks.md) for native identity
+checks and the preserved signature-mismatch control.
 
 `tooling` records facts selected by the compiler. Its observers must obtain
 identities, types and source ranges before the corresponding compiler storage

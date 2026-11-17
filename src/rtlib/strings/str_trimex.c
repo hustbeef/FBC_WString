@@ -7,16 +7,16 @@
  */
 #include "fb.h"
 
-FBCALL FBSTRING *fb_TrimEx( FBSTRING *src, FBSTRING *pattern )
+FBCALL FBSTRING_ACCESS *fb_TrimEx( FBSTRING_ACCESS *src, FBSTRING_ACCESS *pattern )
 {
-	FBSTRING *dst;
+	FBSTRING_ACCESS *dst;
 	ssize_t len;
 	char *src_ptr = NULL;
 
     if( src == NULL ) 
     {
         fb_hStrDelTemp( pattern );
-        return &__fb_ctx.null_desc;
+        return &fb_ctx.null_desc;
     }
 
 	FB_STRLOCK();
@@ -56,13 +56,16 @@ FBCALL FBSTRING *fb_TrimEx( FBSTRING *src, FBSTRING *pattern )
                     fb_hStrSkipCharRev( src_ptr,
                                         len,
                                         FB_CHAR_TO_INT(pattern->data[0]) );
-                len = (ssize_t)(p_tmp - src_ptr) + 1;
+                if( p_tmp == NULL )
+                    len = 0;
+                else
+                    len = (ssize_t)(p_tmp - src_ptr) + 1;
 
             } 
             else if( len_pattern != 0 ) 
             {
                 ssize_t test_index = len - len_pattern;
-                while (len >= len_pattern ) 
+                while (test_index >= 0 )
                 {
                     if( FB_MEMCMP( src_ptr + test_index,
                                    pattern->data,
@@ -88,10 +91,10 @@ FBCALL FBSTRING *fb_TrimEx( FBSTRING *src, FBSTRING *pattern )
 			fb_hStrCopy( dst->data, src_ptr, len );
 		}
 		else
-			dst = &__fb_ctx.null_desc;
+			dst = &fb_ctx.null_desc;
     }
 	else
-		dst = &__fb_ctx.null_desc;
+		dst = &fb_ctx.null_desc;
 
 	/* del if temp */
 	fb_hStrDelTemp_NoLock( src );

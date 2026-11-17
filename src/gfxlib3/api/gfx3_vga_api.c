@@ -23,10 +23,10 @@
         - palette drawing or presentation shader code
 */
 
+#include "../gfx3_exports.h"
 #include "../gfx3_api_internal.h"
 #include "../gfx3_vga_api.h"
 
-FBCALL int fb_GfxWaitVSync(void);
 
 enum FB_GFX3_VGA_PORT {
 	FB_GFX3_VGA_DAC_READ_INDEX = 0x03C7,
@@ -140,8 +140,8 @@ int fb_GfxOut(unsigned short port, unsigned char value)
 
 void fb_gfx3_vga_install_hooks_locked(void)
 {
-	__fb_ctx.hooks.inproc = fb_GfxIn;
-	__fb_ctx.hooks.outproc = fb_GfxOut;
+	fb_ctx.hooks.inproc = fb_GfxIn;
+	fb_ctx.hooks.outproc = fb_GfxOut;
 }
 
 /* end of gfx3_vga_api.c */

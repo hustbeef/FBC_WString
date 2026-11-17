@@ -1,11 +1,18 @@
 /*
+ * Project: FreeBASIC runtime libraries
+ * File: fb_gfx.h
+ * Purpose: Share the internal graphics interface.
+ * Responsibilities: Graphics state, driver contracts and runtime entry points.
+ * This file intentionally does NOT contain: Rendering algorithms and native driver implementations.
+ */
+/*
     FreeBASIC gfxlib2: fb_gfx.h
     Internal graphics state, driver contracts and runtime entry points.
     Rendering algorithms and platform implementations belong to their modules.
 */
 
-#ifndef __FB_GFX_H__
-#define __FB_GFX_H__
+#ifndef FB_GFX_H
+#define FB_GFX_H
 
 #include "../rtlib/fb.h"
 #include "../rtlib/fb_gfx_private.h"
@@ -18,10 +25,10 @@
 
 #define DRIVER_LOCK()		do { fb_GfxLock(); } while (0)
 #define DRIVER_UNLOCK()		do { fb_GfxUnlock(1, 0); } while (0) /* start_line > end_line so dirty is not modified */
-#define SET_DIRTY(c,y,h)	{ if (__fb_gfx->framebuffer == (c)->line[0]) fb_hMemSet(__fb_gfx->dirty + (y), TRUE, (h)); }
+#define SET_DIRTY(c,y,h)	do { if (fb_gfx->framebuffer == (c)->line[0]) fb_hMemSet(fb_gfx->dirty + (y), TRUE, (h)); } while (0)
 
-#define EVENT_LOCK()		{ fb_MutexLock(__fb_gfx->event_mutex); }
-#define EVENT_UNLOCK()		{ fb_MutexUnlock(__fb_gfx->event_mutex); }
+#define EVENT_LOCK()		do { fb_MutexLock(fb_gfx->event_mutex); } while (0)
+#define EVENT_UNLOCK()		do { fb_MutexUnlock(fb_gfx->event_mutex); } while (0)
 
 /*
 gfx driver flags and gfx context flags
@@ -232,7 +239,7 @@ OPENGL_SUPPORT          0x20000000    no   yes  no   yes  yes
 
 typedef void (BLITTER)(unsigned char *, int);
 
-typedef struct _GFX_CHAR_CELL {
+typedef struct FB_GFX_CHAR_CELL {
 	FB_WCHAR ch;
 	unsigned fg, bg;
 } GFX_CHAR_CELL;
@@ -266,12 +273,16 @@ typedef struct FBGFX
 	GFX_CHAR_CELL **con_pages;              /**< Character information for all pages */
 	EVENT *event_queue;                     /**< The OS events queue array */
 	int event_head, event_tail;             /**< Indices for the head and tail event in the array */
-	FBMUTEX *event_mutex;                   /**< Mutex lock for accessing the events queue */
+	FBMUTEX *event_mutex;                   /**< Mutex for the event and keyboard queues */
 	FB_DROP_STATE drops;                   /**< Payloads protected by event_mutex */
 	volatile int flags;                     /**< Status flags */
 	int lock_count;                         /**<Reference count for SCREENLOCK/UNLOCK */
 	volatile int pending_width;             /**< Coalesced client width requested by the window thread */
 	volatile int pending_height;            /**< Coalesced client height requested by the window thread */
+	/* Optional input snapshot, called without the display lock. Return positive
+	   when it supplies a sample, zero to use the driver callback, or negative
+	   when a previously initialized pointer is outside the graphics window. */
+	int (*get_mouse_fast)(int *x, int *y, int *z, int *buttons, int *clip);
 } FBGFX;
 
 typedef struct GFXDRIVER
@@ -489,7 +500,15 @@ typedef struct FONT
 	const unsigned char *data;
 } FONT;
 
-struct _PUT_HEADER {
+/* Keep MinGW's existing bitfield convention while packing the header. */
+#if defined(HOST_MINGW) && !defined(HOST_WINCE)
+#define FB_GFX_GCC_STRUCT __attribute__((gcc_struct))
+#else
+#define FB_GFX_GCC_STRUCT
+#endif
+
+#pragma pack(push, 1)
+struct FB_PUT_HEADER {
 	union {
 		struct {
 			/* BASIC bitfields start at the low bits of the native word.
@@ -513,20 +532,23 @@ struct _PUT_HEADER {
 	unsigned int tex;
 	char _reserved[8];
 	unsigned char data[0];
-} FBPACKED;
-typedef struct _PUT_HEADER PUT_HEADER;
+} FB_GFX_GCC_STRUCT;
+#pragma pack(pop)
+#undef FB_GFX_GCC_STRUCT
+typedef struct FB_PUT_HEADER PUT_HEADER;
 
 /* Global variables */
-extern FBGFX *__fb_gfx;
-extern char *__fb_gfx_driver_name;
-extern const GFXDRIVER *__fb_gfx_drivers_list[];
-extern const GFXDRIVER __fb_gfxDriverNull;
+/* Keep ordinary C names separate from the existing linker symbols. */
+extern FBGFX *fb_gfx FB_C_SYMBOL("__fb_gfx");
+extern char *fb_gfx_driver_name FB_C_SYMBOL("__fb_gfx_driver_name");
+extern const GFXDRIVER *fb_gfx_drivers_list[] FB_C_SYMBOL("__fb_gfx_drivers_list");
+extern const GFXDRIVER fb_gfxDriverNull FB_C_SYMBOL("__fb_gfxDriverNull");
 extern void *(*fb_hMemCpy)(void *dest, const void *src, size_t size);
 extern void *(*fb_hMemSet)(void *dest, int value, size_t size);
 extern void *(*fb_hPixelCpy)(void *dest, const void *src, size_t size);
 extern void *(*fb_hPixelSet)(void *dest, int color, size_t size);
-extern unsigned int *__fb_color_conv_16to32;
-extern char *__fb_window_title;
+extern unsigned int *fb_color_conv_16to32 FB_C_SYMBOL("__fb_color_conv_16to32");
+extern char *fb_window_title FB_C_SYMBOL("__fb_window_title");
 
 /* must match data.c */
 enum {
@@ -545,8 +567,8 @@ enum {
 	FB_PALETTE_COUNT
 };
 
-extern const FONT __fb_font[FB_FONT_COUNT];
-extern const PALETTE __fb_palette[FB_PALETTE_COUNT];
+extern const FONT fb_font[FB_FONT_COUNT] FB_C_SYMBOL("__fb_font");
+extern const PALETTE fb_palette[FB_PALETTE_COUNT] FB_C_SYMBOL("__fb_palette");
 
 /* Internal functions */
 extern FB_GFXCTX *fb_hGetContext(void);
@@ -598,9 +620,9 @@ extern "C" {
 extern FBCALL int fb_GfxScreen(int mode, int depth, int num_pages, int flags, int refresh_rate);
 extern FBCALL int fb_GfxScreenQB(int mode, int visible, int active);
 extern FBCALL int fb_GfxScreenRes(int width, int height, int depth, int num_pages, int flags, int refresh_rate);
-extern FBCALL void fb_GfxScreenInfo(ssize_t *width, ssize_t *height, ssize_t *depth, ssize_t *bpp, ssize_t *pitch, ssize_t *refresh_rate, FBSTRING *driver);
-extern FBCALL void fb_GfxScreenInfo32(int *width, int *height, int *depth, int *bpp, int *pitch, int *refresh_rate, FBSTRING *driver);
-extern FBCALL void fb_GfxScreenInfo64(long long *width, long long  *height, long long  *depth, long long  *bpp, long long  *pitch, long long  *refresh_rate, FBSTRING *driver);
+extern FBCALL void fb_GfxScreenInfo(ssize_t *width, ssize_t *height, ssize_t *depth, ssize_t *bpp, ssize_t *pitch, ssize_t *refresh_rate, FBSTRING_ACCESS *driver);
+extern FBCALL void fb_GfxScreenInfo32(int *width, int *height, int *depth, int *bpp, int *pitch, int *refresh_rate, FBSTRING_ACCESS *driver);
+extern FBCALL void fb_GfxScreenInfo64(long long *width, long long  *height, long long  *depth, long long  *bpp, long long  *pitch, long long  *refresh_rate, FBSTRING_ACCESS *driver);
 extern FBCALL int fb_GfxScreenList(int depth);
 extern FBCALL void *fb_GfxImageCreate(int width, int height, unsigned int color, int depth, int flags);
 extern FBCALL void *fb_GfxImageCreateQB(int width, int height, unsigned int color, int depth, int flags);
@@ -623,20 +645,20 @@ extern FBCALL void fb_GfxView(int x1, int y1, int x2, int y2, unsigned int fill_
 extern FBCALL void fb_GfxWindow(float x1, float y1, float x2, float y2, int screen);
 extern FBCALL void fb_GfxLine(void *target, float x1, float y1, float x2, float y2, unsigned int color, int type, unsigned int style, int coord_type);
 extern FBCALL void fb_GfxEllipse(void *target, float x, float y, float radius, unsigned int color, float aspect, float start, float end, int fill, int coord_type);
-extern FBCALL int fb_GfxGet(void *target, float x1, float y1, float x2, float y2, unsigned char *dest, int coord_type, FBARRAY *array);
-extern FBCALL int fb_GfxGetQB(void *target, float x1, float y1, float x2, float y2, unsigned char *dest, int coord_type, FBARRAY *array);
+extern FBCALL int fb_GfxGet(void *target, float x1, float y1, float x2, float y2, unsigned char *dest, int coord_type, FBARRAY_ACCESS *array);
+extern FBCALL int fb_GfxGetQB(void *target, float x1, float y1, float x2, float y2, unsigned char *dest, int coord_type, FBARRAY_ACCESS *array);
 extern FBCALL int fb_GfxPut(void *target, float x, float y, unsigned char *src, int x1, int y1, int x2, int y2, int coord_type, int mode, PUTTER *putter, int alpha, BLENDER *blender, void *param);
 extern FBCALL int fb_GfxWaitVSync(void);
-extern FBCALL void fb_GfxPaint(void *target, float fx, float fy, unsigned int color, unsigned int border_color, FBSTRING *pattern, int mode, int coord_type);
-extern FBCALL void fb_GfxDraw(void *target, FBSTRING *command);
-extern FBCALL int fb_GfxDrawString(void *target, float fx, float fy, int coord_type, FBSTRING *string, unsigned int color, void *font, int mode, PUTTER *putter, BLENDER *blender, void *param);
-extern FBCALL int fb_GfxDrawStringSize(FBSTRING *string, int *width, int *height, void *font);
-extern FBCALL int fb_GfxPaintPattern(void *target, float x, float y, FBSTRING *pattern, unsigned int foreground, unsigned int background, unsigned int border, int relative);
+extern FBCALL void fb_GfxPaint(void *target, float fx, float fy, unsigned int color, unsigned int border_color, FBSTRING_ACCESS *pattern, int mode, int coord_type);
+extern FBCALL void fb_GfxDraw(void *target, FBSTRING_ACCESS *command);
+extern FBCALL int fb_GfxDrawString(void *target, float fx, float fy, int coord_type, FBSTRING_ACCESS *string, unsigned int color, void *font, int mode, PUTTER *putter, BLENDER *blender, void *param);
+extern FBCALL int fb_GfxDrawStringSize(FBSTRING_ACCESS *string, int *width, int *height, void *font);
+extern FBCALL int fb_GfxPaintPattern(void *target, float x, float y, FBSTRING_ACCESS *pattern, unsigned int foreground, unsigned int background, unsigned int border, int relative);
 extern FBCALL int fb_GfxFlip(int from_page, int to_page);
 extern FBCALL void fb_GfxLock(void);
 extern FBCALL void fb_GfxUnlock(int start_line, int end_line);
 extern FBCALL void *fb_GfxScreenPtr(void);
-extern FBCALL void fb_GfxSetWindowTitle(FBSTRING *title);
+extern FBCALL void fb_GfxSetWindowTitle(FBSTRING_ACCESS *title);
 #ifdef __cplusplus
 extern "C" FBCALL int fb_GfxGetJoystick(int id, ssize_t *buttons, float *a1, float *a2, float *a3, float *a4, float *a5, float *a6, float *a7, float *a8);
 #else
@@ -649,15 +671,15 @@ extern FBCALL ssize_t fb_GfxGetTouchHit(ssize_t x1, ssize_t y1, ssize_t x2, ssiz
 extern FBCALL ssize_t fb_GfxGetTouchHitCircle(ssize_t x, ssize_t y, ssize_t radius);
 extern FBCALL int fb_GfxEvent(EVENT *event);
 extern FBCALL int fb_GfxDropEnable(int enabled);
-extern FBCALL int fb_GfxDropGet(int identifier, int index, FBSTRING *output);
-extern FBCALL void fb_GfxControl_s(int what, FBSTRING *param);
+extern FBCALL int fb_GfxDropGet(int identifier, int index, FBSTRING_ACCESS *output);
+extern FBCALL void fb_GfxControl_s(int what, FBSTRING_ACCESS *param);
 extern FBCALL void fb_GfxControl_i(int what, ssize_t *param1, ssize_t *param2, ssize_t *param3, ssize_t *param4);
 extern FBCALL void fb_GfxControl_i32(int what, int *param1, int *param2, int *param3, int *param4);
 extern FBCALL void fb_GfxControl_i64(int what, long long *param1, long long *param2, long long *param3, long long *param4);
-extern FBCALL int fb_GfxBload(FBSTRING *filename, void *dest, void *pal);
-extern FBCALL int fb_GfxBloadQB(FBSTRING *filename, void *dest, void *pal);
-extern FBCALL int fb_GfxBsave(FBSTRING *filename, void *src, unsigned int size, void *pal);
-extern FBCALL int fb_GfxBsaveEx(FBSTRING *filename, void *src, unsigned int size, void *pal, int bitsperpixel);
+extern FBCALL int fb_GfxBload(FBSTRING_ACCESS *filename, void *dest, void *pal);
+extern FBCALL int fb_GfxBloadQB(FBSTRING_ACCESS *filename, void *dest, void *pal);
+extern FBCALL int fb_GfxBsave(FBSTRING_ACCESS *filename, void *src, unsigned int size, void *pal);
+extern FBCALL int fb_GfxBsaveEx(FBSTRING_ACCESS *filename, void *src, unsigned int size, void *pal, int bitsperpixel);
 extern FBCALL void *fb_GfxGetGLProcAddress(const char *proc);
 
 /* Public API - QB compatibility */
@@ -667,7 +689,7 @@ extern FBCALL int fb_GfxStrigQB( int n );
 
 /* Runtime library hooks */
 int fb_GfxGetkey(void);
-FBSTRING *fb_GfxInkey(void);
+FBSTRING_ACCESS *fb_GfxInkey(void);
 int fb_GfxKeyHit(void);
 unsigned int fb_GfxColor(unsigned int fg_color, unsigned int bg_color, int flags);
 void fb_GfxClear(int mode);
@@ -688,13 +710,35 @@ int fb_GfxGetMouse(int *x, int *y, int *z, int *buttons, int *clip);
 int fb_GfxSetMouse(int x, int y, int cursor, int clip);
 int fb_GfxOut(unsigned short port, unsigned char value);
 int fb_GfxIn(unsigned short port);
-int fb_GfxLineInput( FBSTRING *text, void *dst, ssize_t dst_len, int fillrem, int addquestion, int addnewline );
+int fb_GfxLineInput( FBSTRING_ACCESS *text, void *dst, ssize_t dst_len, int fillrem, int addquestion, int addnewline );
 int fb_GfxLineInputWstr( const FB_WCHAR *text, FB_WCHAR *dst, ssize_t max_chars, int addquestion, int addnewline );
 unsigned int fb_GfxReadXY( int col, int row, int colorflag );
 void fb_GfxSleep( int msecs );
 int fb_GfxIsRedir( int is_input );
 int fb_GfxPageCopy(int from_page, int to_page);
 int fb_GfxPageSet(int work_page, int visible_page);
+
+/* Shared implementation helpers and UTF text entry points. */
+void fb_hPostEvent_code_start(void);
+void fb_hPostEvent_code_end(void);
+void fb_GFXCTX_Destructor(void* data);
+void fb_GfxViewUpdate( void );
+int fb_hGfxInputBufferChanged( void );
+FBCALL int fb_GfxDrawStringUstr( void *target, float x, float y, int flags,
+	FBSTRING_ACCESS *text, unsigned int color, void *font, int mode,
+	PUTTER *putter, BLENDER *blender, void *parameter );
+FBCALL int fb_GfxDrawStringSizeUstr( FBSTRING_ACCESS *text, int *width, int *height, void *font );
+FBCALL int fb_GfxDrawStringSizeWstr( const FB_WCHAR *text, int *width, int *height, void *font );
+FBCALL int fb_GfxPaintPatternWstr( void *target, float x, float y,
+	const FB_WCHAR *pattern, unsigned int foreground, unsigned int background,
+	unsigned int border, int relative );
+void fb_hBlit_code_start(void);
+void fb_hBlit_code_end(void);
+void fb_hPutOrC(unsigned char *src, unsigned char *dest, int w, int h, int src_pitch, int dest_pitch, int alpha, BLENDER *blender, void *param);
+void fb_hPutPSetC(unsigned char *src, unsigned char *dest, int w, int h, int src_pitch, int dest_pitch, int alpha, BLENDER *blender, void *param);
+void fb_hPutTrans1C(unsigned char *src, unsigned char *dest, int w, int h, int src_pitch, int dest_pitch, int alpha, BLENDER *blender, void *param);
+void fb_hSoftCursor_code_start(void);
+void fb_hSoftCursor_code_end(void);
 
 typedef void (*FBGFX_IMAGE_CONVERT)(const unsigned char *, unsigned char *, int);
 
@@ -730,7 +774,7 @@ void fb_hPutCustom(unsigned char *src, unsigned char *dest, int w, int h, int sr
 /** Returns TRUE if application is in graphics mode.
  */
 #define FB_GFX_ACTIVE() \
-    (__fb_gfx!=NULL)
+    (fb_gfx!=NULL)
 
 /** Returns the code page as integral value.
  *

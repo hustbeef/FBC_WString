@@ -27,6 +27,8 @@
 #include once "backend/ir.bi"
 #include once "runtime/rtl.bi"
 #include once "ast/ast.bi"
+#include once "tooling/semantic-numeric-conversions.bi"
+#include once "tooling/semantic-temporaries.bi"
 #include once "support/hlp.bi"
 
 declare sub astReplaceSymbolOnCALL _
@@ -388,6 +390,12 @@ end function
 function astHasSideFx( byval n as ASTNODE ptr ) as integer
 	if( n = NULL ) then
 		exit function
+	end if
+
+	'' C range folding retains mandatory reads through this macro. Later
+	'' simplification must neither discard nor duplicate those evaluations.
+	if( n->class = AST_NODECLASS_MACRO andalso n->op.op = AST_OP_C_EVAL ) then
+		return TRUE
 	end if
 
 	'' Most CALLs are treated as having side-effects, i.e. mustn't be
@@ -829,8 +837,15 @@ private function hPrepareBranchExpr _
 			end if
 		end if
 
+		dim as longint original_expression = expr->semantic_expression
 		expr = astBuildCall( ovlProc, expr )
 		dtype = astGetFullType( expr )
+		'' The selected scalar call has no parser occurrence of its own.
+		'' Preserve the written object's site only for this truth observation;
+		'' do not make it another executable expression association on the call.
+		if( (typeGetClass( dtype ) = FB_DATACLASS_FPOINT) andalso (expr->semantic_expression = 0) ) then
+			fbSemanticModelNumericConversionSource(expr, FB_DATATYPE_BOOLEAN, NULL, 0, original_expression)
+		end if
 	end select
 
 	return TRUE
@@ -844,7 +859,7 @@ private sub hPrepareFloatBranchExpr _
 
 	if( typeGetClass( dtype ) = FB_DATACLASS_FPOINT ) then
 		if( env.clopt.fpmode = FB_FPMODE_PRECISE ) then
-			expr = astNewCONV( FB_DATATYPE_BOOLEAN, NULL, expr )
+			expr = astNewCONV( FB_DATATYPE_BOOLEAN, NULL, expr, AST_CONVOPT_SEMANTIC_TRANSPORT )
 		end if
 	end if
 end sub
@@ -871,6 +886,13 @@ function astBuildBranch _
 
 	if( hPrepareBranchExpr( expr, dtype ) = FALSE ) then
 		return NULL
+	end if
+
+	'' A floating condition normalizes truth even when folding removes the
+	'' branch or a backend compares directly against zero. Its later boolean
+	'' carrier is internal; record the source boundary only here.
+	if( typeGetClass( dtype ) = FB_DATACLASS_FPOINT ) then
+		fbSemanticModelNumericConversion(expr, FB_DATATYPE_BOOLEAN, NULL, 0)
 	end if
 
 	'' If the condition expression uses temp vars, we may have to call their
@@ -911,7 +933,7 @@ function astBuildBranch _
 		'' Skip LINK nodes, if any
 		n = expr
 		parentlink = NULL
-		while( n->class = AST_NODECLASS_LINK )
+		while( (n <> NULL) andalso (n->class = AST_NODECLASS_LINK) )
 			parentlink = n
 			select case n->link.ret
 			case AST_LINK_RETURN_LEFT
@@ -922,6 +944,14 @@ function astBuildBranch _
 				n = NULL
 			end select
 		wend
+
+		'' A branch needs a value. Do not dereference an empty LINK result
+		'' left by lowering or error recovery, even with assertions disabled.
+		if( n = NULL ) then
+			if( errGetCount( ) = 0 ) then errReportEx( FB_ERRMSG_INTERNAL, __FUNCTION__ )
+			astDelTree( expr )
+			return NULL
+		end if
 
 		assert( n )
 
@@ -1053,7 +1083,7 @@ function astBuildBranch _
 	select case typeGetDtAndPtrOnly( dtype )
 	case FB_DATATYPE_CHAR, FB_DATATYPE_WCHAR
 		'' don't use typeRemap(), we are preserving const
-		dtype = typeJoin( dtype, symb_dtypeTB(typeGetDtAndPtrOnly( dtype )).remaptype )
+		dtype = typeJoin( dtype, symbGetDatatypeInfo(typeGetDtAndPtrOnly( dtype )).remaptype )
 	end select
 
 	if( call_dtors ) then
@@ -1153,6 +1183,7 @@ sub astDtorListAdd( byval sym as FBSYMBOL ptr )
 	end with
 
 	n->refcount = 0
+	fbSemanticModelTemporaryAdd(n)
 end sub
 
 sub astDtorListAddRef( byval sym as FBSYMBOL ptr )
@@ -1168,6 +1199,7 @@ sub astDtorListAddRef( byval sym as FBSYMBOL ptr )
 	while( i )
 		if( i->sym = sym ) then
 			i->refcount += 1
+			fbSemanticModelTemporaryReference(i, TRUE)
 			exit while
 		end if
 
@@ -1189,8 +1221,10 @@ sub astDtorListRemoveRef( byval sym as FBSYMBOL ptr )
 		if( i->sym = sym ) then
 			assert( i->refcount > 0 )
 			i->refcount -= 1
+			fbSemanticModelTemporaryReference(i, FALSE)
 
 			if( i->refcount <= 0 ) then
+				fbSemanticModelTemporaryRemove(i, "reference-release")
 				listDelNode( @ast.dtorlist, i )
 			end if
 
@@ -1201,9 +1235,12 @@ sub astDtorListRemoveRef( byval sym as FBSYMBOL ptr )
 	wend
 end sub
 
-function astDtorListFlush( byval cookie as integer ) as ASTNODE ptr
+function astDtorListFlush( byval cookie as integer, byval semantic_identity as longint ptr ) as ASTNODE ptr
 	dim as AST_DTORLIST_ITEM ptr n = any, p = any
 	dim as ASTNODE ptr t = any
+	dim as longint semantic_flush = fbSemanticModelTemporaryFlushBegin(cookie)
+	dim as integer semantic_actions = 0, semantic_removed = 0
+	if( semantic_identity <> NULL ) then *semantic_identity = semantic_flush
 
 	'' call the dtors in the reverse order
 	t = NULL
@@ -1225,6 +1262,8 @@ function astDtorListFlush( byval cookie as integer ) as ASTNODE ptr
 		'' Only flush dtors for the given cookie number
 		if( n->cookie = cookie ) then
 			dim as ASTNODE ptr dtorcall = astBuildVarDtorCall( n->sym )
+			fbSemanticModelTemporaryFlushAction(semantic_flush, n, dtorcall)
+			semantic_actions += 1
 			if( n->semantic_dependency >= 0 ) then
 				dim as FBSYMBOL ptr subtype = symbGetSubtype( n->sym )
 				dim as FBSYMBOL ptr dtor = NULL
@@ -1241,10 +1280,14 @@ function astDtorListFlush( byval cookie as integer ) as ASTNODE ptr
 				end if
 			end if
 			t = astNewLINK( t, dtorcall, AST_LINK_RETURN_NONE )
+			fbSemanticModelTemporaryRemove(n, "flush")
+			semantic_removed += 1
 			listDelNode( @ast.dtorlist, n )
 
 		'' or delete the cookie was marked for delete
 		elseif( n->cookie = -1 ) then
+			fbSemanticModelTemporaryRemove(n, "discard")
+			semantic_removed += 1
 			listDelNode( @ast.dtorlist, n )
 		end if
 
@@ -1254,6 +1297,7 @@ function astDtorListFlush( byval cookie as integer ) as ASTNODE ptr
 	if( cookie = 0 ) then
 		ast.dtorlistcookies = 0  '' Can aswell be reset
 	end if
+	fbSemanticModelTemporaryFlushEnd(semantic_flush, cookie, semantic_actions, semantic_removed)
 
 	function = t
 end function
@@ -1268,6 +1312,7 @@ sub astDtorListDel( byval sym as FBSYMBOL ptr )
 	n = listGetTail( @ast.dtorlist )
 	while( n )
 		if( n->sym = sym ) then
+			fbSemanticModelTemporaryRemove(n, "explicit-delete")
 			listDelNode( @ast.dtorlist, n )
 			exit while
 		end if
@@ -1280,6 +1325,7 @@ end sub
 '' If a "cookie" is given then that will be used to mark new entries, instead of
 '' allocating a new cookie.
 sub astDtorListScopeBegin( byval cookie as integer )
+	dim as integer semantic_allocated = (cookie = 0)
 	if( cookie = 0 ) then
 		'' Allocate new cookie
 		ast.dtorlistcookies += 1
@@ -1296,6 +1342,7 @@ sub astDtorListScopeBegin( byval cookie as integer )
 		.cookies[.count] = cookie
 		.count += 1
 	end with
+	fbSemanticModelTemporaryScopeBegin(cookie, semantic_allocated, ast.dtorlistscopes.count)
 end sub
 
 '' Closes the scope and returns its cookie number so it can be passed through
@@ -1306,6 +1353,7 @@ function astDtorListScopeEnd( ) as integer
 		assert( .count > 0 )
 		function = .cookies[.count-1]
 		.count -= 1
+		fbSemanticModelTemporaryScopeEnd(.cookies[.count], .count)
 	end with
 end function
 
@@ -1328,6 +1376,7 @@ private sub hastDtorListRescope( byval cookie as integer, byval newcookie as int
 	i = listGetTail( @ast.dtorlist )
 	while( i )
 		if( i->cookie = cookie ) then
+			fbSemanticModelTemporaryRescope(i, newcookie)
 			i->cookie = newcookie
 		end if
 		i = listGetPrev( i )

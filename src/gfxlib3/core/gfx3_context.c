@@ -559,9 +559,19 @@ static int context_stage_glyphs(FB_GFX3_SURFACE *surface,
 		return FB_GFX3_UNSUPPORTED;
 	if (count == 0u)
 		return FB_GFX3_OK;
+	if ((surface->context == NULL) ||
+	    ((surface->context->renderer.backend.caps.features &
+	      FB_GFX3_FEATURE_PACKED_GLYPHS) == 0u))
+		return FB_GFX3_UNSUPPORTED;
 	for (index = 0u; index < count; ++index) {
+		int64_t last_x = (int64_t)glyphs[index].x +
+			(int64_t)glyphs[index].width - 1;
+		int64_t last_y = (int64_t)glyphs[index].y +
+			(int64_t)glyphs[index].height - 1;
+
 		if ((glyphs[index].width == 0u) || (glyphs[index].width > 8u) ||
 		    (glyphs[index].height == 0u) || (glyphs[index].height > 16u) ||
+		    (last_x > INT32_MAX) || (last_y > INT32_MAX) ||
 		    ((glyphs[index].flags &
 		      ~(uint32_t)FB_GFX3_GLYPH_BACKGROUND) != 0u))
 			return FB_GFX3_INVALID;
@@ -1249,6 +1259,17 @@ int fb_gfx3_surface_present(FB_GFX3_SURFACE *surface, int wait)
 		return wait ? fb_gfx3_context_flush(context) :
 			fb_gfx3_context_submit_pending(context);
 	if (wait) {
+		content_revision = atomic_load(&context->visible_content_revision);
+		/*
+			SCREENSET already queued a presentation for this visible content.
+			Keep SCREENSYNC's completion guarantee by waiting behind that request
+			instead of swapping the same frame a second time.
+		*/
+		if ((atomic_load(&context->visible_surface_handle) == surface->handle) &&
+		    (atomic_load(&context->queued_present_revision) ==
+		     content_revision) &&
+		    !atomic_load(&context->pending_submission_work))
+			return fb_gfx3_context_flush(context);
 		command = fb_gfx3_command_create(FB_GFX3_COMMAND_PRESENT, 0);
 		if (command == NULL)
 			return FB_GFX3_OUT_OF_MEMORY;
@@ -1565,6 +1586,48 @@ int fb_gfx3_surface_line_graphics_locked(FB_GFX3_SURFACE *surface,
 {
 	return context_surface_line(surface, clip, x1, y1, x2, y2, color,
 		style, flags, TRUE);
+}
+
+int fb_gfx3_surface_lines_graphics_locked(FB_GFX3_SURFACE *surface,
+	const FB_GFX3_LINE_COMMAND *lines, uint32_t count)
+{
+	FB_GFX3_LINES_COMMAND *payload;
+	FB_GFX3_COMMAND *command;
+	size_t line_bytes;
+	size_t payload_size;
+	uint32_t index;
+	int result;
+
+	if (!surface_is_valid(surface) ||
+	    ((surface->usage & FB_GFX3_SURFACE_RENDER_TARGET) == 0u) ||
+	    (count > FB_GFX3_CONTEXT_PENDING_LINE_LIMIT) ||
+	    ((count != 0u) && (lines == NULL)))
+		return FB_GFX3_INVALID;
+	if (count == 0u)
+		return FB_GFX3_OK;
+	if ((fb_gfx3_size_multiply(count, sizeof(lines[0]), &line_bytes) !=
+	     FB_GFX3_OK) ||
+	    (fb_gfx3_size_add(offsetof(FB_GFX3_LINES_COMMAND, line), line_bytes,
+	     &payload_size) != FB_GFX3_OK))
+		return FB_GFX3_INVALID;
+	for (index = 0u; index < count; index++) {
+		if ((lines[index].clip.x1 > lines[index].clip.x2) ||
+		    (lines[index].clip.y1 > lines[index].clip.y2) ||
+		    ((lines[index].flags & ~FB_GFX3_PRIMITIVE_ALPHA_BLEND) != 0u))
+			return FB_GFX3_INVALID;
+	}
+	command = fb_gfx3_command_create(FB_GFX3_COMMAND_LINES, payload_size);
+	if (command == NULL)
+		return FB_GFX3_OUT_OF_MEMORY;
+	command->target = surface->handle;
+	payload = (FB_GFX3_LINES_COMMAND *)command->payload;
+	payload->count = count;
+	memset(payload->reserved, 0, sizeof(payload->reserved));
+	memcpy(payload->line, lines, line_bytes);
+	result = context_submit_async_locked(surface->context, command);
+	if (result != FB_GFX3_OK)
+		fb_gfx3_command_destroy(command);
+	return result;
 }
 
 static int context_surface_rectangle(FB_GFX3_SURFACE *surface,

@@ -133,7 +133,7 @@ function hFloatToHex_C99 _
 		end if
 	end if
 
-	ret += "p" & (*iif( exp2 >= 0, @"+", @"-" )) + str( abs( exp2 ) )
+	ret += "p" & (*iif( exp2 >= 0, cptr( const zstring ptr, @"+" ), cptr( const zstring ptr, @"-" ) )) + str( abs( exp2 ) )
 
 	return ret
 
@@ -415,7 +415,7 @@ private function hCygwinDrivePrefix( ) as string
 end function
 #endif
 
-function pathNormalizeHost( byref path as string ) as string
+function pathNormalizeHost( byref path as const string ) as string
 #if defined( __FB_CYGWIN__ )
 	dim as string normalized
 	const WINDOWS_DRIVE_PATH_PREFIX_LENGTH = 2

@@ -90,7 +90,7 @@
 sub ZstrAssign _
 	( _
 		byval dst as zstring ptr ptr, _
-		byval src as zstring ptr _
+		byval src as const zstring ptr _
 	)
 
 	ASSIGN_SETUP( dst, src, zstring )
@@ -210,7 +210,7 @@ end sub
 '':::::
 function ZstrDup _
 	( _
-		byval s as zstring ptr _
+		byval s as const zstring ptr _
 	) as zstring ptr
 
 	dim as zstring ptr dst
@@ -256,9 +256,9 @@ end function
 '':::::
 function hReplace _
 	( _
-		byval orgtext as zstring ptr, _
-		byval oldtext as zstring ptr, _
-		byval newtext as zstring ptr _
+		byval orgtext as const zstring ptr, _
+		byval oldtext as const zstring ptr, _
+		byval newtext as const zstring ptr _
 	) as string static
 
 	dim as integer oldlen, newlen, p
@@ -481,12 +481,12 @@ end function
 
 '':::::
 ''
-'' The cursor is advanced by reference. Keep the pointer itself non-const here:
-'' generated C cannot safely pass a T ** cursor to a const T ** parameter, and
-'' recent GCC versions reject that mismatch while compiling bootstrap sources.
+'' Read through a value copy so callers retain their own cursor type.
+'' A mutable T ** cursor cannot be passed safely as const T **.
+'' Each decoder advances its own cursor after consuming the requested digits.
 private function hUnicodeHexToCodePointW _
 	( _
-		byref src as wstring ptr, _
+		byval src as const wstring ptr, _
 		byval digits as integer _
 	) as uinteger static
 
@@ -1325,7 +1325,7 @@ function hEscapeW _
 	static as DZSTRING res
 	dim as uinteger char
 	dim as integer lgt, i, wcharlen, n
-	dim as wstring ptr src, src_end
+	dim as const wstring ptr src, src_end
 	dim as zstring ptr dst
 
 	'' convert the internal escape sequences to GAS format
@@ -1356,7 +1356,7 @@ function hEscapeW _
 		return NULL
 	end if
 
-	src = cast( wstring ptr, text )
+	src = text
 	dst = res.data
 
 	src_end = src + lgt
@@ -1392,11 +1392,13 @@ function hEscapeW _
 				if( char = asc( "u" ) ) then
 					if( src + 4 > src_end ) then exit do
 					char = hUnicodeHexToCodePointW( src, 4 )
+					src += 4
 
 				'' CHAR_UUPP
 				elseif( char = asc( "U" ) ) then
 					if( src + 8 > src_end ) then exit do
 					char = hUnicodeHexToCodePointW( src, 8 )
+					src += 8
 
 				'' remap char as they will become a octagonal seq
 				else
@@ -1408,10 +1410,14 @@ function hEscapeW _
 
 		'' convert every char to octagonal form as GAS can't
 		'' handle unicode literal strings
-		if( (wcharlen = 2) and (char >= &h00010000ul) ) then
+		if( (wcharlen = 2) and (char >= &h00010000ul) and (char <= &h0010FFFFul) ) then
 			'' create surrogate pair
 			char -= &h00010000ul
 			hUnicodeCodePointCharToHex( (char shr 10) + &h0000D800ul, dst, wcharlen )
+			'' The output limit counts target code units, not input scalars.
+			'' A short fixed buffer may only have room for the first half.
+			n += 1
+			if( (maxlen > 0) andalso (n >= maxlen) ) then exit do
 			hUnicodeCodePointCharToHex( (char and &h000003FFul) + &h0000DC00ul, dst, wcharlen )
 		else
 			hUnicodeCodePointCharToHex( char, dst, wcharlen )
@@ -1498,19 +1504,24 @@ end function
 '':::::
 function hUnescapeW _
 	( _
-		byval text as wstring ptr, _
+		byval text as const wstring ptr, _
 		byref textlen as integer = 0 _
 	) as wstring ptr static
 
 	static as DWSTRING res
+	static as wstring * 1 empty_result
 	dim as integer char, lgt, i
-	dim as wstring ptr src, dst, src_end
+	dim as const wstring ptr src, src_end
+	dim as wstring ptr dst
 
 	textlen = 0
 
 	lgt = len( *text )
 	if( lgt = 0 ) then
-		return text
+		'' Keep mutable scratch results separate from read-only input.
+		'' An empty decode must not reallocate a previous nonempty result.
+		empty_result[0] = 0
+		return @empty_result
 	end if
 
 	DWstrAllocate( res, lgt )
@@ -1548,11 +1559,13 @@ function hUnescapeW _
 				if( char = asc( "u" ) ) then
 					if( src + 4 > src_end ) then exit do
 					char = hUnicodeHexToCodePointW( src, 4 )
+					src += 4
 
 				'' CHAR_UUPP
 				elseif( char = asc( "U" ) ) then
 					if( src + 8 > src_end ) then exit do
 					char = hUnicodeHexToCodePointW( src, 8 )
+					src += 8
 
 				'' remap char as they will become a octagonal seq
 				else
@@ -1679,7 +1692,7 @@ end function
 '' compiler's LEN() whenever a cross compiler bridges UTF-16 and UTF-32.
 function hGetTargetWstrLength _
 	( _
-		byval text as wstring ptr _
+		byval text as const wstring ptr _
 	) as integer
 
 	const UTF16_HIGH_MIN = &hD800ul
@@ -1993,7 +2006,7 @@ function hStr2Args( byval txt as const zstring ptr, res() as string ) as integer
 					'' '"'
 					ReadChar(c)
 
-				elseif( c = CHAR_RSLASH ) then
+				elseif( (c = CHAR_RSLASH) andalso escaped ) then
 
 					c = PeekChar()
 					select case c
@@ -2157,7 +2170,7 @@ function hWStr2Args( byval txt as const wstring ptr, res() as DWSTRING ) as inte
 					'' '"'
 					ReadChar(c)
 
-				elseif( c = CHAR_RSLASH ) then
+				elseif( (c = CHAR_RSLASH) andalso escaped ) then
 
 					c = PeekChar()
 					select case c

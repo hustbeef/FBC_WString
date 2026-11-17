@@ -53,6 +53,11 @@ by retaining a borrowed pointer. See `gfx3_image.h`, `gfx3_gpu_surface.h` and
 the architecture's cache and direct-access contracts before changing these
 paths.
 
+`SCREENSET` queues a presentation for the selected visible page. When that
+page's content has not changed, `SCREENSYNC` waits behind the queued present
+instead of submitting a second swap. If new visible writes arrive first,
+`SCREENSYNC` still queues and waits for a fresh presentation.
+
 ## OpenGL implementation
 
 All these units operate on one render-thread-owned `FB_GFX3_OPENGL_STATE`:
@@ -115,6 +120,21 @@ The common `backend/gfx3_backend_gles.c` is the unsupported fallback. Android
 owns the GLES implementation; Linux's adapter includes it when GLES headers
 are available, otherwise it includes the fallback. Keep these source-inclusion
 paths valid when moving either implementation.
+
+On one postmarketOS Harpia phone with an FD307 GPU, a gfxlib3 frame test was
+followed by loss of connectivity and a reboot. The cause has not been
+established. Mesa's llvmpipe software renderer passed keyboard and drawing
+checks on that device. When llvmpipe is installed, it can be selected for an
+individual application while investigating a hardware graphics failure:
+
+```sh
+FBGFX=gles FBGFX_GFX3_PLATFORM=wayland \
+    LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe ./your-gfxlib3-app
+```
+
+These are [Mesa environment variables](https://docs.mesa3d.org/envvars.html).
+They select software rendering for the process; they do not establish that the
+hardware renderer is working or that llvmpipe is available on every system.
 
 Use `make gfx-structure-test` for ownership and source graph checks. Full
 language tests, gfxlib3 parity wrappers and hardware-specific tests have

@@ -25,6 +25,7 @@
 ''       may/2008 boolean support added [jeffm]
 
 #include once "core/fb.bi"
+#include once "tooling/semantic-startup.bi"
 #include once "core/fbint.bi"
 #include once "backend/x86/reg.bi"
 #include once "backend/ir.bi"
@@ -584,7 +585,7 @@ end sub
 '':::::
 private sub outEx _
 	( _
-		byval s as zstring ptr, _
+		byval s as const zstring ptr, _
 		byval bytes as integer = 0 _
 	) static
 
@@ -601,7 +602,7 @@ end sub
 '':::::
 sub outp _
 	( _
-		byval s as zstring ptr _
+		byval s as const zstring ptr _
 	)
 
 	static as string ostr
@@ -622,8 +623,8 @@ end sub
 '':::::
 sub hBRANCH _
 	( _
-		byval mnemonic as zstring ptr, _
-		byval label as zstring ptr _
+		byval mnemonic as const zstring ptr, _
+		byval label as const zstring ptr _
 	) static
 
 	dim ostr as string
@@ -638,7 +639,7 @@ end sub
 '':::::
 sub hPUSH _
 	( _
-		byval rname as zstring ptr _
+		byval rname as const zstring ptr _
 	) static
 
 	dim ostr as string
@@ -652,7 +653,7 @@ end sub
 '':::::
 sub hPOP _
 	( _
-		byval rname as zstring ptr _
+		byval rname as const zstring ptr _
 	) static
 
 	dim ostr as string
@@ -666,8 +667,8 @@ end sub
 '':::::
 sub hMOV _
 	( _
-		byval dname as zstring ptr, _
-		byval sname as zstring ptr _
+		byval dname as const zstring ptr, _
+		byval sname as const zstring ptr _
 	) static
 
 	dim ostr as string
@@ -683,8 +684,8 @@ end sub
 '':::::
 private sub hXCHG _
 	( _
-		byval dname as zstring ptr, _
-		byval sname as zstring ptr _
+		byval dname as const zstring ptr, _
+		byval sname as const zstring ptr _
 	) static
 
 	dim ostr as string
@@ -715,8 +716,7 @@ end sub
 '':::::
 private sub hPUBLIC _
 	( _
-		byval label as zstring ptr, _
-		byval isexport as integer _
+		byval label as zstring ptr _
 	) static
 
 	dim ostr as string
@@ -724,17 +724,8 @@ private sub hPUBLIC _
 	ostr = NEWLINE + ".globl "
 	ostr += *label
 
-' PENDING: shared lib compatibility between win32/linux
-'          rtlib/gfxlib needs -fvisibility=hidden, only available in gcc 4
-'   if( env.clopt.target = FB_COMPTARGET_LINUX ) then
-'       if( isexport ) then
-'           ostr += NEWLINE + ".protected "
-'           ostr += *label
-'       else
-'           ostr += NEWLINE + ".hidden "
-'           ostr += *label
-'       end if
-'   end if
+	'' Public labels keep default ELF visibility until shared-library
+	'' visibility policy also covers rtlib/gfxlib.
 
 	ostr += NEWLINE
 	outEx( ostr )
@@ -851,7 +842,9 @@ private function hGetGlobalVarAlign( byval sym as FBSYMBOL ptr ) as integer
 	if( symbIsRef( sym ) ) then
 		function = 4
 	else
-		function = hGetGlobalTypeAlign( symbGetType( sym ) )
+		dim as integer align = hGetGlobalTypeAlign( symbGetType( sym ) )
+		if( sym->var_.align > align ) then align = sym->var_.align
+		function = align
 	end if
 end function
 
@@ -874,11 +867,11 @@ private sub hEmitVarBss _
 	'' allocation modifier
 	if( (attrib and FB_SYMBATTRIB_COMMON) = 0 ) then
 		if( (attrib and FB_SYMBATTRIB_PUBLIC) > 0 ) then
-			hPUBLIC( *symbGetMangledName( s ), TRUE )
+			hPUBLIC( *symbGetMangledName( s ))
 		end if
 		alloc = ".lcomm"
 	else
-		hPUBLIC( *symbGetMangledName( s ), FALSE )
+		hPUBLIC( *symbGetMangledName( s ))
 		alloc = ".comm"
 	end if
 
@@ -979,6 +972,9 @@ private sub hWriteCtor _
 				IR_SECTION_DESTRUCTOR ), _
 				symbGetProcPriority( proc_head->sym ) )
 			emitVARINIOFS( symbGetMangledName( proc_head->sym ), 0 )
+			fbSemanticModelStartupEmission(proc_head->sym, iif(is_ctor, "constructor", "destructor"), _
+				"gas", "section-request", str(symbGetProcPriority(proc_head->sym)), _
+				iif(is_ctor, "constructor-section", "destructor-section"), *symbGetMangledName(proc_head->sym))
 		end if
 
 		proc_head = proc_head->next
@@ -1505,6 +1501,82 @@ private sub _emitCALLPTR _
 
 end sub
 
+private sub _emitSTORECLONGDOUBLEST0 _
+	( _
+		byval resultptr as IRVREG ptr, _
+		byval unused as integer _
+	)
+
+	ASSERT_PROC_DECL( EMIT_STKCB )
+	dim as string pointer_value
+	dim as integer storage_size = 12
+
+	if( resultptr = NULL ) then
+		outp( "fstp st(0)" )
+		exit sub
+	end if
+
+	if( resultptr->subtype <> NULL ) then
+		storage_size = resultptr->subtype->lgt
+	end if
+
+	'' The result pointer is kept live across the C call. It may be in a
+	'' preserved register or spilled to a pointer-sized stack temporary.
+	select case resultptr->typ
+	case IR_VREGTYPE_REG
+		hPrepOperand( resultptr, pointer_value, FB_DATATYPE_INTEGER, 0, FALSE, FALSE )
+		if( pointer_value <> "eax" ) then
+			outp( "mov eax, " + pointer_value )
+		end if
+	case IR_VREGTYPE_OFS
+		hPrepOperand( resultptr, pointer_value, FB_DATATYPE_INTEGER, 0, FALSE, FALSE )
+		outp( "mov eax, " + pointer_value )
+	case else
+		hPrepOperand( resultptr, pointer_value, FB_DATATYPE_INTEGER, 0, FALSE, FALSE )
+		outp( "mov eax, dword ptr " + pointer_value )
+	end select
+
+	'' x87 stores ten value bytes. Zero CLongDouble's target padding before storing.
+	for byte_offset as integer = 8 to storage_size - 1 step 4
+		if( byte_offset + 4 <= storage_size ) then
+			outp( "mov dword ptr [eax+" + str( byte_offset ) + "], 0" )
+		end if
+	next
+
+	if( storage_size = 8 ) then
+		outp( "fstp qword ptr [eax]" )
+	else
+		outp( "fstp tbyte ptr [eax]" )
+	end if
+end sub
+
+private sub _emitLOADCLONGDOUBLEST0 _
+	( _
+		byval source as IRVREG ptr, _
+		byval unused as integer _
+	)
+
+	ASSERT_PROC_DECL( EMIT_STKCB )
+	dim as string source_operand
+	dim as integer storage_size = 12
+
+	assert( source <> NULL )
+	if( source = NULL ) then
+		exit sub
+	end if
+
+	if( source->subtype <> NULL ) then
+		storage_size = source->subtype->lgt
+	end if
+
+	hPrepOperand( source, source_operand, FB_DATATYPE_UBYTE, 0, FALSE, FALSE )
+	if( storage_size = 8 ) then
+		outp( "fld qword ptr " + source_operand )
+	else
+		outp( "fld tbyte ptr " + source_operand )
+	end if
+end sub
+
 '':::::
 private sub _emitBRANCH _
 	( _
@@ -1512,6 +1584,8 @@ private sub _emitBRANCH _
 		byval label as FBSYMBOL ptr, _
 		byval op as integer _
 	) static
+
+	ASSERT_PROC_DECL( EMIT_BRCCB )
 
 	dim ostr as string
 
@@ -4368,9 +4442,9 @@ private sub hCMPL _
 	( _
 		byval rvreg as IRVREG ptr, _
 		byval label as FBSYMBOL ptr, _
-		byval mnemonic as zstring ptr, _
-		byval rev_mnemonic as zstring ptr, _
-		byval usg_mnemonic as zstring ptr, _
+		byval mnemonic as const zstring ptr, _
+		byval rev_mnemonic as const zstring ptr, _
+		byval usg_mnemonic as const zstring ptr, _
 		byval dvreg as IRVREG ptr, _
 		byval svreg as IRVREG ptr, _
 		byval isinverse as integer = FALSE _
@@ -4434,7 +4508,7 @@ private sub hCMPI _
 	( _
 		byval rvreg as IRVREG ptr, _
 		byval label as FBSYMBOL ptr, _
-		byval mnemonic as zstring ptr, _
+		byval mnemonic as const zstring ptr, _
 		byval dvreg as IRVREG ptr, _
 		byval svreg as IRVREG ptr _
 	) static
@@ -4540,7 +4614,7 @@ end sub
 private function hCMPF_get_high_byte_name _
 	( _
 		byval reg as integer _
-	) as zstring ptr
+	) as const zstring ptr
 
 	select case reg
 	case EMIT_REG_EAX
@@ -4558,8 +4632,8 @@ end function
 
 private function hCMPF_swap_mnemonic _
 	( _
-		byval mnemonic as zstring ptr _
-	) as zstring ptr
+		byval mnemonic as const zstring ptr _
+	) as const zstring ptr
 
 	select case *mnemonic
 	case "e"
@@ -4689,7 +4763,7 @@ sub hCMPF_set _
 		use_aux_reg = FALSE
 
 		if( recipe->parity_true or recipe->parity_false ) then
-			dim as zstring ptr high_byte
+			dim as const zstring ptr high_byte
 			high_byte = hCMPF_get_high_byte_name( rvreg->reg )
 			if( high_byte <> NULL ) then
 				rname8hi = *high_byte
@@ -4747,7 +4821,7 @@ sub hCMPF_set _
 	'' set boolean using conditional jump
 	else
 		dim as integer initialize_true
-		dim as zstring ptr branch_mnemonic
+		dim as const zstring ptr branch_mnemonic
 		initialize_true = (recipe->swapinit = FALSE)
 		branch_mnemonic = recipe->mnemonic
 
@@ -5822,7 +5896,7 @@ private sub _emitEXP _
 	outp "fstp st(1)"
 end sub
 
-private sub hFpuChangeRC( byref regname as string, byval mode as zstring ptr )
+private sub hFpuChangeRC( byref regname as string, byval mode as const zstring ptr )
 	outp( "sub esp, 4" )
 	outp( "fnstcw [esp]" )
 	hMOV( regname, "[esp]" )
@@ -6089,7 +6163,13 @@ private sub _emitPUSHI( byval svreg as IRVREG ptr, byval unused as integer )
 			'' mov tmp, [src]
 			'' (zero-extending, because e.g. &hFF should become
 			'' &h000000FF, and not &hFFFFFFFF)
-			outp( "movzx " + tmp32 + ", " + src )
+			if( sdsize = 1 ) then
+				hPrepOperand( svreg, src, FB_DATATYPE_BYTE, 0, FALSE, FALSE )
+				outp( "movzx " + tmp32 + ", byte ptr " + src )
+			else
+				hPrepOperand( svreg, src, FB_DATATYPE_SHORT, 0, FALSE, FALSE )
+				outp( "movzx " + tmp32 + ", word ptr " + src )
+			end if
 
 			'' push tmp
 			outp( "push " + tmp32 )
@@ -6209,8 +6289,13 @@ private sub _emitPUSHUDT( byval svreg as IRVREG ptr, byval sdsize as integer )
 
 			'' 1. load 3rd byte:
 			''        &h00000033 <- byte ptr [src + length - 1]
-			hPrepOperand( svreg, src, FB_DATATYPE_BYTE, sdsize - UDT_PUSH_ONE_BYTE_REMAINDER )
-			outp( "movzx " + tmp32 + ", " + src )
+			hPrepOperand( svreg, src, FB_DATATYPE_BYTE, _
+			              sdsize - UDT_PUSH_ONE_BYTE_REMAINDER, FALSE, FALSE )
+			if( irIsREG( svreg ) ) then
+				outp( "movzx " + tmp32 + ", " + src )
+			else
+				outp( "movzx " + tmp32 + ", byte ptr " + src )
+			end if
 
 			'' 2. shl
 			''        &h00330000 <- &h00000033 shl 16
@@ -6221,8 +6306,13 @@ private sub _emitPUSHUDT( byval svreg as IRVREG ptr, byval sdsize as integer )
 			''        &h00002211 <- word ptr [src + length - 3]
 			''        &h00332211 <- &h00330000, &h00002211
 			tmp16 = *hGetRegName( FB_DATATYPE_SHORT, tmpreg )
-			hPrepOperand( svreg, src, FB_DATATYPE_SHORT, sdsize - UDT_PUSH_THREE_BYTE_REMAINDER )
-			outp( "mov " + tmp16 + ", " + src )
+			hPrepOperand( svreg, src, FB_DATATYPE_SHORT, _
+			              sdsize - UDT_PUSH_THREE_BYTE_REMAINDER, FALSE, FALSE )
+			if( irIsREG( svreg ) ) then
+				outp( "mov " + tmp16 + ", " + src )
+			else
+				outp( "mov " + tmp16 + ", word ptr " + src )
+			end if
 
 			'' 4. push
 			''        push &h00332211
@@ -6234,15 +6324,23 @@ private sub _emitPUSHUDT( byval svreg as IRVREG ptr, byval sdsize as integer )
 			'' (zero-extending, because e.g. &hFFFF should become
 			'' &h0000FFFF, and not &hFFFFFFFF)
 			ofs = sdsize - STACK_WORD_BYTES
-			hPrepOperand( svreg, src, FB_DATATYPE_SHORT, ofs )
-			outp( "movzx " + tmp32 + ", " + src )
+			hPrepOperand( svreg, src, FB_DATATYPE_SHORT, ofs, FALSE, FALSE )
+			if( irIsREG( svreg ) ) then
+				outp( "movzx " + tmp32 + ", " + src )
+			else
+				outp( "movzx " + tmp32 + ", word ptr " + src )
+			end if
 
 		case UDT_PUSH_ONE_BYTE_REMAINDER
 			'' mov tmp, byte ptr [src + length - 1]
 			'' (zero-extending, ditto)
 			ofs = sdsize - UDT_PUSH_ONE_BYTE_REMAINDER
-			hPrepOperand( svreg, src, FB_DATATYPE_BYTE, ofs )
-			outp( "movzx " + tmp32 + ", " + src )
+			hPrepOperand( svreg, src, FB_DATATYPE_BYTE, ofs, FALSE, FALSE )
+			if( irIsREG( svreg ) ) then
+				outp( "movzx " + tmp32 + ", " + src )
+			else
+				outp( "movzx " + tmp32 + ", byte ptr " + src )
+			end if
 
 		end select
 
@@ -7556,7 +7654,7 @@ sub emitVARINIBEGIN( byval sym as FBSYMBOL ptr )
 
 	'' public?
 	if( symbIsPublic( sym ) ) then
-		hPUBLIC( *symbGetMangledName( sym ), symbIsExport( sym ) )
+		hPUBLIC( *symbGetMangledName( sym ))
 	end if
 
 	hLABEL( *symbGetMangledName( sym ) )
@@ -7654,103 +7752,178 @@ end sub
 '' functions table
 ''::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-#define EMIT_CBENTRY(op) @_emit##op##
 
-	'' same order as EMIT_NODEOP
-	dim shared _opFnTB(0 to EMIT_MAXOPS-1) as any ptr => _
-	{ _
-		EMIT_CBENTRY(NOP), _
-		_
-		EMIT_CBENTRY(LOADI2I), EMIT_CBENTRY(LOADF2I), EMIT_CBENTRY(LOADL2I), EMIT_CBENTRY(LOADB2I), _
-		EMIT_CBENTRY(LOADI2F), EMIT_CBENTRY(LOADF2F), EMIT_CBENTRY(LOADL2F), EMIT_CBENTRY(LOADB2F), _
-		EMIT_CBENTRY(LOADI2L), EMIT_CBENTRY(LOADF2L), EMIT_CBENTRY(LOADL2L), EMIT_CBENTRY(LOADB2L), _
-		EMIT_CBENTRY(LOADI2B), EMIT_CBENTRY(LOADF2B), EMIT_CBENTRY(LOADL2B), EMIT_CBENTRY(LOADB2B), _
-		_
-		EMIT_CBENTRY(STORI2I), EMIT_CBENTRY(STORF2I), EMIT_CBENTRY(STORL2I), EMIT_CBENTRY(STORB2I), _
-		EMIT_CBENTRY(STORI2F), EMIT_CBENTRY(STORF2F), EMIT_CBENTRY(STORL2F), EMIT_CBENTRY(STORB2F), _
-		EMIT_CBENTRY(STORI2L), EMIT_CBENTRY(STORF2L), EMIT_CBENTRY(STORL2L), EMIT_CBENTRY(STORB2L), _
-		EMIT_CBENTRY(STORI2B), EMIT_CBENTRY(STORF2B), EMIT_CBENTRY(STORL2B), EMIT_CBENTRY(STORB2B), _
-		_
-		EMIT_CBENTRY(MOVI), EMIT_CBENTRY(MOVF), EMIT_CBENTRY(MOVL), _
-		EMIT_CBENTRY(ADDI), EMIT_CBENTRY(ADDF), EMIT_CBENTRY(ADDL), _
-		EMIT_CBENTRY(SUBI), EMIT_CBENTRY(SUBF), EMIT_CBENTRY(SUBL), _
-		EMIT_CBENTRY(MULI), EMIT_CBENTRY(MULF), EMIT_CBENTRY(MULL), _
-		EMIT_CBENTRY(DIVI), EMIT_CBENTRY(DIVF), NULL              , _
-		EMIT_CBENTRY(MODI), NULL              , NULL              , _
-		EMIT_CBENTRY(SHLI), EMIT_CBENTRY(SHLL), _
-		EMIT_CBENTRY(SHRI), EMIT_CBENTRY(SHRL), _
-		EMIT_CBENTRY(ANDI), EMIT_CBENTRY(ANDL), _
-		EMIT_CBENTRY(ORI) , EMIT_CBENTRY(ORL) , _
-		EMIT_CBENTRY(XORI), EMIT_CBENTRY(XORL), _
-		EMIT_CBENTRY(EQVI), EMIT_CBENTRY(EQVL), _
-		EMIT_CBENTRY(IMPI), EMIT_CBENTRY(IMPL), _
-		EMIT_CBENTRY(ATN2), _
-		EMIT_CBENTRY(POW), _
-		EMIT_CBENTRY(ADDROF), _
-		EMIT_CBENTRY(DEREF), _
-		_
-		EMIT_CBENTRY(CGTI), EMIT_CBENTRY(CGTF), EMIT_CBENTRY(CGTL), _
-		EMIT_CBENTRY(CLTI), EMIT_CBENTRY(CLTF), EMIT_CBENTRY(CLTL), _
-		EMIT_CBENTRY(CEQI), EMIT_CBENTRY(CEQF), EMIT_CBENTRY(CEQL), _
-		EMIT_CBENTRY(CNEI), EMIT_CBENTRY(CNEF), EMIT_CBENTRY(CNEL), _
-		EMIT_CBENTRY(CGEI), EMIT_CBENTRY(CGEF), EMIT_CBENTRY(CGEL), _
-		EMIT_CBENTRY(CLEI), EMIT_CBENTRY(CLEF), EMIT_CBENTRY(CLEL), _
-		_
-		EMIT_CBENTRY(NEGI), EMIT_CBENTRY(NEGF), EMIT_CBENTRY(NEGL), _
-		EMIT_CBENTRY(NOTI), EMIT_CBENTRY(NOTL), _
-		_
-		NULL, _
-		_
-		EMIT_CBENTRY(ABSI), EMIT_CBENTRY(ABSF), EMIT_CBENTRY(ABSL), _
-		EMIT_CBENTRY(SGNI), EMIT_CBENTRY(SGNF), EMIT_CBENTRY(SGNL), _
-		_
-		EMIT_CBENTRY(FIX), _
-		EMIT_CBENTRY(FRAC), _
-		EMIT_CBENTRY(CONVFD2FS), _
-		_
-		NULL, _
-		_
-		EMIT_CBENTRY(SIN), EMIT_CBENTRY(ASIN), _
-		EMIT_CBENTRY(COS), EMIT_CBENTRY(ACOS), _
-		EMIT_CBENTRY(TAN), EMIT_CBENTRY(ATAN), _
-		EMIT_CBENTRY(SQRT), _
-		_
-		NULL, _
-		NULL, _
-		_
-		EMIT_CBENTRY(LOG), _
-		EMIT_CBENTRY(EXP), _
-		EMIT_CBENTRY(FLOOR), _
-		EMIT_CBENTRY(XCHGTOS), _
-		_
-		EMIT_CBENTRY(STACKALIGN), _
-		EMIT_CBENTRY(PUSHI), EMIT_CBENTRY(PUSHF), EMIT_CBENTRY(PUSHL), _
-		EMIT_CBENTRY(POPI), EMIT_CBENTRY(POPF), EMIT_CBENTRY(POPL), _
-		EMIT_CBENTRY(PUSHUDT), _
-		EMIT_CBENTRY(POPST0), _
-		_
-		EMIT_CBENTRY(CALL), _
-		EMIT_CBENTRY(CALLPTR), _
-		EMIT_CBENTRY(BRANCH), _
-		EMIT_CBENTRY(JUMP), _
-		EMIT_CBENTRY(JUMPPTR), _
-		EMIT_CBENTRY(RET), _
-		_
-		EMIT_CBENTRY(LABEL), _
-		EMIT_CBENTRY(PUBLIC), _
-		EMIT_CBENTRY(LIT), _
-		EMIT_CBENTRY(JMPTB), _
-		_
-		EMIT_CBENTRY(MEMMOVE), _
-		EMIT_CBENTRY(MEMSWAP), _
-		EMIT_CBENTRY(MEMFILL), _
-		EMIT_CBENTRY(STKCLEAR), _
-		_
-		EMIT_CBENTRY(LINEINI), _
-		EMIT_CBENTRY(LINEEND), _
-		EMIT_CBENTRY(SCOPEINI), _
-		EMIT_CBENTRY(SCOPEEND) _
-	}
+sub emitX86LoadB2F _
+	( _
+		byval dvreg as IRVREG ptr, _
+		byval svreg as IRVREG ptr _
+	)
+
+	ASSERT_PROC_DECL( EMIT_BOPCB )
+	_emitLOADB2F( dvreg, svreg )
+end sub
+
+sub emitX86LoadF2B _
+	( _
+		byval dvreg as IRVREG ptr, _
+		byval svreg as IRVREG ptr _
+	)
+
+	ASSERT_PROC_DECL( EMIT_BOPCB )
+	_emitLOADF2B( dvreg, svreg )
+end sub
+
+dim shared _opFnTB(0 to EMIT_MAXOPS-1) as EMIT_OPCB
+
+'' Reset every slot before installing optional SSE replacements. Each
+'' slot uses the same callback kind selected by its EMIT_NODECLASS.
+private sub hInitOpFnTB( )
+	_opFnTB(EMIT_OP_NOP).nop = @_emitNOP
+	_opFnTB(EMIT_OP_LOADI2I).bop = @_emitLOADI2I
+	_opFnTB(EMIT_OP_LOADF2I).bop = @_emitLOADF2I
+	_opFnTB(EMIT_OP_LOADL2I).bop = @_emitLOADL2I
+	_opFnTB(EMIT_OP_LOADB2I).bop = @_emitLOADB2I
+	_opFnTB(EMIT_OP_LOADI2F).bop = @_emitLOADI2F
+	_opFnTB(EMIT_OP_LOADF2F).bop = @_emitLOADF2F
+	_opFnTB(EMIT_OP_LOADL2F).bop = @_emitLOADL2F
+	_opFnTB(EMIT_OP_LOADB2F).bop = @_emitLOADB2F
+	_opFnTB(EMIT_OP_LOADI2L).bop = @_emitLOADI2L
+	_opFnTB(EMIT_OP_LOADF2L).bop = @_emitLOADF2L
+	_opFnTB(EMIT_OP_LOADL2L).bop = @_emitLOADL2L
+	_opFnTB(EMIT_OP_LOADB2L).bop = @_emitLOADB2L
+	_opFnTB(EMIT_OP_LOADI2B).bop = @_emitLOADI2B
+	_opFnTB(EMIT_OP_LOADF2B).bop = @_emitLOADF2B
+	_opFnTB(EMIT_OP_LOADL2B).bop = @_emitLOADL2B
+	_opFnTB(EMIT_OP_LOADB2B).bop = @_emitLOADB2B
+	_opFnTB(EMIT_OP_STORI2I).bop = @_emitSTORI2I
+	_opFnTB(EMIT_OP_STORF2I).bop = @_emitSTORF2I
+	_opFnTB(EMIT_OP_STORL2I).bop = @_emitSTORL2I
+	_opFnTB(EMIT_OP_STORB2I).bop = @_emitSTORB2I
+	_opFnTB(EMIT_OP_STORI2F).bop = @_emitSTORI2F
+	_opFnTB(EMIT_OP_STORF2F).bop = @_emitSTORF2F
+	_opFnTB(EMIT_OP_STORL2F).bop = @_emitSTORL2F
+	_opFnTB(EMIT_OP_STORB2F).bop = @_emitSTORB2F
+	_opFnTB(EMIT_OP_STORI2L).bop = @_emitSTORI2L
+	_opFnTB(EMIT_OP_STORF2L).bop = @_emitSTORF2L
+	_opFnTB(EMIT_OP_STORL2L).bop = @_emitSTORL2L
+	_opFnTB(EMIT_OP_STORB2L).bop = @_emitSTORB2L
+	_opFnTB(EMIT_OP_STORI2B).bop = @_emitSTORI2B
+	_opFnTB(EMIT_OP_STORF2B).bop = @_emitSTORF2B
+	_opFnTB(EMIT_OP_STORL2B).bop = @_emitSTORL2B
+	_opFnTB(EMIT_OP_STORB2B).bop = @_emitSTORB2B
+	_opFnTB(EMIT_OP_MOVI).bop = @_emitMOVI
+	_opFnTB(EMIT_OP_MOVF).bop = @_emitMOVF
+	_opFnTB(EMIT_OP_MOVL).bop = @_emitMOVL
+	_opFnTB(EMIT_OP_ADDI).bop = @_emitADDI
+	_opFnTB(EMIT_OP_ADDF).bop = @_emitADDF
+	_opFnTB(EMIT_OP_ADDL).bop = @_emitADDL
+	_opFnTB(EMIT_OP_SUBI).bop = @_emitSUBI
+	_opFnTB(EMIT_OP_SUBF).bop = @_emitSUBF
+	_opFnTB(EMIT_OP_SUBL).bop = @_emitSUBL
+	_opFnTB(EMIT_OP_MULI).bop = @_emitMULI
+	_opFnTB(EMIT_OP_MULF).bop = @_emitMULF
+	_opFnTB(EMIT_OP_MULL).bop = @_emitMULL
+	_opFnTB(EMIT_OP_DIVI).bop = @_emitDIVI
+	_opFnTB(EMIT_OP_DIVF).bop = @_emitDIVF
+	_opFnTB(EMIT_OP_DIVL).bop = NULL
+	_opFnTB(EMIT_OP_MODI).bop = @_emitMODI
+	_opFnTB(EMIT_OP_MODF).bop = NULL
+	_opFnTB(EMIT_OP_MODL).bop = NULL
+	_opFnTB(EMIT_OP_SHLI).bop = @_emitSHLI
+	_opFnTB(EMIT_OP_SHLL).bop = @_emitSHLL
+	_opFnTB(EMIT_OP_SHRI).bop = @_emitSHRI
+	_opFnTB(EMIT_OP_SHRL).bop = @_emitSHRL
+	_opFnTB(EMIT_OP_ANDI).bop = @_emitANDI
+	_opFnTB(EMIT_OP_ANDL).bop = @_emitANDL
+	_opFnTB(EMIT_OP_ORI).bop = @_emitORI
+	_opFnTB(EMIT_OP_ORL).bop = @_emitORL
+	_opFnTB(EMIT_OP_XORI).bop = @_emitXORI
+	_opFnTB(EMIT_OP_XORL).bop = @_emitXORL
+	_opFnTB(EMIT_OP_EQVI).bop = @_emitEQVI
+	_opFnTB(EMIT_OP_EQVL).bop = @_emitEQVL
+	_opFnTB(EMIT_OP_IMPI).bop = @_emitIMPI
+	_opFnTB(EMIT_OP_IMPL).bop = @_emitIMPL
+	_opFnTB(EMIT_OP_ATN2).bop = @_emitATN2
+	_opFnTB(EMIT_OP_POW).bop = @_emitPOW
+	_opFnTB(EMIT_OP_ADDROF).bop = @_emitADDROF
+	_opFnTB(EMIT_OP_DEREF).bop = @_emitDEREF
+	_opFnTB(EMIT_OP_CGTI).rel = @_emitCGTI
+	_opFnTB(EMIT_OP_CGTF).rel = @_emitCGTF
+	_opFnTB(EMIT_OP_CGTL).rel = @_emitCGTL
+	_opFnTB(EMIT_OP_CLTI).rel = @_emitCLTI
+	_opFnTB(EMIT_OP_CLTF).rel = @_emitCLTF
+	_opFnTB(EMIT_OP_CLTL).rel = @_emitCLTL
+	_opFnTB(EMIT_OP_CEQI).rel = @_emitCEQI
+	_opFnTB(EMIT_OP_CEQF).rel = @_emitCEQF
+	_opFnTB(EMIT_OP_CEQL).rel = @_emitCEQL
+	_opFnTB(EMIT_OP_CNEI).rel = @_emitCNEI
+	_opFnTB(EMIT_OP_CNEF).rel = @_emitCNEF
+	_opFnTB(EMIT_OP_CNEL).rel = @_emitCNEL
+	_opFnTB(EMIT_OP_CGEI).rel = @_emitCGEI
+	_opFnTB(EMIT_OP_CGEF).rel = @_emitCGEF
+	_opFnTB(EMIT_OP_CGEL).rel = @_emitCGEL
+	_opFnTB(EMIT_OP_CLEI).rel = @_emitCLEI
+	_opFnTB(EMIT_OP_CLEF).rel = @_emitCLEF
+	_opFnTB(EMIT_OP_CLEL).rel = @_emitCLEL
+	_opFnTB(EMIT_OP_NEGI).uop = @_emitNEGI
+	_opFnTB(EMIT_OP_NEGF).uop = @_emitNEGF
+	_opFnTB(EMIT_OP_NEGL).uop = @_emitNEGL
+	_opFnTB(EMIT_OP_NOTI).uop = @_emitNOTI
+	_opFnTB(EMIT_OP_NOTL).uop = @_emitNOTL
+	_opFnTB(EMIT_OP_HADDF).uop = NULL
+	_opFnTB(EMIT_OP_ABSI).uop = @_emitABSI
+	_opFnTB(EMIT_OP_ABSF).uop = @_emitABSF
+	_opFnTB(EMIT_OP_ABSL).uop = @_emitABSL
+	_opFnTB(EMIT_OP_SGNI).uop = @_emitSGNI
+	_opFnTB(EMIT_OP_SGNF).uop = @_emitSGNF
+	_opFnTB(EMIT_OP_SGNL).uop = @_emitSGNL
+	_opFnTB(EMIT_OP_FIX).uop = @_emitFIX
+	_opFnTB(EMIT_OP_FRAC).uop = @_emitFRAC
+	_opFnTB(EMIT_OP_CONVFD2FS).uop = @_emitCONVFD2FS
+	_opFnTB(EMIT_OP_SWZREP).uop = NULL
+	_opFnTB(EMIT_OP_SIN).uop = @_emitSIN
+	_opFnTB(EMIT_OP_ASIN).uop = @_emitASIN
+	_opFnTB(EMIT_OP_COS).uop = @_emitCOS
+	_opFnTB(EMIT_OP_ACOS).uop = @_emitACOS
+	_opFnTB(EMIT_OP_TAN).uop = @_emitTAN
+	_opFnTB(EMIT_OP_ATAN).uop = @_emitATAN
+	_opFnTB(EMIT_OP_SQRT).uop = @_emitSQRT
+	_opFnTB(EMIT_OP_RSQRT).uop = NULL
+	_opFnTB(EMIT_OP_RCP).uop = NULL
+	_opFnTB(EMIT_OP_LOG).uop = @_emitLOG
+	_opFnTB(EMIT_OP_EXP).uop = @_emitEXP
+	_opFnTB(EMIT_OP_FLOOR).uop = @_emitFLOOR
+	_opFnTB(EMIT_OP_XCHGTOS).uop = @_emitXCHGTOS
+	_opFnTB(EMIT_OP_STACKALIGN).stk = @_emitSTACKALIGN
+	_opFnTB(EMIT_OP_PUSHI).stk = @_emitPUSHI
+	_opFnTB(EMIT_OP_PUSHF).stk = @_emitPUSHF
+	_opFnTB(EMIT_OP_PUSHL).stk = @_emitPUSHL
+	_opFnTB(EMIT_OP_POPI).stk = @_emitPOPI
+	_opFnTB(EMIT_OP_POPF).stk = @_emitPOPF
+	_opFnTB(EMIT_OP_POPL).stk = @_emitPOPL
+	_opFnTB(EMIT_OP_PUSHUDT).stk = @_emitPUSHUDT
+	_opFnTB(EMIT_OP_POPST0).stk = @_emitPOPST0
+	_opFnTB(EMIT_OP_LOADCLONGDOUBLEST0).stk = @_emitLOADCLONGDOUBLEST0
+	_opFnTB(EMIT_OP_STORECLONGDOUBLEST0).stk = @_emitSTORECLONGDOUBLEST0
+	_opFnTB(EMIT_OP_CALL).brc = @_emitCALL
+	_opFnTB(EMIT_OP_CALLPTR).brc = @_emitCALLPTR
+	_opFnTB(EMIT_OP_BRANCH).brc = @_emitBRANCH
+	_opFnTB(EMIT_OP_JUMP).brc = @_emitJUMP
+	_opFnTB(EMIT_OP_JUMPPTR).brc = @_emitJUMPPTR
+	_opFnTB(EMIT_OP_RET).uop = @_emitRET
+	_opFnTB(EMIT_OP_LABEL).sop = @_emitLABEL
+	_opFnTB(EMIT_OP_PUBLIC).sop = @_emitPUBLIC
+	_opFnTB(EMIT_OP_LIT).lit = @_emitLIT
+	_opFnTB(EMIT_OP_JMPTB).jtb = @_emitJMPTB
+	_opFnTB(EMIT_OP_MEMMOVE).mem = @_emitMEMMOVE
+	_opFnTB(EMIT_OP_MEMSWAP).mem = @_emitMEMSWAP
+	_opFnTB(EMIT_OP_MEMFILL).mem = @_emitMEMFILL
+	_opFnTB(EMIT_OP_STKCLEAR).mem = @_emitSTKCLEAR
+	_opFnTB(EMIT_OP_LINEINI).dbg = @_emitLINEINI
+	_opFnTB(EMIT_OP_LINEEND).dbg = @_emitLINEEND
+	_opFnTB(EMIT_OP_SCOPEINI).dbg = @_emitSCOPEINI
+	_opFnTB(EMIT_OP_SCOPEEND).dbg = @_emitSCOPEEND
+end sub
 
 
 
@@ -8061,6 +8234,7 @@ private sub _procAllocLocal _
 	'' alignment instead of merely aligning the total stack frame.
 	if( (env.target.options and FB_TARGETOPT_STACKALIGN16) <> 0 ) then
 		var align = typeCalcNaturalAlign( symbGetType( sym ), symbGetSubtype( sym ) )
+		if( sym->var_.align > align ) then align = sym->var_.align
 		if( align > STACK_ALIGNMENT ) then
 			var alignmask = align - 1
 			var frameoffset = STACK_FRAME_POINTER_MODULO_16 and alignmask
@@ -8245,7 +8419,7 @@ private sub _procFooter _
 	hALIGN( 16 )
 
 	if( ispublic ) then
-		hPUBLIC( mangledName, symbIsExport( proc ) )
+		hPUBLIC( mangledName)
 	end if
 
 	hLABEL( mangledName )
@@ -8497,6 +8671,7 @@ function emitGasX86_ctor _
 		@_getSectionString _     '' only called privately
 	)
 
+	hInitOpFnTB( )
 	emit.vtbl = _vtbl
 	emit.opFnTb = @_opFnTB(0)
 

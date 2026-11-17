@@ -222,19 +222,56 @@ def test_log_recovery(root: Path, working: Path, make: str) -> bool:
     return success and empty_ok
 
 
+def test_runtime_status(root: Path, working: Path, make: str) -> bool:
+    """A runtime check's numbered failure must survive the Make wrapper."""
+    working.mkdir()
+    for name in ("common.mk", "bmk-make.mk"):
+        shutil.copyfile(root / "tests" / name, working / name)
+    (working / "probe.bas").touch()
+    (working / "probe").touch()
+    stamp = (working / "probe").stat().st_mtime - 4
+    os.utime(working / "probe.bas", (stamp, stamp))
+    # The app is newer than its input, so no compiler is involved.
+    # Exercise both successful and failed expectations through the real recipe.
+    for mode in ("COMPILE_AND_RUN_OK", "COMPILE_AND_RUN_FAIL"):
+        for status in (0, 9, 124, 139):
+            result = subprocess.run(
+                [make, "--no-print-directory", "-s", "-f", "bmk-make.mk",
+                 "TEST_MODE=" + mode, "FILE=probe.bas", "COMPILE_AND_LINK=1",
+                 "APP=probe", "FBC=true", "CXX=true",
+                 "rootdir=" + root.as_posix(),
+                 "RUN_APP=" + shlex.join(["sh", "-c", f"exit {status}"])],
+                cwd=working, text=True, capture_output=True, timeout=30, check=False)
+            expected_success = (status == 0) == (mode == "COMPILE_AND_RUN_OK")
+            diagnostic = f"Test probe exited with status {status}"
+            if ((result.returncode == 0) != expected_success or
+                    (mode == "COMPILE_AND_RUN_OK" and status != 0 and
+                     diagnostic not in result.stderr)):
+                print(f"runtime status {mode}/{status}: FAILED\n"
+                      + result.stdout + result.stderr)
+                return False
+    print("runtime status reporting and expected-failure controls: passed")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--fbc", type=Path, required=True)
+    parser.add_argument("--toolchain-prefix", type=Path,
+                        help="Use runtime libraries from a separate native build")
     parser.add_argument("--make", default=shutil.which("gmake") or shutil.which("make") or "make")
     options = parser.parse_args()
     root = options.root.resolve()
+    toolchain_prefix = (options.toolchain_prefix or root).resolve()
     with tempfile.TemporaryDirectory(prefix="fbc-log-harness-") as temporary:
         if not test_haiku_grep(root, Path(temporary) / "grep"):
             return 1
         if not test_compiler_selection(root, Path(temporary) / "selection", options.make):
             return 1
         if not test_log_recovery(root, Path(temporary) / "recovery", options.make):
+            return 1
+        if not test_runtime_status(root, Path(temporary) / "runtime", options.make):
             return 1
         working = Path(temporary) / "tests"
         (working / "cases").mkdir(parents=True)
@@ -248,7 +285,7 @@ def main() -> int:
         # This value is a shell command inside Make, rather than a subprocess
         # argument vector. Forward slashes keep MSYS timeout from consuming
         # Windows path separators; shell quoting also preserves spaces.
-        fbc = shlex.join([options.fbc.resolve().as_posix(), "-prefix", root.as_posix(),
+        fbc = shlex.join([options.fbc.resolve().as_posix(), "-prefix", toolchain_prefix.as_posix(),
                           "-i", (root / "inc").as_posix()])
         command = [options.make, "--no-print-directory", "-s", "-f", "log-tests.mk",
                    "FB_LANG=fb", "FBC=" + fbc, "rootdir=" + root.as_posix()]

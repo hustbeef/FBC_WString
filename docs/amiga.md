@@ -159,6 +159,59 @@ stop under the mixer lock, then joins the worker outside that lock before
 releasing device state. Output capture writes little-endian PCM WAV even
 though this target is big-endian.
 
+## Networking
+
+`OPEN TCP`, `OPEN TCP SERVER`, `TCP ACCEPT`, `EOF`, `EOC`, and `LOC` use
+version 4 of `bsdsocket.library`. A TCP/IP stack is required at run time;
+ordinary programs do not open this library. The adapter uses IPv4 and the
+original resolver vectors, so it also works with UAE's version 4 interface.
+It does not call newer Roadshow `getaddrinfo` vectors.
+
+Amiga socket descriptors and signals belong to the task that opens the
+library. Each BASIC task keeps its own library context in TLS. Idle sockets
+live in the native public pool and are borrowed into the calling task for
+each operation. This permits a listener to be opened in one thread, accepted
+in another, and closed after the creator exits. The private table supports
+64 simultaneous sockets and reports exhaustion through the normal file error.
+
+Receive buffering keeps byte-wise BASIC protocols from paying for a native
+socket call on every byte. EOF and EOC preserve unread buffered data. Actual
+reads wait for packet fragments with the BASIC file lock released, allowing
+another BASIC thread to supply the remaining bytes. Protocol timeouts bound
+those waits when specified.
+
+To enable UAE's socket interface and include the native TCP qualification:
+
+```sh
+build_scripts/amiga-run-probes.sh --bsdsocket --jit --timeout 240 \
+    --output out/amiga/probes-with-tcp
+```
+
+The TCP probe runs the shared text/binary, burst and wildcard-listener tests,
+then checks a listener after its creating thread exits and formatted INPUT
+split across delayed writes. It is compiled with `-g` so assertions execute.
+
+## OMA programs
+
+The maintained source entry points available under `OMA` can be frozen and
+cross-built together:
+
+```sh
+python3 build_scripts/amiga-build-oma-games.py --output out/amiga/oma --jobs 4
+```
+
+The builder defaults to optimized ordinary runtime builds. Duel uses `-mt`
+because it creates a BASIC server thread. `--checked` enables additional
+runtime error and array-bounds checks. Each result records its compiler
+command, source paths and asset directory.
+
+The October 27 run reached gameplay in all nine available maintained titles,
+including all four kinematics variants, for twelve native programs. Its
+per-program executable hashes, native display captures and input records are
+listed in `out/amiga/oma-20261027/manifest.json`. This qualifies reaching
+gameplay, rather than complete playthroughs or every game feature. The six
+unavailable historical titles were excluded by the user.
+
 ## Native qualification
 
 Supply a local Kickstart ROM; ROMs are not distributed with the repository.
@@ -178,6 +231,11 @@ Every emulator session runs on its own authenticated Xvfb display with
 software rendering. The runner never uses the desktop display. Host audio
 is disabled while guest audio interrupts remain active. Xvfb and FS-UAE are
 terminated when a batch finishes, times out, or the runner receives SIGTERM.
+
+For interactive pointer tests through Xvfb or VNC, add `--mouse-integration`.
+This selects UAE's absolute mouse input and disables pointer grabbing inside
+that private display. Relative grabbing can otherwise deliver button events
+without motion. See the [FS-UAE mouse documentation](https://fs-uae.net/docs/mouse/).
 Install `xvfb` or set `AMIGA_XVFB_BIN` to its executable. An extracted local
 installation under `out/amiga/virtual-display` is also recognized.
 
@@ -460,8 +518,9 @@ Other current platform limits are explicit:
   fail rather than truncating the requested offset.
 - Exec signals are wake-up bits, not POSIX fatal signals. CPU faults remain
   native Amiga alerts; automatic fatal-signal recovery is unavailable.
-- Unix-style dynamic libraries and TCP are unavailable with the pinned SDK.
-  Native Amiga library vectors require their own bindings.
+- Unix-style dynamic libraries are unavailable with the pinned SDK.
+  Native Amiga library vectors require their own bindings. TCP uses the
+  optional `bsdsocket.library` version 4 interface described above.
 - OpenGL, shaped/resizable graphics windows, and joystick polling are not
   implemented by this backend.
 
@@ -924,3 +983,614 @@ coordinates and raw channel values. The reviewed native total is now 26 images
 and 26,624,000 RGB pixels, including 22 preserved prefix images and four frames
 recomputed since the checkpoint. The original 300-frame native run remains
 incomplete.
+
+### October 27 recovery after reboot
+
+The old transient services and FS-UAE processes were gone after reboot, and
+their temporary working volume was lost. Rehashing the newest protected state
+and every archived frame verified a recoverable checkpoint at frame 32 and
+32 complete prefix images. The original unchanged recording resumed in
+`continuation-r7`, using an authenticated isolated Xvfb display and a durable
+working volume inside the recovery directory. Its executable, 300-frame loop,
+1280x800 output and later inference workload are unchanged.
+
+The new run has produced an independently inspected and protected live
+checkpoint. One controller now sends paced save-menu keys; the earlier
+independent menu helper is not running. Full-frame review and actual native
+completion auditing have resumed. Rechecking all 32 images covers 32,768,000
+RGB pixels, with no controlled difference above one channel value. This does
+not complete the original native recording. `recording-current.json` under
+the recovery directory identifies the current units, paths and checkpoint
+index; verify live process identities before any subsequent restart.
+
+The unfinished portable fb-ext batch also passes: 15 unchanged examples and
+17 execution cases with paired GCC controls, actual native exit records and
+staged executable hashes. Its private Make recipe now includes the real
+`ext-error` and `ext-memory` dependencies. Deterministic stdout is compared in
+full; shuffled-bit population and toggles, iterator key/value multisets, sorted
+rationals and thread request/response invariants are checked explicitly.
+
+The initial bit-array checker confused bit indices with character positions.
+The original `load` and `dump` methods reverse display order, so toggling bits
+30, 31 and 32 changes displayed positions 97, 96 and 95. Only that checker was
+corrected. The saved native jobs were revalidated without another native run
+or rebuild. Evidence is `fbext-cli-requalification/completion.json` under the
+recovery folder. These repeat historical targets and do not increase the
+historical distinct-execution count or qualify the entire fb-ext library.
+
+The resumed recording has now completed frame 32. Both its actual output and
+durable copy match the corrected native-input GCC image byte for byte across
+the full 1280x800 composite. This is the first completed frame after restoring
+the protected checkpoint following reboot, with the original executable still
+unchanged. Stock GCC differs at 27 pixels by more than one channel value, with
+a maximum difference of four. `continuation-r7/resume-first-frame-proof.json`
+records the evidence. The reviewed native total is 33 frames and 33,792,000 RGB
+pixels; full native recording completion remains pending.
+
+### File-hash regressions exposed by fresh corpus runs
+
+Empty-file tests of the original MD5 example hung on the GCC control. The
+MD5, SHA-2 and SHA-3 File wrappers all selected a zero-sized block, then looped
+forever comparing zero remaining bytes against that block size. Explicit zero
+block sizes also failed to make progress. These are library source defects;
+changing FBC's valid comparison semantics would be incorrect.
+
+The necessary corpus corrections reject zero block sizes before opening the
+file and use a one-byte buffer for empty input so existing finalization runs
+without updates. Expanded checks found a second source defect: SHA-3's partial
+update loop consumed an extra byte in reverse order, reading past its input.
+It now consumes exactly the supplied bytes and permits zero-length updates
+without reading memory. Compiler implementation code was not changed.
+
+All 96 independent file-digest cases pass on GCC and Amiga, covering MD5, all
+SHA-2/SHA-3 digest sizes, empty/binary inputs and block boundaries. The six
+original file, console and checksum examples also pass twelve paired cases.
+Their example sources are unchanged; they link the corrected real hash module
+through its existing Make rules.
+
+Portable tests were added to the library's existing hash directory and are
+discovered automatically. Full maintained hash/HMAC suites pass on both
+targets: three suites, 13 tests and 194 assertions, with zero failures/errors.
+An existing big-endian SHA-384 fixture typo was corrected from `6EC3` to `6ECE`
+to match the little-endian bytes and independent expected digest. The first
+failure, original source, exact focused patch and qualification results are
+retained under `corpus-hash-fixes.json`, `file-hash-source-fix-v2`,
+`file-hash-requalification-fixed` and `maintained-hash-regressions-v2` in the
+recovery folder. Unrelated corpus edits were preserved.
+
+The original native recording has also completed frame 33. That full image
+matches the corrected native-input GCC replay byte for byte. The reviewed
+native total is 34 frames and 34,816,000 RGB pixels, with two frames recomputed
+since the frame-32 reboot checkpoint. A protected frame-33 checkpoint now
+exists. Full 300-frame native completion remains pending.
+
+### Original BMP viewer colour cycle
+
+The original BMP viewer has also completed its eight-image cycle on GCC and
+Amiga with its source and requested 640x480 resolution unchanged. All eight
+complete software canvases match byte for byte across both targets, including
+stored alpha: 2,457,600 RGBA pixels. Independent source decoding verifies every
+displayed image pixel. The packed 16-bit cases use the loader's documented
+nearest-integer channel expansion; Pillow's truncation differs by one, so the
+validator independently calculates the exact declared result from the packed
+words and masks. No pixels, tolerance or masks were changed to obtain equality.
+
+A read-only observer forwards the original sleep calls. Real Escape events
+on owned authenticated displays end the cycle; neither drawing nor keyboard
+queries are replaced. The required real loader-registry source was added to a
+separate Make-built partial graphics archive. Existing qualified archives and
+all original viewer/image files are preserved. This observes software canvases;
+AGA display-palette quantization remains a separate tested limitation.
+`bmp-example-observation/completion.json` contains the full evidence, and its
+lossless preview has separate pixel-identity provenance.
+
+The original grayscale example is now checked across both full 640x240
+screens. Real Space/Escape input advances its original waits. A private
+identity observer records the unchanged elapsed numeric value; only a separate
+GCC counterfactual imports that value for the timing caption. Both complete
+native RGBA canvases match that replay exactly, including the intro text,
+covering 307,200 pixels without masks or tolerance. The final canvas also
+matches ordinary GCC and an independent luminance/keying calculation across
+all 153,600 RGB pixels. Its original edge clipping is preserved. The actual
+corpus source, native timing calculation and image operations are unchanged.
+Source differences and raw observations are retained under
+`grayscale-example-observation/completion.json` in the recovery folder, with a
+lossless software-framebuffer preview and separate pixel-identity record.
+
+The original TGA viewer also passes at its unchanged 800x600 resolution.
+All 480,000 RGBA canvas pixels, including the elapsed-time caption, match a
+separate GCC replay of the native numeric timing value. The native timing
+expression is observed through an identity helper and stays unchanged. The
+source image's 11,340 RGB pixels match independent decoding. Real Escape input
+ends the original wait; no image output is fed back into the native program.
+Evidence is in `tga-example-observation/completion.json` in the recovery folder.
+
+Fresh `fb-imageproc` checks are running through
+`imageproc-example-observation`. Grayscale, flipping, all four channel views,
+colourizing, gradient and blur match GCC byte for byte across every original
+complete RGBA canvas. Separate calculations verify the full grayscale, flip
+and RGB/HSV/HSL/HCY channel canvases, including blank areas, alpha, original
+placement and clipping. A read-only sleep observer forwards the unchanged
+default wait, and real keys on owned authenticated Xvfb displays advance the
+examples. Pending programs remain unqualified until their complete observations
+and actual native completion records have been checked.
+
+The original BASICVERSE `fonttest` also passes with its normal `-O 2 -mt`
+build. Its entire 1280x800 PPM matches GCC and an independent rasterization of
+the seven original text rows and bitmap-font data. The source and output
+colours are unchanged. `basicverse-font-requalification/completion.json`
+records all 1,024,000 exact RGB pixels; this separate finite example does not
+qualify or replace the original running 300-frame recording.
+
+All four original console mini-games have fresh GCC/native session checks.
+Guessing exercises all six unsuccessful attempts. Rock-paper-scissors checks
+every printed random choice, round count, score and result. Tic-tac-toe checks
+its complete board history, supplied/rejected moves and terminal result.
+The adventure checks quit/retry, its winning route and all three death endings
+with complete matching transcripts. Randomization and original waits remain
+unchanged; these sessions do not claim every possible gameplay sequence.
+
+All 27 unchanged `fb-learn-opengl` lessons build with the frozen GCC compiler.
+Every native link reports missing `-lGL`, and the current Amiga display driver
+explicitly rejects OpenGL context requests. These are documented provider gaps
+under the approved scope, with individual source hashes and actual diagnostics
+in `opengl-provider-requalification/index.json`. No native OpenGL execution or
+renderer qualification is claimed.
+
+The original shared-image example also passes with the documented
+`FBEXT_NO_EXTERNAL_LIBS` setting on both targets and the real BMP/TGA provider
+archive. All 76,800 RGBA pixels match an independent calculation. Its default
+`Image.Display` operation is XOR, including stored alpha: opaque red XOR
+opaque black leaves red with alpha zero. The initial expectation of opaque
+red was corrected against this existing API; saved program outputs were
+unchanged and were validated without rerunning either program. The example's
+image allocation, display and shared-pointer ownership remain intact.
+Evidence is in `shared-image-example-observation/completion.json`.
+
+The original `fb-imageproc` convolution, Gaussian blur, gradient-map and both
+scaling screens also match GCC exactly. Ten complete programs now account for
+fourteen complete canvases. The blend example's first emulator exited with its
+native protocol unfinished; its three complete screens remain partial evidence.
+A separate full six-screen execution now completes with all canvases matching
+GCC exactly. It reuses the verified original binary/resources, records the
+emulator exit status and supplies no saved frames to the guest. All eleven
+programs and twenty canvases now pass, totaling 15,652,800 exact RGBA pixels.
+
+The original list editor now has a functional GCC/native session: real Tab,
+Space and Ctrl-Q input selects and toggles an item, then the actual saved
+Markdown files match byte for byte. All three complete 640x480 RGBA screens
+also match, including text and alpha, totaling 921,600 pixels. The English
+translation asset must be beside the executable because its loader uses
+`EXEPATH`. The first GCC control placed it only beside the working directory
+and fell back to Dutch. That control is retained; the correctly staged GCC
+control matches the preserved native screens without rerunning the native
+program or masking text. Corpus source is unchanged.
+
+`fbfrog` required one necessary corpus assertion correction in `src/tk.bi`.
+Its compact internal token has a 10-byte natural C/BASIC layout on Amiga and
+a 16-byte layout on the host. The original equality asserted desktop tail
+padding. The guard now enforces its intended memory ceiling, leaving every
+field and packing rule unchanged. Original normal Make builds reproduce the
+GCC pass/native assertion failure; the corrected source passes normal builds,
+all 5,519 maintained unit checks per target, actual C/BASIC layout probes and
+complete matching header translation. The applied header matches the qualified
+source snapshot byte for byte. Evidence and the focused patch are under
+`fbfrog-requalification`; no compiler change was needed for this correct ABI.
+
+The two logging examples have a verified source platform gap: their real
+datetime provider has no Amiga timezone branch and fails on undeclared
+`trailer` and `tzoffset`. Normal GCC builds run and their messages/XML validate,
+but their saved UTC-labelled timestamps are about one hour ahead of actual
+write times. Both findings are retained under `logging-provider-requalification`;
+no timezone value or successful native execution is fabricated.
+
+The long recording and blend emulators exited before completion during parallel
+qualification. Their unfinished native protocols and quit logs are retained;
+the cause is unproven. The recording has resumed as
+`fbc-amiga-record-continuation-r9.service` from the independently protected R7
+frame-38 state. All 38 prior images and the original executable are hash-checked,
+and actual restoration plus a new live checkpoint are verified. R9 preserves
+the original 300 frames, resolution, inference and R7 emulator settings. Its
+checkpoint, native-completion and full-colour observers are active. An R8
+launch variant did not establish restoration and is not qualified evidence.
+Use `recording-current.json` in the recovery folder for current identities;
+scope emulator cleanup to the owning job's PIDs when other audits are running.
+
+The original spreadsheet also passes a real edit/recalculate/save session.
+Its saved workbook changes B2 from 7 to 9 while retaining B1's `=B2+B3`
+formula and B3's value 5. All six full 640x480 UI canvases and complete saved
+files match GCC, totaling 1,843,200 RGBA pixels. Native previews show the
+formula changing from 12 to 14; sampled formula pixels are RGB(85,255,85),
+matching the source palette. No editor source changes were needed.
+
+Schrijf's current GCC build succeeds, while its native link requires missing
+X11. Its icon and screen-snapshot module selects X11 for every non-Windows
+platform, so a native window interface or explicit feature-support policy is
+required. Actual diagnostics and source hashes are retained; no X11 stub or
+successful native run is substituted.
+
+The fresh evidence index now records 58 programs across 73 paired cases,
+37 documented current platform gaps and 87 entries with historical evidence
+only. Library-only builds and the unfinished original recording remain
+separate. R9 has produced its first new frame after restoration, bringing the
+reviewed recording to 39 complete images; original 300-frame completion is
+still pending.
+
+An independent `fb-ext-lib` colour audit found a shared GCC/Amiga bug in
+`changeColor`: it treated image width as the row stride. Padded images could
+retain old pixels and have their padding changed. Twenty of 24 row cases
+failed on both targets. The routine now indexes each active row using the
+image's actual pitch and preserves the first metadata row for font buffers.
+Null/empty buffers and invalid row dimensions are guarded. Matching and alpha
+semantics are unchanged. This necessary library correction is in
+`src/modules/graphics/libext-gfx-manip.bas` in the corpus, with maintained
+regressions in `tests/graphics/raster.bas`; the compiler's aligned image layout
+was correct.
+
+The complete maintained graphics suite now has eight tests and 382 assertions.
+The new tests reproduce 54 failures with the old provider and zero with the
+fix on both GCC and Amiga. All 24 independent row cases pass after the fix.
+A separate 100-case alpha audit, covering 3,650 RGBA pixels per target, also
+passes, as does the unchanged vector example. The initial suspicion about
+alpha-expression grouping was disproved: both compiler targets evaluate the
+shift/add expression as intended, so no alpha routine change was made.
+
+The original two-screen colour-manipulation example passes with the corrected
+provider, real Space/Escape input and unchanged source. Both full 320x240
+RGBA canvases match GCC, and all 20,000 image pixels match independent colour
+and font-row expectations. Its aligned rows retain their existing behavior.
+Evidence, original/candidate hashes and the focused source patch are under
+`color-row-fix` in the recovery folder.
+
+The recording emulator exited again after preserving 40 complete images.
+R10 resumes the latest independently protected frame-39 state and must
+recompute the last completed frame; that retained image is not supplied as
+guest input. Actual restoration and a fresh checkpoint are verified. Host
+signal observation and structured emulator exit records now investigate the
+unexplained quits, and checkpoint spacing is ten minutes. The original
+recording executable, all 300 frames, resolution, inference and emulation
+settings remain unchanged. After the October 27 kernel panic and reboot, R11
+restored the independently protected frame-40 checkpoint and all 40 legitimate
+prefix images. Actual restoration and fresh checkpoints are verified.
+`recording-current.json` identifies the active R11 services. Old process and
+session identifiers are invalid after reboot.
+
+The current evidence index records 95 original programs across 117 paired cases
+and 66 documented platform gaps. Sixteen current paired builds await complete
+runtime/colour qualification; 4 targets retain historical evidence only. The original animated alpha example's first
+complete 320x240 RGBA canvas matches a separate GCC control exactly. Native
+clock inputs are observed and returned unchanged; only the GCC control imports
+those numeric inputs. The original loop exits through real Escape input.
+
+Six additional projects build with GCC. Four native links require unavailable
+SDL/OpenGL libraries; the image viewer's non-Windows source assumes POSIX
+`realpath` and `getcwd`. Asteroids builds for both targets. Its unchanged original
+program now exits normally through a real guest close-gadget click. All 480,000
+RGBA pixels of its first full canvas match a separate GCC control of the 150
+observed native random values. The native random values, loop and waits remain
+unchanged. This checks the first-frame/normal-close session, not all gameplay.
+
+A native probe exposed a driver defect: the private-palette AGA path created a
+borderless window without a close gadget even for ordinary window requests.
+Private palette ownership now stays separate from window decorations. Ordinary
+windows reserve space for their actual Intuition borders; fullscreen and
+explicitly borderless windows omit the title that otherwise reserves a hidden
+top border. Chipset transfers now use client-area coordinates, as RTG transfers
+already did. Adjusted windows cannot silently clip the BASIC client area.
+
+The maintained native regression reproduces the old missing-gadget failure and
+passes with the fix. It covers 8/16/32-bit native pixels, palettes, input, page
+copying, cache refresh, oversized canvases and windowed/fullscreen/borderless
+layouts. Evidence is under `native-window-layout-fix-v3` in the recovery folder.
+The ongoing original recording retains its frozen executable and archives.
+
+The triangle, rectangle-collision and indexed perpendicular-line examples now
+complete with real Escape input and full canvas comparisons. The two original
+FBgfx composition examples load all three actual BMP assets successfully and
+match their complete 32-bit and RGB565 canvases. ToyBASIC passes its bundled
+arithmetic input, two additional supported cases and its explicit unsupported
+division path. Oregon Trail completes two original game endings with matching
+transcripts and independently checked starting cash and inventory. These runs
+retain their original source, waits and loops.
+
+A private native zlib provider now supplies Prospector's memory compression
+dependency. The upstream release checksum, static Hunk build adapter and
+native compression/stream/checksum results are retained under
+`zlib-native-provider`. Five native compressed outputs independently decode
+to their exact input. Gzip linkage still needs SDK `fcntl`; gzip support is
+not claimed. Prospector now links, while StrawberryNES needs FreeImage and
+Pyromax needs OpenGL/GLU. No dependency is installed into the frozen recording.
+
+R11 has genuinely completed its first new frame after recovery. There are now
+46 reviewed native images and a protected frame-46 checkpoint. The first new frame's
+full 1,024,000 pixels match its native-input GCC control exactly. The ordinary
+GCC frame differs by at most four channel levels, with one pixel above one;
+the complete differences remain recorded. The original 300-frame recording
+and its final completion audit are still pending.
+
+NebEdit now completes its normal Escape exit with unchanged source. All 32
+bitmap loads succeed, and its complete 1024x768 RGBA scene matches a separate
+GCC control of the actual native mouse values. Those native values are returned
+unchanged; no control inputs are supplied to the guest.
+
+The Griffon title audit found a shared adapter key-state mismatch: an integer
+`-1` is compared with a previous byte value of `255`, repeating held key events.
+A private `0/1` candidate passes press/hold/release checks on both targets and
+the full GCC menu quit path. Its native run remains active in resource/audio
+loading. The corpus header is unchanged and the program is not yet qualified.
+The recovery log records the live job and a FBLITE bitmap-hook verifier issue
+that must be resolved before its result is accepted.
+
+All nine remaining BASICVERSE sources and seven freebasic-projects sources
+now build from current snapshots on both targets, with two build workers.
+These remain build-only results until execution is checked. The original
+beautyofmath demo completes all nine formatted arithmetic rows with independently
+checked values and matching GCC/native transcripts; its final SLEEP is retained.
+
+Griffon's separate final-review service will check the actual whole title
+canvas, native tick identity, real menu quit and original asset/configuration
+inputs. It also checks opaque title-logo colours independently of GCC. The
+FBLITE bitmap-hook limitation remains explicit; individual load-return receipts
+are unavailable for that run. Its native audio preload and original recording
+remain live, and the public corpus header is still unchanged.
+
+The original regex example now completes three paired cases using a native
+PCRE8 build with the host library's UTF/Unicode settings. URL validity and both
+replacement results are independently checked. The GUI input example accepts
+actual typed input, returns the exact name and completes its final wait; both
+complete prompt/greeting canvases match GCC.
+
+The intensity example is checked across four naturally reached colour phases,
+including dark and bright pixels. All four complete RGBA canvases match a
+separate GCC control of the observed native clocks. Independent calculations
+also verify all 307,200 RGB pixels and 40,000 image-alpha values. The initial
+black-only observation is retained as limited evidence, not colour-range
+coverage. The original clock, source frame loop and waits remain unchanged.
+
+Seven additional paired build gaps identify the package-specific SQLite and
+libzip dependencies and the net library's Windows/Linux-only socket bindings.
+The source datetime branch remains unported. Selected real misc units support
+the verified examples; complete native fb-ext library coverage is not claimed.
+
+The original Gematria database workflow completes with 32 whole records and
+416 independently checked values. Its database file exactly matches GCC.
+The graphical flight converter accepts actual menu/numeric input, retains its
+result wait and exits normally. Its three full canvases, conversion value and
+cyan/red/white/black palette are verified. The original 16-bit rotation and
+indexed collision scenes also match whole GCC canvases and expected colours.
+
+The real FreeType provider is pinned to the installed host version and built
+with the native static ABI and actual zlib. The original GetTextWidth and
+fonttest examples successfully load Vera.ttf. All 1,217 glyph loads, metrics,
+204,257 alpha bytes, independent text-width sums and both full canvases match
+GCC. Their original waits and real Escape exits remain intact. The GetTextWidth
+sample paints white while using a white default font; its
+white-on-white text does not indicate a font-loading failure.
+
+The console name widget completes on both genuine interactive terminals with
+the expected returned name and colour-state cycles. Its native stock Workbench
+window has four pens and lacks the requested red/green; ROM font encoding also
+differs from the original PC box characters. This functional session remains
+outside the fully qualified count, with its physical-colour gap recorded.
+
+Griffon's actual emulator remains live in audio loading. Recent observations
+show increased CPU time but an unchanged gardens2.ogg file offset. A separate
+decoder-progress check is needed; elapsed time and CPU use alone establish
+neither preload completion nor a hang. The existing job remains preserved.
+
+The original BASICVERSE palm diagnostic now completes both full 1280x800 views,
+and the original shot programme completes its texture load, geometry and bloom.
+Every pixel is compared against GCC, 3,072,000 pixels in total. There are 417
+changed pixels, each differing by one final 8-bit channel level; none exceed
+the allowance specified before execution. No masks or workload reductions are
+used. Both programmes exit naturally.
+
+A separate complete-file SFX probe decodes the actual pending Griffon music
+asset and validates all 13,107,200 returned samples. Controlled graphics/SFX
+loads pass both emulator audio-output settings and the FBLITE directory lookup.
+These results do not explain the full game's I/O waits. An actual saved state
+shows waiting tasks and ample free RAM. A further run uses the same exact game
+binary under an owned debugger parent with central SFX diagnostics, preserving
+all original assets/audio/configuration. It passed the first three music loads
+before another waiting-task sample. The cause remains under investigation;
+no guessed compiler/runtime fix is applied. Earlier runs remain preserved.
+
+The proposed adapter key regression now has optional Make integration, verified
+privately on GCC and Amiga. It retains the original failure and passing 0/1
+candidate. Public corpus sources remain unchanged pending the full title audit.
+
+The original JPEG/Scale2X example exposed two necessary library corrections.
+The JPEG metadata-skip callback discarded its cursor and fed the file's start
+marker twice. It now consumes bounded bytes and matches the declared C-long
+parameter. The observed native BASIC/C structure sizes both equal 462 bytes;
+no compiler packing change was needed. Scale2X also used zero outside the image,
+creating four black corners. It now repeats the nearest border pixel as the
+published algorithm requires, retaining the interior formula and public API.
+
+The example and asset remain unchanged. Its full 307,200-pixel RGBA canvas
+matches GCC exactly. All 37,636 source-image RGB pixels match an independent
+JPEG decode, and all 150,544 scaled pixels match the independent Scale2X
+reference without masks or tolerance. The combined maintained suite passes
+689 assertions on GCC and Amiga, retaining the prior raster and row cases.
+
+The new regression also exposed the fb-ext test runner mapping Boolean false
+to successful process exit zero. Failure now exits one. The old JPEG callback
+fails with nine GCC and ten native assertions; the old border code fails eight
+on each target. Their fixed variants pass. New optional classic-JPEG tests use
+the existing Make discovery and require a matching v6 provider. These necessary
+library/test corrections are recorded by exact pre/post source hashes.
+
+The original blur demo completes all 617 iterations and both JPEG loads, with
+unchanged initial/final waits and actual final Escape. Both complete canvases
+match GCC. The original rotate demo also passes actual Down/Left/Up/Escape
+controls at observed 0/180/185/reset-0 angles. Its four full canvases match GCC,
+and reset returns exactly to the first scene. Together these cases compare
+460,800 RGBA pixels without masks or tolerance. Their initial JPEG colours
+are independently checked; no example or implementation source changes were
+needed for these two cases.
+
+The sprite example's complete ten-step pulsation, three starfield scenes with
+all 5,001 original vertices, and three complete 50-segment line-intersection
+scenes also pass. All 4,915,200 RGBA pixels agree exactly with GCC. Sprite and
+stars use ordinary GCC inputs; line-intersect has a separate GCC replay of
+unchanged native RNG/clock inputs. An independent segment model verifies its
+clipped sweep endpoints. The GCC/native polygon coordinates differ by at most
+5.7e-14, bounded by four result ULPs; every colour byte must still agree.
+No example changes or source loop caps were needed. Actual Escape exits each.
+
+The original rotozoom ASM entry point is a documented corpus architecture
+gap: its x86-64/ARM bodies are empty, and m68k enters the x86 assembly branch.
+Normal native Make fails on those instructions. It is not a qualified scene
+or an FBC emitter failure. The math module's custom Makefile separately builds
+all nine original units successfully on both targets; the active shift64
+branch is portable BASIC.
+
+Both original GIF-loading branches pass. The original fixed RGB332 display
+reduced 247 visible source colours to 52 colours despite exact software RGB.
+The native driver now preserves all 247 colours exactly in its private palette,
+with zero error across both complete Amiga bitmap readbacks. Software canvases
+still match GCC and independent Pillow RGB. No corpus changes, pixel masks or
+colour tolerances were needed. The real legacy giflib provider matches the
+original binding's ABI and builds privately through normal configure/Make rules.
+
+True-colour chipset displays now use exact pens when the frame and stable UI
+colours fit. Borderless displays reserve only black for the surrounding screen.
+A bounded lookup table and optional byte-per-pixel cache avoid converting rows
+twice. Richer frames or cache-allocation failure retain nearest RGB fallback;
+indexed PALETTE ownership and RTG conversion remain unchanged. Palette remaps
+redraw unchanged rows too, and incomplete native transfers remain dirty for retry.
+
+Maintained ordinary and MT regressions reproduce the baseline loss and pass
+exact RGB565/32-bit colours, 240-colour table compaction, transitions to/from a
+319-colour fallback frame, and all 256 pens in borderless displays. Existing
+palette, cache, input, page, oversized-canvas and window-form checks also pass.
+The source/test fix is applied. Future corpus runs use the qualified prefix
+recorded in native-compiler-current.json; live recording and Griffon SDKs remain
+immutable.
+
+Vector-field and yinyang also complete three original full scenes each, with
+2,880,000 RGBA pixels exactly matching GCC replay of unchanged native inputs.
+The field accepts real positive/negative wheel events. Particle physics retains
+all 40 particles, original RNG and real clock results, including the native
+DateStamp clock's coarse initial zero delta.
+
+Both 3drotate and PointAt exercise all three original drawing methods through
+actual Space/Escape. PointAt retains its original 2/0/1 order. Filled modes are
+byte-exact against GCC. The initial 3drotate wireframe differs at 588 shared-edge
+pixels because C qsort may reorder equal-depth faces. Complete pre-sort geometry
+and shading agree, both sorted arrays are valid permutations, and independent
+line/font reconstruction verifies every wireframe pixel for each actual order.
+No mask, tolerance, native reorder or corpus modification is used.
+
+The original profiler completed its unchanged 12-worker configuration and ten
+passes each of sky, raster and bloom. All 3,072,000 RGB pixels were checked:
+sky is exact; only eight raster/bloom pixels differ by one final channel level.
+Native exit0 and complete phase counters/controller records are retained.
+
+The sprite benchmark exposed a corpus bug: it assigned frames1/2/3 to a
+three-frame zero-based Sprite, and SetImage lacked a bounds check. ASan proves
+the original heap write. The necessary caller/index guards and maintained tests
+are applied; 717 assertions pass on GCC and Amiga, and fixed ASan exits0.
+The complete benchmark then stops naturally on both targets, with every early
+red/green/blue canvas matching GCC input replay. Original waits, growth and the
+40ms rule are preserved. The separate original sprite demo also still passes.
+
+The full textured benchmark is now running under its original 14-worker request
+and all 20 sky/render/bloom iterations. GCC completed all passes; native
+completion remains pending. Actual buffer exports follow original timing.
+A real private checkpoint and stable volume copy are preserved, restoration
+untested. All graphical runs use isolated displays and preserve the ongoing
+original 300-frame recording.
+
+Current source/build fingerprints also confirm that fbvnc, tiko, catfish and
+phoenix lack the native gfxlib3 presentation adapter required by their original
+recipes. These are documented source-platform gaps, without a new GCC-target
+build or native-runtime claim. The original recording now has 53 genuine frames
+reviewed; its complete 300-frame workload remains unfinished.
+
+
+### Antialiased UI colours on chipset screens
+
+Antialiased text can exceed the exact pen budget even when most pixels use a
+few flat UI colours. The driver now counts up to 512 colours and, when four
+colours cover at least three quarters of the canvas, preserves those colours
+exactly. Remaining pens reduce the largest frequency-weighted squared RGB
+errors. Rare shades map to the nearest retained colour. Richer frames retain
+the fixed RGB fallback. Indexed modes and RTG presentation are unchanged.
+
+The original AZdecrypt UI exposed this case: the same complete 1280x900 software
+canvas contained 376 colours. Before this change, 256,361 displayed pixels
+differed, with a maximum component error of 42. With the new palette, 330 pixels
+differ by at most four levels; the background, borders and selection colours
+are exact. These are actual planar bitmap and colour-map reads, with no masks.
+The remaining differences are explicit eight-bit palette quantization.
+
+Maintained ordinary and multithreaded graphics tests cover dominant UI colours,
+rare colour bands, unchanged-row remapping, and all previous palette/input/page/
+window checks. Both baseline variants reproduce the UI failure and both updated
+variants pass. The unchanged GIF cases still retain all 247 displayed colours.
+
+
+### Native text-console colours and dimensions
+
+BASIC's DOS RGBI colour indices differ from Amiga console pen indices. The
+runtime now queries the active CON: window and selects its closest existing
+screen pens. Black and white remain exact on the stock four-pen Workbench
+screen; colours absent from that palette remain approximations. Logical COLOR
+return values are retained, and the public screen palette is unchanged.
+
+Console dimensions and cursor positions come from the actual console unit.
+For example, the tested 640x200 window with the stock font has 61 columns and 20
+rows, rather than the old hardcoded 80x25. Resizing refreshes the cell buffers
+and keeps cached coordinates within their new bounds.
+
+AmigaOS V36 and later erase commands use a separate window background. CLS
+therefore clears character cells with wrapping temporarily disabled, preserving
+the current BASIC background, VIEW PRINT boundaries, cursor, wrapping mode and
+borrowed window theme. This fixes Clumsier's black-on-white body and preserves
+its footer without changing the editor source.
+
+The maintained `console-colours` probe owns a real isolated CON: window. It
+checks geometry, logical colour returns, actual RGB text and blank cells,
+partial/final-row clears, wrap/cursor preservation, reordered palette pens and
+a genuine window shrink. Ordinary and MT baselines fail; both updated variants
+pass. All 17 native probes and the original fgConvertFBC/Library Master console
+workflows also pass with the updated runtime.
+
+Native packet and control-sequence contracts are described in the official
+[AmigaDOS packet documentation](https://wiki.amigaos.net/wiki/AmigaDOS_Packets)
+and [console control sequences](https://wiki.amigaos.net/wiki/AmigaOS_Manual:_Control_Sequences).
+
+### Read-only file length queries
+
+Native `LOF` now examines an ordinary read-only file's open DOS handle instead
+of seeking to EOF and back. This preserves newlib's input buffer and avoids
+refilling it just to answer a length query. The query reads fresh metadata,
+so an append through another handle remains visible. Writable and custom
+streams retain the existing seek/tell fallback and its flush behavior.
+
+The maintained `file-size` probe checks buffered input and unchanged cursors,
+positions beyond EOF, external append visibility, UTF-8/16/32 byte lengths,
+closed handles and writable-stream fallback. Its 89 checks pass in ordinary
+and MT runtimes. The 39 read-only queries use zero seek callbacks; the prior
+implementation used 78. All 18 maintained native probes pass with the change.
+This does not establish that the separate long-running corpus I/O waits are
+resolved; their original workloads remain under observation.
+
+### Antialiased menus with more than 512 shades
+
+The dominant-colour path now accepts up to 4,096 distinct source colours when
+its four most frequent colours cover at least three quarters of the canvas.
+It preserves those flat regions and spends the remaining pens on the largest
+frequency-weighted RGB errors. A separate 8,192-slot table keeps lookup work
+bounded. Its scratch ordering lives with graphics-lock-protected state,
+avoiding an 8 KiB addition to a native caller's stack. Frames beyond that
+bound still use the existing fixed palette; indexed and RTG paths are unchanged.
+
+Nebunoid's original menu has 1,427 shades. Its unchanged 786,432-pixel canvas
+still matches GCC exactly, while the actual native bitmap now shows 254
+colours rather than 17. Maximum channel error falls from 42 to 5, and all
+3,576 pixels of the dominant RGB(196,196,196) region become exact. No source
+settings, assets or pixels were replaced. All 18 maintained probes pass; the
+ordinary/MT graphics regression covers more than 512 shades, untouched-row
+remapping, and a greater-than-4,096-colour return to fixed-palette fallback.

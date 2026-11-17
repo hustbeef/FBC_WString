@@ -27,13 +27,13 @@
 #include once "backend/ir.bi"
 #include once "runtime/rtl.bi"
 #include once "ast/ast.bi"
+#include once "tooling/semantic-numeric-conversions.bi"
 
 private function hCheckStringOps _
 	( _
 		byval l as ASTNODE ptr, _
 		byval ldclass as FB_DATACLASS, _
-		byval r as ASTNODE ptr, _
-		byval rdclass as FB_DATACLASS _
+		byval r as ASTNODE ptr _
 	) as integer
 
 	dim as ASTNODE ptr other = any
@@ -63,9 +63,7 @@ end function
 private function hCheckUDTOps _
 	( _
 		byval l as ASTNODE ptr, _
-		byval ldclass as FB_DATACLASS, _
 		byref r as ASTNODE ptr, _
-		byval rdclass as FB_DATACLASS, _
 		byval no_upcast as integer _
 	) as integer
 
@@ -299,7 +297,7 @@ function astCheckASSIGN _
 
 		'' both not strings?
 		if( ldclass <> rdclass ) then
-			if( hCheckStringOps( l, ldclass, r, rdclass ) = FALSE ) then
+			if( hCheckStringOps( l, ldclass, r) = FALSE ) then
 				exit function
 			end if
 		end if
@@ -310,7 +308,7 @@ function astCheckASSIGN _
 	elseif( (ldtype = FB_DATATYPE_STRUCT) or _
 			(rdtype = FB_DATATYPE_STRUCT) ) then
 
-		if( hCheckUDTOps( l, ldclass, r, rdclass, no_upcast ) = FALSE ) then
+		if( hCheckUDTOps( l, r, no_upcast ) = FALSE ) then
 			exit function
 		end if
 
@@ -421,8 +419,7 @@ end function
 private function hShallowCopy _
 	( _
 		byval l as ASTNODE ptr, _
-		byval r as ASTNODE ptr, _
-		byval options as integer _
+		byval r as ASTNODE ptr _
 	) as ASTNODE ptr
 
 	dim as ASTNODE ptr t = any
@@ -458,8 +455,6 @@ private function hShallowCopy _
 		'' never happens in practice because OBJECT has a copy
 		'' constructor that is supposed to be used instead, and that
 		'' should cause all derived types to have one too.
-		assert( (options and AST_OPOPT_ISINI) = 0 )
-
 		assert( bytestocopy >= env.pointersize )
 		bytestocopy -= env.pointersize
 
@@ -675,7 +670,7 @@ function astNewASSIGN _
 
 		'' both not strings?
 		if( ldclass <> rdclass ) then
-			if( hCheckStringOps( l, ldclass, r, rdclass ) = FALSE ) then
+			if( hCheckStringOps( l, ldclass, r) = FALSE ) then
 				exit function
 			end if
 
@@ -692,7 +687,7 @@ function astNewASSIGN _
 	elseif( (ldtype = FB_DATATYPE_STRUCT) or _
 			(rdtype = FB_DATATYPE_STRUCT) ) then
 
-		if( hCheckUDTOps( l, ldclass, r, rdclass, FALSE ) = FALSE ) then
+		if( hCheckUDTOps( l, r, FALSE ) = FALSE ) then
 			exit function
 		end if
 
@@ -713,12 +708,16 @@ function astNewASSIGN _
 
 		if( astIsCALL( tr ) = FALSE ) then
 			'' Not a CALL, it must be an UDT in memory, copy from that
-			return hShallowCopy( l, r, options )
+			assert( (symbGetHasRTTI(l->subtype) = FALSE) or ((options and AST_OPOPT_ISINI) = 0) )
+			return hShallowCopy( l, r )
 		end if
 
-		if( symbProcReturnsOnStack( tr->sym ) ) then
-			'' Returning on stack, copy from the temp result var
-			return hShallowCopy( l, astBuildCallResultVar( astRemoveNoConvCAST( r ) ), options )
+		if( symbProcReturnsOnStack( tr->sym ) orElse _
+		    symbIsGAS32CLongDoubleCAbiResult( tr->sym ) ) then
+			'' Copy from the caller-owned result slot, preserving the local
+			'' shallow-copy contract and its initialization invariant.
+			assert( (symbGetHasRTTI(l->subtype) = FALSE) or ((options and AST_OPOPT_ISINI) = 0) )
+			return hShallowCopy( l, astBuildCallResultVar( astRemoveNoConvCAST( r ) ) )
 		end if
 
 		'' Returning in registers, patch the types to integer and then
@@ -800,6 +799,11 @@ function astNewASSIGN _
 		if( hCheckConstAndPointerOps( l, ldfull, r, rdfull ) = FALSE ) then
 			exit function
 		end if
+		'' Check only a committed assignment, not astCheckASSIGN() probes
+		'' used while choosing constructors or overloads.
+		if( l->subtype = r->subtype andalso symbHasUnsafeConstAddition(ldfull, rdfull) ) then
+			errReportWarn( FB_WARNINGMSG_UNSAFECONSTADDITION )
+		end if
 	end if
 
 	'' arrays can't be converted, so don't allow if it wasn't already
@@ -842,6 +846,11 @@ function astNewASSIGN _
 				if( r = NULL ) then
 					exit function
 				end if
+			elseif( astGetFullType( r ) <> ldfull ) then
+				'' The x87 can convert while storing without a CONV node.
+				'' Observe the same numeric boundary before that backend shortcut.
+				'' A preceding constant conversion already has its own observation.
+				fbSemanticModelNumericConversion(r, ldfull, l->subtype, 0)
 			end if
 		end if
 	end if

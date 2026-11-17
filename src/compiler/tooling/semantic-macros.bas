@@ -4,6 +4,7 @@
 '' Responsibilities: Serialize identities, arguments, pieces, results, and origins.
 '' This file intentionally does NOT contain: name lookup or callback execution.
 
+#include once "tooling/semantic-extra-facts.bi"
 #include once "tooling/semantic-private.bi"
 #include once "tooling/semantic-source.bi"
 #include once "tooling/semantic-preprocessor.bi"
@@ -14,6 +15,8 @@
 '' -------------------------------------------------------------------------
 '' Module-local definition snapshots and active loaders
 '' -------------------------------------------------------------------------
+
+dim shared as longint semantic_math_constant_count
 
 type SEMANTIC_MACRO_SLOT
 	allocation as ulongint
@@ -52,6 +55,14 @@ dim shared as integer semantic_macro_invocation_count, semantic_macro_invocation
 const SEMANTIC_MACRO_LOCATION_WORK_LIMIT = 8388608
 dim shared as longint semantic_macro_location_work
 
+'' Invocation indices remain stable while this module's append-only array grows.
+'' Repeated token-origin queries usually revisit a small set of active loaders.
+'' A fixed, power-of-two cache avoids repeating their binary searches. Validate
+'' the stored identity on every hit and still charge the lookup work budget.
+const SEMANTIC_MACRO_LOOKUP_CACHE_SIZE = 256
+dim shared as longint semantic_macro_lookup_ids(0 to SEMANTIC_MACRO_LOOKUP_CACHE_SIZE - 1)
+dim shared as integer semantic_macro_lookup_indices(0 to SEMANTIC_MACRO_LOOKUP_CACHE_SIZE - 1)
+
 '' A canonical symbol can be revisited by several declaration parser routes.
 '' The same expansion-to-symbol observation is one relationship, not one
 '' relationship per visit. Keep a bounded set without changing symbol lookup.
@@ -71,6 +82,9 @@ dim shared as integer macro_symbol_origin_count, macro_symbol_origin_capacity
 '' is bounded by the existing 1024-character original-number contract. Links
 '' contain replacement-buffer units, not physical byte or display coordinates.
 type SEMANTIC_MACRO_NUMBER
+	token_class as integer
+	argument_source as integer
+	coordinate_slot as integer
 	text as zstring * 1025
 	length as integer
 	digits as integer
@@ -97,11 +111,16 @@ dim shared as integer macro_number_count, macro_number_capacity
 dim shared as SEMANTIC_MACRO_NUMBER_LINK ptr macro_number_links
 dim shared as integer macro_number_link_count, macro_number_link_capacity
 dim shared as longint macro_number_work
+dim shared as string macro_number_coordinates()
+dim shared as integer macro_number_coordinate_count
 
 sub fbSemanticModelResetMacros( )
+	semantic_math_constant_count = 0
 	deallocate(macro_numbers)
 	macro_numbers = NULL
 	macro_number_count = 0
+	erase macro_number_coordinates
+	macro_number_coordinate_count = 0
 	macro_number_capacity = 0
 	deallocate(macro_number_links)
 	macro_number_links = NULL
@@ -130,6 +149,8 @@ sub fbSemanticModelResetMacros( )
 	semantic_macro_invocation_count = 0
 	semantic_macro_invocation_capacity = 0
 	semantic_macro_location_work = SEMANTIC_MACRO_LOCATION_WORK_LIMIT
+	erase semantic_macro_lookup_ids
+	erase semantic_macro_lookup_indices
 	for depth as integer = 0 to FB_MAXINCRECLEVEL
 		lex.ctxTB(depth).semantic_last_macro_token = -1
 	next
@@ -186,6 +207,8 @@ private function hLocation( byref source as LEX_LOCATION ) as string
 		fbSemanticModelNumber(source.end_column)
 end function
 
+#include once "tooling/semantic-macro-replacement-impl.bi"
+
 private function hDefinition( byval sym as FBSYMBOL ptr ) as longint
 	if( sym = NULL ) then return 0
 	if( symbIsDefine(sym) = FALSE ) then return 0
@@ -214,6 +237,7 @@ private function hDefinition( byval sym as FBSYMBOL ptr ) as longint
 	semantic_macro_slots[slot].allocation = allocation
 	semantic_macro_slots[slot].definition = identity
 	semantic_macro_count += 1
+	hMacroReplacementInputs(sym, identity, symbolid)
 	dim as string prefix = "MT" + TABCHAR + fbSemanticModelNumber(identity) + TABCHAR
 	dim as FB_DEFPARAM ptr param = sym->def.paramhead
 	while( param <> NULL )
@@ -264,16 +288,33 @@ end function
 '' -------------------------------------------------------------------------
 
 private function hInvocationIndex( byval identity as longint ) as integer
+	if( identity <= 0 ) then return -1
+	semantic_macro_location_work -= 1
+	if( semantic_macro_location_work < 0 ) then
+		fbSemanticModelFailAt("macro invocation lookup work limit exceeded")
+		return -1
+	end if
+	dim as integer cache_slot = identity and (SEMANTIC_MACRO_LOOKUP_CACHE_SIZE - 1)
+	if( semantic_macro_lookup_ids(cache_slot) = identity ) then
+		dim as integer cached_index = semantic_macro_lookup_indices(cache_slot)
+		if( cached_index >= 0 and cached_index < semantic_macro_invocation_count ) then
+			if( semantic_macro_invocations[cached_index].identity = identity ) then return cached_index
+		end if
+	end if
 	dim as integer first = 0
 	dim as integer last = semantic_macro_invocation_count - 1
 	while( first <= last )
 		semantic_macro_location_work -= 1
 		if( semantic_macro_location_work < 0 ) then
-			fbSemanticModelFailAt("semantic-macros.bas:226")
+			fbSemanticModelFailAt("macro invocation lookup work limit exceeded")
 			return -1
 		end if
 		dim as integer middle = first + (last - first) \ 2
-		if( semantic_macro_invocations[middle].identity = identity ) then return middle
+		if( semantic_macro_invocations[middle].identity = identity ) then
+			semantic_macro_lookup_ids(cache_slot) = identity
+			semantic_macro_lookup_indices(cache_slot) = middle
+			return middle
+		end if
 		if( semantic_macro_invocations[middle].identity < identity ) then
 			first = middle + 1
 		else
@@ -286,6 +327,27 @@ end function
 '' -------------------------------------------------------------------------
 '' Original numeric payload transport
 '' -------------------------------------------------------------------------
+
+private function hStoreLiteralCoordinates(byref source as LEX_LOCATION) as integer
+	if( fbSemanticExtraFactsEnabled(FB_SEMEXTRA_LITERAL_GROUPS) = FALSE ) then return 0
+	'' Include handles can close before an expansion uses their definitions.
+	'' Materialize coordinates from the compiler's opened revision now; a later
+	'' pathname reopen could describe a different file and is not a substitute.
+	dim as string coordinates = fbSemanticModelCoordinateFact(source, source)
+	if( len(coordinates) = 0 ) then return 0
+	if( macro_number_coordinate_count >= SEMANTIC_MACRO_NUMBER_LIMIT ) then
+		fbSemanticModelFailAt("literal coordinate observation limit exceeded"): return 0
+	end if
+	if( macro_number_coordinate_count > ubound(macro_number_coordinates) ) then
+		dim as integer capacity = (ubound(macro_number_coordinates) + 1) * 2
+		if( capacity < 256 ) then capacity = 256
+		if( capacity > SEMANTIC_MACRO_NUMBER_LIMIT ) then capacity = SEMANTIC_MACRO_NUMBER_LIMIT
+		redim preserve macro_number_coordinates(0 to capacity - 1)
+	end if
+	macro_number_coordinates(macro_number_coordinate_count) = coordinates
+	macro_number_coordinate_count += 1
+	return macro_number_coordinate_count
+end function
 
 private function hNumberStore(byref item as SEMANTIC_MACRO_NUMBER) as integer
 	if( macro_number_count >= SEMANTIC_MACRO_NUMBER_LIMIT ) then
@@ -343,11 +405,13 @@ private function hNumberLink(byref head as integer, byval payload as integer, _
 		'' Join PP's split leading-dot literal only when the original physical
 		'' tokens were adjacent too. Replacement adjacency alone would bless a
 		'' paste across parameters or an explicitly written ## operation.
-		if( (first.text = ".") and (first.length = 1) and (second.dot = FALSE) and _
+		if( (first.text = ".") and (first.length = 1) and (second.length >= 0) and (second.dot = FALSE) and _
 			(clngint(preceding.offset) + preceding.units = offset) and _
 			(first.source_context > 0) and (first.source_context = second.source_context) and _
 			(first.end_line = second.start_line) and (first.end_column = second.start_column) ) then
 			dim as SEMANTIC_MACRO_NUMBER joined
+			joined.token_class = FB_TKCLASS_NUMLITERAL
+			joined.argument_source = first.argument_source and second.argument_source
 			dim as string remainder = second.text
 			dim as integer synthetic_zero = 0
 			if( (second.leading_zeros > 0) and second.exponent and (left(remainder, 1) = "0") ) then
@@ -363,6 +427,11 @@ private function hNumberLink(byref head as integer, byval payload as integer, _
 			joined.source_context = first.source_context
 			joined.start_line = first.start_line: joined.start_column = first.start_column
 			joined.end_line = second.end_line: joined.end_column = second.end_column
+			dim as LEX_LOCATION physical_source
+			physical_source.source_context = joined.source_context: physical_source.raw_valid = TRUE
+			physical_source.raw_start_line = joined.start_line: physical_source.raw_start_column = joined.start_column
+			physical_source.raw_end_line = joined.end_line: physical_source.raw_end_column = joined.end_column
+			joined.coordinate_slot = hStoreLiteralCoordinates(physical_source)
 			dim as integer joined_payload = hNumberStore(joined)
 			if( joined_payload = 0 ) then return FALSE
 			'' Keep both fragments as well as their joined view. The NOSUFFIX
@@ -375,15 +444,17 @@ private function hNumberLink(byref head as integer, byval payload as integer, _
 	return hNumberLinkCore(head, payload, offset, units)
 end function
 
-sub fbSemanticModelMacroNumericCapture _
-	( byref head as integer, byval token as FBTOKEN ptr, byval offset as integer )
+private sub hCaptureLiteralToken( byref head as integer, byval token as FBTOKEN ptr, byval offset as integer, byval argument_source as integer )
 	if( fbSemanticModelFullEnabled( ) = FALSE ) then exit sub
 	if( lex.ctx->semantic_probe or (token = NULL) ) then exit sub
 	dim as integer dot_fragment = (token->id = CHAR_DOT) and (token->text = ".")
-	if( (token->class <> FB_TKCLASS_NUMLITERAL) and (dot_fragment = FALSE) ) then exit sub
+	dim as integer source_only = (token->class = FB_TKCLASS_STRLITERAL) or _
+		((token->class = FB_TKCLASS_NUMLITERAL) and (left(token->text, 1) = "&"))
+	if( (token->class <> FB_TKCLASS_NUMLITERAL) and (source_only = FALSE) and (dot_fragment = FALSE) ) then exit sub
+	if( source_only and (fbSemanticExtraFactsEnabled(FB_SEMEXTRA_LITERAL_GROUPS) = FALSE) ) then exit sub
 	'' Nondecimal tokens do not establish a decimal floating spelling. A newly
 	'' generated token must not acquire source provenance merely by re-lexing.
-	if( (dot_fragment = FALSE) and ((token->numeric_original_length < 0) or (left(token->text, 1) = "&")) ) then exit sub
+	if( (source_only = FALSE) and (dot_fragment = FALSE) and (token->numeric_original_length < 0) ) then exit sub
 	if( dot_fragment and (token->source.macro_identity <> 0) ) then
 		token->numeric_payload = 0: token->numeric_macro_units = 1
 		fbSemanticModelMacroNumericRestore(*token)
@@ -393,7 +464,11 @@ sub fbSemanticModelMacroNumericCapture _
 	if( (dot_fragment = FALSE) or (token->source.macro_identity <> 0) ) then payload = token->numeric_payload
 	if( payload = 0 ) then
 		dim as SEMANTIC_MACRO_NUMBER item
-		if( dot_fragment ) then
+		item.token_class = token->class
+		item.argument_source = argument_source
+		if( source_only ) then
+			item.length = -1
+		elseif( dot_fragment ) then
 			item.text = ".": item.length = 1: item.dot = TRUE
 		else
 			item.text = token->numeric_original: item.length = token->numeric_original_length
@@ -404,11 +479,27 @@ sub fbSemanticModelMacroNumericCapture _
 			item.source_context = token->source.source_context
 			item.start_line = token->source.raw_start_line: item.start_column = token->source.raw_start_column
 			item.end_line = token->source.raw_end_line: item.end_column = token->source.raw_end_column
+			item.coordinate_slot = hStoreLiteralCoordinates(token->source)
 		end if
 		payload = hNumberStore(item)
 		if( payload = 0 ) then exit sub
 	end if
-	hNumberLink(head, payload, offset, len(token->text))
+	'' The retained replacement spelling includes quotes and a possible !/$
+	'' prefix. FBTOKEN.len counts the string reader's output, excluding that
+	'' prefix, so it cannot describe the units copied by the preprocessor.
+	dim as integer units = len(token->text)
+	if( (token->class = FB_TKCLASS_STRLITERAL) and (token->dtype = FB_DATATYPE_WCHAR) ) then units = len(token->textw)
+	hNumberLink(head, payload, offset, units)
+end sub
+
+sub fbSemanticModelMacroNumericCapture( byref head as integer, byval token as FBTOKEN ptr, byval offset as integer )
+	hCaptureLiteralToken(head, token, offset, FALSE)
+end sub
+
+sub fbSemanticModelMacroArgumentCapture( byref head as integer, byval token as FBTOKEN ptr, byval offset as integer )
+	'' Only a newly observed raw argument acquires this role. Tokens already
+	'' supplied by a named definition retain that definition's original role.
+	hCaptureLiteralToken(head, token, offset, TRUE)
 end sub
 
 sub fbSemanticModelMacroNumericTrim( byval head as integer, byval units as integer )
@@ -469,7 +560,17 @@ sub fbSemanticModelMacroNumericRestore( byref token as FBTOKEN )
 				if( (.payload <= 0) or (.payload > macro_number_count) ) then
 					fbSemanticModelFailAt("invalid macro numeric payload handle"): exit sub
 				end if
-				token.numeric_payload = .payload
+				with macro_numbers[.payload - 1]
+				if( .token_class <> token.class ) then exit sub
+				'' A quoted/radix token supplies source coordinates only. It must
+				'' never be promoted into a decimal floating spelling after a paste.
+				if( .length < 0 ) then
+					if( (token.class = FB_TKCLASS_NUMLITERAL) andalso (typeGetClass(token.dtype) = FB_DATACLASS_FPOINT) ) then exit sub
+					token.numeric_payload = macro_number_links[head - 1].payload
+					exit sub
+				end if
+			end with
+			token.numeric_payload = .payload
 				with macro_numbers[.payload - 1]
 					token.numeric_original = .text
 					token.numeric_original_length = .length
@@ -485,19 +586,41 @@ sub fbSemanticModelMacroNumericRestore( byref token as FBTOKEN )
 	wend
 end sub
 
-function fbSemanticModelMacroExpressionLocation _
-	( byref first as LEX_LOCATION, byref last as LEX_LOCATION, byval first_counter as longint, _
-	  byval last_counter as longint, byref invocation as LEX_LOCATION ) as integer
-	if( fbSemanticModelFullEnabled( ) = FALSE ) then return FALSE
-	dim as longint identity = first.macro_identity
-	if( identity = 0 ) then identity = last.macro_identity
-	if( identity = 0 ) then
-		dim as integer token = lex.ctx->semantic_last_macro_token
-		if( (token >= 0) and (token < semantic_macro_token_count) ) then
-			if( (semantic_macro_tokens[token].counter > first_counter) and _
-				(semantic_macro_tokens[token].counter <= last_counter) ) then identity = semantic_macro_tokens[token].expansion
+sub fbSemanticModelLiteralTokenSource(byval expression as longint, byval token as FBTOKEN ptr)
+	if( (fbSemanticModelFullEnabled() = FALSE) or lex.ctx->semantic_probe or (token = NULL) ) then exit sub
+	'' Physical literal origins belong to the requested literal-groups contract.
+	'' Other full-model consumers should not pay for per-token source receipts.
+	if( fbSemanticExtraFactsEnabled(FB_SEMEXTRA_LITERAL_GROUPS) = FALSE ) then exit sub
+	dim as LEX_LOCATION source = token->source
+	dim as string kind = "source"
+	dim as string coordinates
+	if( source.macro_identity <> 0 ) then
+		kind = "unavailable"
+		if( (token->numeric_payload > 0) and (token->numeric_payload <= macro_number_count) ) then
+			'' The transport ledger owns original coordinates, not the caller-name
+			'' extent used for a generated expression's ordinary range. Preserve
+			'' that distinction instead of inventing an argument token location.
+			with macro_numbers[token->numeric_payload - 1]
+				if( (.coordinate_slot > 0) and (.coordinate_slot <= macro_number_coordinate_count) ) then
+					coordinates = macro_number_coordinates(.coordinate_slot - 1)
+					kind = iif(.argument_source, "argument", "definition")
+				end if
+			end with
 		end if
+	elseif( (source.raw_valid = FALSE) or (source.source_context = 0) ) then
+		kind = "unavailable"
+	else
+		coordinates = fbSemanticModelCoordinateFact(source, source)
+		if( len(coordinates) = 0 ) then kind = "unavailable"
 	end if
+	fbSemanticModelAppendDetail("K" + TABCHAR + "expression" + TABCHAR + fbSemanticModelNumber(expression) + _
+		TABCHAR + "literal-token-source-kind" + TABCHAR + kind)
+	if( kind <> "unavailable" ) then fbSemanticModelAppendProvenance("LOC" + TABCHAR + "expression" + TABCHAR + _
+		fbSemanticModelNumber(expression) + TABCHAR + "literal-token-source" + TABCHAR + coordinates)
+end sub
+
+
+private function hInvocationLocation( byval identity as longint, byref invocation as LEX_LOCATION ) as integer
 	for depth as integer = 0 to 63
 		dim as integer index = hInvocationIndex(identity)
 		if( index < 0 ) then return FALSE
@@ -527,13 +650,49 @@ function fbSemanticModelMacroExpressionLocation _
 	return FALSE
 end function
 
+function fbSemanticModelMacroExpressionLocation _
+	( byref first as LEX_LOCATION, byref last as LEX_LOCATION, byval first_counter as longint, _
+	  byval last_counter as longint, byref invocation as LEX_LOCATION ) as integer
+	if( fbSemanticModelEnabled( ) = FALSE ) then return FALSE
+	dim as LEX_LOCATION first_site = first, last_site = last
+	dim as integer generated = FALSE
+	if( first.macro_identity <> 0 ) then
+		if( hInvocationLocation(first.macro_identity, first_site) = FALSE ) then return FALSE
+		generated = TRUE
+	end if
+	if( last.macro_identity <> 0 ) then
+		if( hInvocationLocation(last.macro_identity, last_site) = FALSE ) then return FALSE
+		generated = TRUE
+	end if
+	if( generated = FALSE ) then
+		dim as integer token = lex.ctx->semantic_last_macro_token
+		if( (token >= 0) and (token < semantic_macro_token_count) ) then
+			generated = (semantic_macro_tokens[token].counter > first_counter) and _
+				(semantic_macro_tokens[token].counter <= last_counter)
+		end if
+	end if
+	if( generated = FALSE ) then return FALSE
+	'' A generated endpoint uses its written invocation's boundary. The other
+	'' endpoint can be an ordinary operand beyond that invocation. Preserve
+	'' both boundaries; an interior expansion must not replace the whole span.
+	if( first_site.source_file <> last_site.source_file ) then return FALSE
+	if( (first_site.start_line > last_site.end_line) or _
+	    ((first_site.start_line = last_site.end_line) and (first_site.start_column >= last_site.end_column)) ) then return FALSE
+	invocation = first_site
+	invocation.end_line = last_site.end_line
+	invocation.end_column = last_site.end_column
+	invocation.raw_end_line = last_site.raw_end_line
+	invocation.raw_end_column = last_site.raw_end_column
+	invocation.raw_valid and= last_site.raw_valid and (first_site.source_context = last_site.source_context)
+	invocation.is_physical = FALSE
+	return TRUE
+end function
+
 function fbSemanticModelMacroBegin( byval sym as FBSYMBOL ptr, byref source as LEX_LOCATION ) as longint
 	if( fbSemanticModelEnabled( ) = FALSE ) then return 0
 	'' Compact models still need the invocation chain to give generated typed
 	'' expressions a truthful source anchor. Keep that small internal map even
 	'' when the serialized expansion graph is disabled.
-	if( (fbSemanticModelMacroProvenanceEnabled( ) = FALSE) and _
-		(fbSemanticModelFullEnabled( ) = FALSE) ) then return 0
 	if( lex.ctx->semantic_probe ) then return 0
 	dim as longint definition = 0
 	if( fbSemanticModelMacroProvenanceEnabled( ) ) then definition = hDefinition(sym)
@@ -545,7 +704,7 @@ function fbSemanticModelMacroBegin( byval sym as FBSYMBOL ptr, byref source as L
 		parent = semantic_macro_loader
 		relation = semantic_macro_phase
 	end if
-	if( fbSemanticModelFullEnabled( ) ) then
+	if( fbSemanticModelEnabled( ) ) then
 		if( semantic_macro_invocation_count >= SEMANTIC_MACRO_MAX_DEFINITIONS ) then
 			fbSemanticModelFailAt("semantic-macros.bas:283")
 			return 0
@@ -881,5 +1040,7 @@ sub fbSemanticModelMacroExpressionOrigins( byval expression as longint, byval fi
 		index = semantic_macro_tokens[index].previous
 	wend
 end sub
+
+#include once "tooling/semantic-math-constant-impl.bi"
 
 '' end of tooling/semantic-macros.bas

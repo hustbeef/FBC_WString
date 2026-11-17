@@ -25,13 +25,17 @@
 ''       nov/2005 unicode support added [v1ctor]
 
 
+#include once "tooling/semantic-extra-facts.bi"
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
 #include once "lexer/lex.bi"
+#include once "tooling/semantic-comments.bi"
 #include once "preprocessor/pp.bi"
 #include once "parser/parser.bi"
 #include once "tooling/semantic-macros.bi"
 #include once "tooling/semantic-source.bi"
+#include once "tooling/semantic-tokens.bi"
+#include once "tooling/semantic-lookup.bi"
 
 declare sub         lexReadUTF8             ( )
 
@@ -582,6 +586,11 @@ function lexGetCurrentLocation( ) as LEX_LOCATION
 end function
 
 function lexGetLastLocation( ) as LEX_LOCATION
+	'' Early driver diagnostics have no token context or source location.
+	if( lex.ctx = NULL ) then
+		dim as LEX_LOCATION no_location
+		return no_location
+	end if
 	function = lex.ctx->last_source
 end function
 
@@ -2114,11 +2123,13 @@ private sub hCheckPeriods _
 						flags or LEXCHECK_EATPERIOD )
 
 		t->sym_chain = symbLookup( @t->text, t->id, t->class )
+		t->semantic_lookup = fbSemanticModelLastLookup()
 	end if
 
 end sub
 
-private function readId( byref t as FBTOKEN, byval flags as LEXCHECK ) as integer
+private function readId( byref t as FBTOKEN, byval flags as LEXCHECK, _
+	byref preserve_ending as integer ) as integer
 	'' Capture the currmacro status for ppDefineLoad() (in case this is a macro),
 	'' before we skip the identifier's chars, because that could reset the currmacro
 	'' if we leave the current expansion text in the process.
@@ -2139,6 +2150,7 @@ private function readId( byref t as FBTOKEN, byval flags as LEXCHECK ) as intege
 	'' use the special hash tb?
 	if( flags and LEXCHECK_KWDNAMESPC ) then
 		t.sym_chain = symbLookupAt(lex.ctx->kwdns, @t.text, FALSE, FALSE)
+		t.semantic_lookup = fbSemanticModelLastLookup()
 
 		'' not found?
 		if( t.sym_chain = NULL ) then
@@ -2160,6 +2172,7 @@ private function readId( byref t as FBTOKEN, byval flags as LEXCHECK ) as intege
 	end if
 
 	t.sym_chain = symbLookup( @t.text, t.id, t.class )
+	t.semantic_lookup = fbSemanticModelLastLookup()
 
 	'' don't load defines?
 	if( flags and LEXCHECK_NODEFINE ) then
@@ -2179,12 +2192,18 @@ private function readId( byref t as FBTOKEN, byval flags as LEXCHECK ) as intege
 				'' Ignore the ID and read expanded text
 				return FALSE
 			end if
+			'' A function-like define can consume whitespace while finding no
+			'' opening parenthesis. Keep the identifier end saved above; the
+			'' scanner remains at its existing position for the next token.
+			preserve_ending = TRUE
 		end if
 	end if
 
 	if( fbLangOptIsSet( FB_LANG_OPT_PERIODS ) ) then
 		if( (flags and LEXCHECK_NOPERIOD) = 0 ) then
 			hCheckPeriods( @t, flags, t.sym_chain )
+			'' A QB identifier that absorbed periods owns the additional text.
+			if( t.prdpos <> 0 ) then preserve_ending = FALSE
 		end if
 	end if
 
@@ -2304,6 +2323,8 @@ sub lexNextToken _
 
 	dim as uinteger char = any
 	dim as integer reread = any, readchar = any
+	dim as longint semantic_literal_start_units
+	dim as integer preserve_ending = any
 
 	t->after_space = lex.ctx->after_space
 	lex.ctx->after_space = FALSE
@@ -2311,9 +2332,11 @@ sub lexNextToken _
 	do
 		reread = FALSE
 		readchar = FALSE
+		preserve_ending = FALSE
 	t->text[0] = 0                                  '' t.text = ""
 	t->len = 0
 	t->sym_chain = NULL
+	t->semantic_lookup = 0
 	t->literal_truncated = FALSE
 
 	'' skip white space
@@ -2353,6 +2376,10 @@ sub lexNextToken _
 
 	lex.ctx->lastfilepos = lex.ctx->filepos + (lex.ctx->buffptr - @lex.ctx->buff) - 1
 
+	semantic_literal_start_units = 0
+	if( (t->source.macro_identity <> 0) and fbSemanticExtraFactsEnabled(FB_SEMEXTRA_LITERAL_GROUPS) ) then
+		semantic_literal_start_units = lexGetMacroRemainingUnits()
+	end if
 	select case as const char
 	'' '.'?
 	case CHAR_DOT
@@ -2388,7 +2415,7 @@ sub lexNextToken _
 
 	'' A-Z, a-z, _
 	case CHAR_AUPP to CHAR_ZUPP, CHAR_ALOW to CHAR_ZLOW, CHAR_UNDER
-		if( not readId( *t, flags ) ) then
+		if( not readId( *t, flags, preserve_ending ) ) then
 			reread = TRUE
 		end if
 
@@ -2587,10 +2614,19 @@ sub lexNextToken _
 
 	loop while( reread )
 
-	t->source.end_line = lex.ctx->linenum
-	t->source.end_column = lex.ctx->column
-	t->source.raw_end_line = lex.ctx->raw_linenum
-	t->source.raw_end_column = lex.ctx->column
+	if( t->class = FB_TKCLASS_STRLITERAL ) then
+		t->numeric_payload = 0
+		t->numeric_macro_units = 0
+		if( semantic_literal_start_units > 0 ) then t->numeric_macro_units = semantic_literal_start_units - lexGetMacroRemainingUnits()
+		if( t->numeric_macro_units > 0 ) then fbSemanticModelMacroNumericRestore(*t)
+	end if
+
+	if( preserve_ending = FALSE ) then
+		t->source.end_line = lex.ctx->linenum
+		t->source.end_column = lex.ctx->column
+		t->source.raw_end_line = lex.ctx->raw_linenum
+		t->source.raw_end_column = lex.ctx->column
+	end if
 
 end sub
 
@@ -2598,6 +2634,21 @@ end sub
 '' MultiLineComment  = '/' ''' . '/' '''
 ''
 private sub hMultiLineComment( ) static
+	dim as LEX_LOCATION comment_first, comment_last
+	comment_first.source_file = env.inf.name
+	comment_first.start_line = lex.ctx->linenum
+	comment_first.start_column = lex.ctx->column - 1
+	comment_first.end_line = lex.ctx->linenum
+	comment_first.end_column = lex.ctx->column - 1
+	comment_first.source_context = fbSemanticModelCurrentSource()
+	comment_first.raw_start_line = lex.ctx->raw_linenum
+	comment_first.raw_end_line = lex.ctx->raw_linenum
+	comment_first.raw_start_column = lex.ctx->column - 1
+	comment_first.raw_end_column = lex.ctx->column - 1
+	comment_first.macro_identity = fbSemanticModelMacroTokenOrigin()
+	comment_first.raw_valid = (lex.ctx->kind <> LEX_TKCTX_CONTEXT_EVAL) and _
+		(lex.ctx->deflen = 0) and (comment_first.macro_identity = 0)
+	comment_first.is_physical = comment_first.raw_valid
 	dim as integer cnt
 
 	'' skip the last '''
@@ -2659,6 +2710,14 @@ private sub hMultiLineComment( ) static
 			lexEatChar( )
 		end select
 	loop
+
+	comment_last = comment_first
+	comment_last.raw_end_line = lex.ctx->raw_linenum
+	comment_last.raw_end_column = lex.ctx->column
+	comment_last.end_line = lex.ctx->linenum
+	comment_last.end_column = lex.ctx->column
+	fbSemanticModelAcceptBlockComment(comment_first, comment_last)
+
 
 end sub
 
@@ -2768,6 +2827,9 @@ private function lexGetStrLitText( byval tk as integer ) as string
 	case FB_TK_STRLIT_NOESC
 		DZstrConcatAssignC( s, asc( "$" ) )
 		is_escaped = FALSE
+	case else
+		errReportEx( FB_ERRMSG_INTERNAL, __FUNCTION__ )
+		return ""
 	end select
 
 	DZstrConcatAssignC( s, asc( """" ) )
@@ -2890,6 +2952,7 @@ sub lexSkipToken( byval flags as LEXCHECK )
 	'' Observe committed parser consumption, not lookahead or PP scanning.
 	'' The exporter keeps the lexical class; it does not reinterpret names.
 	if( (lex.ctx->reclevel = 0) and (lex.ctx->semantic_probe = FALSE) and (pp.skipping = FALSE) ) then
+		fbSemanticModelConsumedToken(lex.ctx->head)
 		fbSemanticModelConsumedKeyword(lex.ctx->head)
 	end if
 

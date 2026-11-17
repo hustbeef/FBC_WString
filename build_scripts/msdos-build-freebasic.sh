@@ -90,6 +90,7 @@ Environment:
   CURL_BIN               curl executable for host downloads (MSYS2 default: /usr/bin/curl)
   TARGET_TRIPLET         DJGPP target triplet (default: i586-pc-msdosdjgpp)
   DOS_TCP_PROVIDER        Set to watt32 to enable the optional Watt-32 TCP path
+  DOS_THREAD_PROVIDER     Bundled thread provider (default: pdmlwp; empty disables)
   DOS_WATT32_CFLAGS       Include path for the Watt-32 headers
   DOS_WATT32_LIBS         Link flags for the Watt-32 archive (default: DJGPP payload lib)
   DOS_DPMI_YIELD          Set to YesPlease for a tested DPMI host time-slice path
@@ -157,6 +158,9 @@ esac
 
 TARGET_TRIPLET="${TARGET_TRIPLET:-i586-pc-msdosdjgpp}"
 PREFIX="${PREFIX:-/fb}"
+# Bundle the existing opt-in scheduler and its source notices. Ordinary
+# programs still link the non-threaded runtime unless they select it.
+export DOS_THREAD_PROVIDER="${DOS_THREAD_PROVIDER-pdmlwp}"
 
 BUILDROOT="${BUILDROOT:-$ROOT/.build-msdos/$HOST_KIND}"
 HOST_WORKTREE="${HOST_WORKTREE:-$BUILDROOT/host-worktree}"
@@ -175,8 +179,9 @@ DJGPP_BUILD_REPO_URL="${DJGPP_BUILD_REPO_URL:-https://github.com/andrewwutw/buil
 DJGPP_BUILD_REPO_REF="${DJGPP_BUILD_REPO_REF:-master}"
 DJGPP_BUILD_GCC_VER="${DJGPP_BUILD_GCC_VER:-12.2.0}"
 DJGPP_BASE_URL="${DJGPP_BASE_URL:-https://www.delorie.com/pub/djgpp/current}"
-DOSBOX_X_RELEASE_TAG="${DOSBOX_X_RELEASE_TAG:-dosbox-x-v2026.05.02-osfree}"
-DOSBOX_X_ASSET="${DOSBOX_X_ASSET:-dosbox-x-mingw64-${DOSBOX_X_RELEASE_TAG}-portable.zip}"
+DOSBOX_X_VERSION="${DOSBOX_X_VERSION:-2026.10.01}"
+DOSBOX_X_RELEASE_TAG="${DOSBOX_X_RELEASE_TAG:-dosbox-x-v${DOSBOX_X_VERSION}}"
+DOSBOX_X_ASSET="${DOSBOX_X_ASSET:-dosbox-x-mingw64-${DOSBOX_X_VERSION}-portable.zip}"
 DOSBOX_X_URL="${DOSBOX_X_URL:-https://github.com/joncampbell123/dosbox-x/releases/download/${DOSBOX_X_RELEASE_TAG}/${DOSBOX_X_ASSET}}"
 DOSBOX_X_ROOT="${DOSBOX_X_ROOT:-$ROOT/.build-msdos/dosbox-x}"
 
@@ -295,7 +300,13 @@ DJGPP_DOS_CACHE="${DJGPP_DOS_CACHE:-$BUILDROOT/djgpp-dos}"
 
 copy_source_tree() {
 	local dst="$1"
-	run rsync -a --delete --delete-excluded --prune-empty-dirs \
+	local -a copy_flags=(-a)
+	if [ "$HOST_KIND" = "msys2" ]; then
+		# NTFS worktrees need file content and timestamps, not POSIX ownership
+		# changes for every source. Keep symlinks without metadata churn.
+		copy_flags=(-rlt --no-perms --no-owner --no-group --omit-dir-times)
+	fi
+	run rsync "${copy_flags[@]}" --delete --delete-excluded --prune-empty-dirs \
 		--exclude-from "$ROOT/mk/source-copy-excludes.rsync" \
 		./ "$dst"/
 }
@@ -1008,7 +1019,9 @@ if [ "$DO_HOST_BOOTSTRAP" = "1" ]; then
 		BUILD_FBC="$HOST_FBC"
 
 	msg "cleaning host tree"
-	run make clean \
+	# Only build outputs need cleaning here. The general clean also visits
+	# every test harness, regenerating test manifests in a fresh source copy.
+	run make clean-compiler clean-libs clean-build \
 		"${HOST_MAKE_TOOL_ARGS[@]}" \
 		|| true
 
@@ -1123,6 +1136,8 @@ if [ "$DO_STAGE_INSTALL" = "1" ]; then
 	cat > "$DISTROOT/fbdos.bat" <<'EOF'
 @echo off
 set DJGPP=C:\DJGPP\DJGPP.ENV
+rem GCC must run from its DJGPP tree so its private programs remain reachable.
+set GCC=C:\DJGPP\BIN\GCC.EXE
 set PATH=C:\FB;C:\DJGPP\BIN;%PATH%
 echo FreeBASIC DOS environment ready.
 EOF
@@ -1218,6 +1233,7 @@ run_dosbox_test() {
 	fi
 	prepare_dos_runtime_layout "$test_root/fb" "$test_root/djgpp"
 	[ -f "$test_root/fb/bin/dos/as.exe" ] || die "DOS smoke-test assembler is missing"
+	cp -f "$ROOT/tests/dos/emulator-x87.bas" "$test_root/X87TEST.BAS"
 
 	# On MSYS2, DOSBox-X's imgmake drive path is not a host path.  It can report
 	# successful image creation without leaving a file where sfdisk can read it.
@@ -1239,9 +1255,8 @@ EOF
 		cat > "$autoexec_bat" <<'EOF'
 @echo off
 echo begin>D:\TRACE.LOG
-set DJGPP=C:\DJGPP\DJGPP.ENV
+call C:\FBDOS.BAT
 echo djgpp=%DJGPP%>>D:\TRACE.LOG
-set PATH=C:\FB;C:\DJGPP\BIN;%PATH%
 echo path=%PATH%>>D:\TRACE.LOG
 if not exist C:\FB\FBC.EXE echo missing-fbc>>D:\TRACE.LOG
 if not exist C:\DJGPP\BIN\GCC.EXE echo missing-gcc>>D:\TRACE.LOG
@@ -1259,6 +1274,9 @@ echo hello-exe-present>>D:\TRACE.LOG
 C:\DJGPP\BIN\REDIR.EXE -eo -o D:\RUN.LOG D:\HELLO.EXE
 echo hello-errorlevel=%ERRORLEVEL%>>D:\TRACE.LOG
 :afterhello
+C:\FB\FBC.EXE -gen gcc D:\X87TEST.BAS -x D:\X87TEST.EXE > D:\GCC.LOG
+if exist D:\X87TEST.EXE D:\X87TEST.EXE >> D:\GCC.LOG
+C:\DJGPP\BIN\CWSDPMI.EXE -u >>D:\TRACE.LOG
 dir D:\RESULT.TXT >>D:\TRACE.LOG
 EOF
 
@@ -1324,9 +1342,8 @@ EOF
 		cat > "$autoexec_bat" <<'EOF'
 @echo off
 echo begin>trace.log
-set DJGPP=C:\DJGPP\DJGPP.ENV
+call C:\FBDOS.BAT
 echo djgpp=%DJGPP%>>trace.log
-set PATH=C:\FB;C:\DJGPP\BIN;%PATH%
 echo path=%PATH%>>trace.log
 if not exist C:\FB\FBC.EXE echo missing-fbc>>trace.log
 if not exist C:\DJGPP\BIN\GCC.EXE echo missing-gcc>>trace.log
@@ -1344,6 +1361,9 @@ echo hello-exe-present>>trace.log
 hello.exe >>trace.log
 echo hello-errorlevel=%ERRORLEVEL%>>trace.log
 :afterhello
+C:\FB\FBC.EXE -gen gcc X87TEST.BAS -x X87TEST.EXE > GCC.LOG
+if exist X87TEST.EXE X87TEST.EXE >> GCC.LOG
+C:\DJGPP\BIN\CWSDPMI.EXE -u >>trace.log
 dir >>trace.log
 EOF
 
@@ -1406,6 +1426,14 @@ EOF
 	fi
 
 	grep -q "FreeBASIC DOS OK" "$result_txt" || die "DOSBox smoke test produced unexpected output"
+	local gcc_log="$test_root/GCC.LOG"
+	if [ ! -f "$gcc_log" ] && [ -f "$test_root/gcc.log" ]; then
+		gcc_log="$test_root/gcc.log"
+	fi
+	if [ ! -f "$gcc_log" ] || ! grep -q 'DOS_X87=PASS' "$gcc_log"; then
+		[ ! -f "$gcc_log" ] || sed -n '1,40p' "$gcc_log" >&2
+		die "DOSBox C-backend smoke test failed through fbdos.bat"
+	fi
 
 	if find "$test_root" -maxdepth 1 -type f \
 		\( -iname '*.asm' -o -iname '*.o' -o -iname '*.tmp' \) \
@@ -1428,7 +1456,32 @@ if [ "$DO_PACKAGE" = "1" ]; then
 	rm -f "$PKGFILE"
 	(
 		cd "$OUT"
-		zip -r "$(basename "$PKGFILE")" "$PKGNAME"
+		if [ "$HOST_KIND" = "msys2" ] && [ -x /mingw64/bin/python.exe ]; then
+			# Native enumeration avoids MSYS POSIX metadata queries for every
+			# packaged header/manual. DOS does not use Unix permission bits.
+			/mingw64/bin/python.exe - "$(basename "$PKGFILE")" "$PKGNAME" <<'PY'
+import os
+from pathlib import Path
+import sys
+import zipfile
+
+root = Path(sys.argv[2])
+with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED,
+                     strict_timestamps=False) as archive:
+    for directory, subdirs, files in os.walk(root):
+        subdirs.sort()
+        folder = Path(directory)
+        archive.write(folder, folder.as_posix())
+        for name in sorted(subdirs + files):
+            if (folder / name).is_symlink():
+                raise SystemExit('DOS package cannot contain symbolic links')
+        for name in sorted(files):
+            path = folder / name
+            archive.write(path, path.as_posix())
+PY
+		else
+			zip -r "$(basename "$PKGFILE")" "$PKGNAME"
+		fi
 	)
 
 	[ -f "$PKGFILE" ] || die "package creation failed"

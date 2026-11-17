@@ -28,6 +28,7 @@
 #include once "parser/parser.bi"
 #include once "backend/ir.bi"
 #include once "ast/ast.bi"
+#include once "tooling/semantic-loads.bi"
 
 '' Labels (l = NULL; r = NULL)
 function astNewLABEL _
@@ -110,7 +111,7 @@ end function
 function astAsmAppendText _
 	( _
 		byval tail as ASTASMTOK ptr, _
-		byval text as zstring ptr _
+		byval text as const zstring ptr _
 	) as ASTASMTOK ptr
 
 	tail = astAsmAppend( tail, AST_ASMTOK_TEXT )
@@ -145,10 +146,24 @@ function astNewASM( byval asmtokhead as ASTASMTOK ptr ) as ASTNODE ptr
 	function = n
 end function
 
+private function hAsmHasBasicLabel( byval token as ASTASMTOK ptr ) as integer
+	while( token )
+		if( token->type = AST_ASMTOK_SYMB andalso token->sym <> NULL ) then
+			if( token->sym->class = FB_SYMBCLASS_LABEL ) then return TRUE
+		end if
+		token = token->next
+	wend
+	return FALSE
+end function
+
 function astLoadASM( byval n as ASTNODE ptr ) as IRVREG ptr
-	if( ast.doemit andalso (env.clopt.backend = FB_BACKEND_LLVM) andalso _
-	    (n->asm.tokhead <> NULL) ) then
-		'' LLVM allocates constraint operands around an entire asm call.
+	dim as integer c_asm = ((env.clopt.backend = FB_BACKEND_GCC) orelse _
+		(env.clopt.backend = FB_BACKEND_CLANG)) andalso _
+		(env.clopt.asmsyntax = FB_ASMSYNTAX_INTEL)
+	dim as integer join_asm = (env.clopt.backend = FB_BACKEND_LLVM) orelse c_asm
+	if( c_asm andalso hAsmHasBasicLabel(n->asm.tokhead) ) then join_asm = FALSE
+	if( ast.doemit andalso n->asm.tokhead <> NULL andalso join_asm ) then
+		'' C and LLVM allocate constraint operands around an entire asm call.
 		'' Keep consecutive instructions together so preparing a later line's
 		'' operands cannot overwrite the user's registers or unbalance a push.
 		'' Transfer token ownership; later AST nodes still get deleted normally.
@@ -160,6 +175,10 @@ function astLoadASM( byval n as ASTNODE ptr ) as IRVREG ptr
 		while( following <> NULL )
 			select case( following->class )
 			case AST_NODECLASS_ASM
+				'' Keep a branch to BASIC in its existing asm-goto statement.
+				'' Combining earlier writes into its input-only constraint list
+				'' would hide those writes from older C compiler interfaces.
+				if( c_asm andalso hAsmHasBasicLabel(following->asm.tokhead) ) then exit while
 				if( following->asm.tokhead <> NULL ) then
 					tail = astAsmAppendText( tail, NEWLINE )
 					tail->next = following->asm.tokhead
@@ -180,6 +199,7 @@ function astLoadASM( byval n as ASTNODE ptr ) as IRVREG ptr
 
 	if( ast.doemit ) then
 		if( n->asm.tokhead <> NULL ) then
+			fbSemanticModelLoadAssembly(n->asm.tokhead)
 			irEmitAsmLine( n->asm.tokhead )
 		end if
 	end if
@@ -376,8 +396,15 @@ function astLoadLOAD( byval n as ASTNODE ptr ) as IRVREG ptr
 
 	if( ast.doemit ) then
 		if( n->lod.isres ) then
-			vr = irAllocVREG( v1->dtype, v1->subtype )
-			irEmitLOADRES( v1, vr )
+			if( (ast.proc.curr <> NULL) andalso _
+			    symbIsGAS32CLongDoubleCAbiResult( ast.proc.curr->sym ) andalso _
+			    (v1->sym = symbGetProcResult( ast.proc.curr->sym )) ) then
+				'' The x87 return value must stay in ST(0) until the epilogue.
+				irEmitLOADRES( v1, NULL )
+			else
+				vr = irAllocVREG( v1->dtype, v1->subtype )
+				irEmitLOADRES( v1, vr )
+			end if
 		else
 			irEmitLOAD( v1 )
 		end if
@@ -594,6 +621,8 @@ end function
 
 '' Assertions are independent of debug mode. Keep this local helper available
 '' to -eassert; release builds can omit it when the assertion is disabled.
+'' __FB_ERR__ bit 5 enables assertions independently of debug generation.
+#if (__FB_ERR__ and &h20)
 private function astCountBitfields( byval n as ASTNODE ptr ) as integer
 	dim as integer count = any
 
@@ -610,13 +639,16 @@ private function astCountBitfields( byval n as ASTNODE ptr ) as integer
 
 	function = count
 end function
+#endif
 
 '' Remove FIELD nodes that mark bitfield accesses/assignments and add the
 '' corresponding code instead. Non-bitfield FIELD nodes stay in,
 '' they're used by astProcVectorize().
 function astUpdateBitfields( byval n as ASTNODE ptr ) as ASTNODE ptr
 	'' Shouldn't miss any bitfields
+#if (__FB_ERR__ and &h20)
 	assert( astCountBitfields( n ) <= ast.bitfieldcount )
+#endif
 
 	if( ast.bitfieldcount <= 0 ) then
 		return n
@@ -936,7 +968,8 @@ dim shared dbg_astNodeOpNames( 0 to AST_OPCODES - 1 ) as NameInfo = _
 	( /' @"AST_OP_LIT_COMMENT"     , '/ @"LIT_COMMENT"  /' , 0 '/ ), _
 	( /' @"AST_OP_LIT_ASM"         , '/ @"LIT_ASM"      /' , 0 '/ ), _
 	( /' @"AST_OP_TOSIGNED"        , '/ @"TOSIGNED"     /' , 0 '/ ), _
-	( /' @"AST_OP_TOUNSIGNED"      , '/ @"TOUNSIGNED"   /' , 0 '/ ) _
+	( /' @"AST_OP_TOUNSIGNED"      , '/ @"TOUNSIGNED"   /' , 0 '/ ), _
+	( /' @"AST_OP_C_EVAL"          , '/ @"C_EVAL"       /' , 0 '/ ) _
 }
 
 function astDumpOpToStr( byval op as AST_OP ) as string
@@ -1016,7 +1049,8 @@ private function hAstNodeToStr _
 		return str( astConstGetInt( n ) ) & NODE_TYPE
 
 	case AST_NODECLASS_VAR
-		return "VAR( " & *iif( n->sym, symbGetName( n->sym ), @"<NULL>" ) & " )" & NODE_TYPE
+		return "VAR( " & *iif( n->sym, cptr( const zstring ptr, symbGetName( n->sym ) ), _
+		                          cptr( const zstring ptr, @"<NULL>" ) ) & " )" & NODE_TYPE
 
 	case AST_NODECLASS_FIELD
 		return "FIELD( " & *symbGetName( n->sym ) & " )" & NODE_TYPE

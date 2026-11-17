@@ -29,6 +29,21 @@
 #include once "runtime/rtl.bi"
 #include once "ast/ast.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-object-operations.bi"
+#include once "tooling/semantic-recovery.bi"
+
+declare sub fbSemanticModelPushExpressionRange _
+	( _
+		byref source_start as LEX_LOCATION, _
+		byval nonphysical_tokens_at_start as longint, _
+		byref previous_start as LEX_LOCATION, _
+		byref previous_nonphysical_tokens as longint _
+	)
+declare sub fbSemanticModelPopExpressionRange _
+	( _
+		byref previous_start as LEX_LOCATION, _
+		byval previous_nonphysical_tokens as longint _
+	)
 
 declare sub fbSemanticModelExportImplicitCall _
 	( _
@@ -139,7 +154,9 @@ function cAssignFunctResult( byval is_return as integer ) as integer
 				'' 2. would still get a zstring VAR if the result type is a string,
 				''    which would still trigger a "mismatch" warning which we don't want
 				''    during error recovery.
-				rhs = astNewCONSTz( typeAddrOf( parser.currproc->typ ), parser.currproc->subtype )
+				rhs = fbSemanticModelRecoveryNode( _
+					astNewCONSTz( typeAddrOf( parser.currproc->typ ), parser.currproc->subtype ), "replacement-zero", __FUNCTION__, _
+					"parser/procedures/parser-proccall.bas", __LINE__)
 			end if
 		end if
 	else
@@ -316,7 +333,8 @@ function cProcCall _
 		byval thisexpr as ASTNODE ptr, _
 		byval checkprnts as integer, _
 		byval options as FB_PARSEROPT, _
-		byval semantic_site as LEX_LOCATION ptr _
+		byval semantic_site as LEX_LOCATION ptr, _
+		byval semantic_object_operation as longint _
 	) as ASTNODE ptr
 
 	dim as integer is_propset = FALSE
@@ -343,7 +361,9 @@ function cProcCall _
 			if( expr = NULL ) then
 				errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 				'' error recovery: fake an expr
-				expr = astNewCONSTi( 0 )
+				expr = fbSemanticModelRecoveryNode( _
+					astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+					"parser/procedures/parser-proccall.bas", __LINE__)
 			end if
 
 			dim as FB_CALL_ARG ptr arg = symbAllocOvlCallArg( @parser.ovlarglist, @arg_list, FALSE )
@@ -432,6 +452,7 @@ function cProcCall _
 
 	'' ProcArgList
 	procexpr = cProcArgList( base_parent, sym, ptrexpr, @arg_list, options, semantic_site )
+	fbSemanticModelObjectOperationSelection(semantic_object_operation, procexpr)
 
 	'' ')'
 	if( (checkprnts) or (parser.prntcnt > 0) ) then
@@ -487,6 +508,7 @@ private function hProcSymbol _
 
 	function = FALSE
 	dim as LEX_LOCATION semantic_site = lexGetCurrentLocation( )
+	dim as longint semantic_nonphysical = lexGetNonphysicalTokenCount( )
 
 	if( cCompStmtIsAllowed( FB_CMPSTMT_MASK_CODE ) = FALSE ) then
 		hSkipStmt( )
@@ -517,7 +539,15 @@ private function hProcSymbol _
 	'' ID ProcParamList?
 	if( do_call ) then
 		dim as ASTNODE ptr expr = any
+		dim as LEX_LOCATION previous_source_start
+		dim as longint previous_nonphysical_tokens
+		'' A statement call has no enclosing expression parser. Keep its
+		'' source start while parsing the call so its prefix and arguments
+		'' can be recorded without claiming that inputs are missing.
+		fbSemanticModelPushExpressionRange(semantic_site, semantic_nonphysical, _
+			previous_source_start, previous_nonphysical_tokens)
 		expr = cProcCall( base_parent, sym, NULL, NULL, FALSE, options, @semantic_site )
+		fbSemanticModelPopExpressionRange(previous_source_start, previous_nonphysical_tokens)
 
 		'' assignment of a function deref?
 		if( expr <> NULL ) then
@@ -1023,8 +1053,10 @@ private sub hCtorChain( )
 	'' CONSTRUCTOR
 	lexSkipToken( LEXCHECK_POST_SUFFIX )
 
+	dim as longint semantic_operation = fbSemanticModelObjectOperationBegin("constructor-chain", parent)
 	cProcCall( NULL, symbGetCompCtorHead( parent ), NULL, _
-	           astBuildVarField( symbGetParamVar( symbGetProcHeadParam( parser.currproc ) ) ) )
+	           astBuildVarField( symbGetParamVar( symbGetProcHeadParam( parser.currproc ) ) ), FALSE, 0, NULL, semantic_operation )
+	fbSemanticModelObjectOperationEnd(semantic_operation, NULL, "complete")
 end sub
 
 ''  BaseInit  =  BASE (CtorCall | Initializer)
@@ -1069,6 +1101,7 @@ private sub hBaseInit( )
 	lexSkipToken( LEXCHECK_POST_SUFFIX )
 
 	subtype = symbGetSubtype( base_ )
+	dim as longint semantic_operation = fbSemanticModelObjectOperationBegin("base-initializer-source", symbGetNamespace(parser.currproc), base_)
 
 	'' Has a ctor?
 	if( symbGetCompCtorHead( subtype ) ) then
@@ -1077,6 +1110,7 @@ private sub hBaseInit( )
 		'' cCtorCall() created a temporary object to
 		'' call the constructor on, we delete it though:
 		ctorcall = astCALLCTORToCALL( ctorcall )
+		fbSemanticModelObjectOperationSelection(semantic_operation, ctorcall)
 
 		'' Turn the ctorcall into an initree
 		initree = astTypeIniBegin( FB_DATATYPE_STRUCT, subtype, TRUE )
@@ -1088,6 +1122,7 @@ private sub hBaseInit( )
 	end if
 
 	parser.currproc->proc.ext->base_initree = initree
+	fbSemanticModelObjectOperationEnd(semantic_operation, initree, iif(initree = NULL, "empty", "built"))
 end sub
 
 '' BaseMemberAccess  =  (BASE '.')+ ID

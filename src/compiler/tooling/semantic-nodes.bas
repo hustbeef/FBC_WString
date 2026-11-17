@@ -5,6 +5,14 @@
 '' This file intentionally does NOT contain: AST construction or code generation.
 
 #include once "tooling/semantic-private.bi"
+#include once "tooling/semantic-blocks.bi"
+#include once "tooling/semantic-lifetimes.bi"
+#include once "tooling/semantic-temporaries.bi"
+#include once "tooling/semantic-loads.bi"
+#include once "tooling/semantic-object-operations.bi"
+
+declare sub fbSemanticModelObserveArgumentInput()
+declare sub fbSemanticModelObserveCallTargetInput()
 
 '' -------------------------------------------------------------------------
 '' Stable node names
@@ -78,6 +86,11 @@ end sub
 sub fbSemanticModelExportNodeDetails(byval node as ASTNODE ptr, byval nodeid as longint)
 	if( (fbSemanticModelFullEnabled( ) = FALSE) or (node = NULL) ) then exit sub
 	hProperty(nodeid, "kind", hNodeKind(node))
+	fbSemanticModelLoadOrigin(node, nodeid)
+	fbSemanticModelCleanupNode(node, nodeid)
+	fbSemanticModelLexicalCleanupNode(node, nodeid)
+	fbSemanticModelTemporaryNode(node, nodeid)
+	fbSemanticModelObjectOperationNode(node, nodeid)
 	if( node->vector <> 0 ) then hNumber(nodeid, "vector-width", node->vector)
 	'' Read only the union member belonging to this node class. In particular,
 	'' conversion flags are not an operator and CALLCTOR is not AST_NODE_CALL.
@@ -139,6 +152,12 @@ sub fbSemanticModelExportNodeDetails(byval node as ASTNODE ptr, byval nodeid as 
 			call_kind = "runtime"
 		end if
 		hProperty(nodeid, "call-kind", call_kind)
+		if( call_kind = "indirect" ) then
+			'' Preserve the written callee before source snapshots are traversed.
+			'' Zero explicitly denotes a lowered target without a source identity.
+			hNumber(nodeid, "call-pointer-expression", node->l->semantic_expression)
+			fbSemanticModelObserveCallTargetInput()
+		end if
 		hNumber(nodeid, "argument-count", node->call.args)
 		fbSemanticModelExportRelation("node", nodeid, node->call.tmpres, "result-temporary")
 	case AST_NODECLASS_ARG
@@ -148,6 +167,7 @@ sub fbSemanticModelExportNodeDetails(byval node as ASTNODE ptr, byval nodeid as 
 		hNumber(nodeid, "default-argument", abs(node->arg.semantic_defaulted <> FALSE))
 		if( (node->semantic_expression > 0) and (node->arg.semantic_defaulted = FALSE) ) then
 			hNumber(nodeid, "call-argument-expression", node->semantic_expression)
+			fbSemanticModelObserveArgumentInput()
 		end if
 		select case node->arg.mode
 		case FB_PARAMMODE_BYVAL: hProperty(nodeid, "passing-mode", "byval")
@@ -178,7 +198,7 @@ sub fbSemanticModelExportNodeDetails(byval node as ASTNODE ptr, byval nodeid as 
 		'' can still contain a previous pool node's payload, not a symbol.
 		fbSemanticModelExportRelation("node", nodeid, node->op.ex, "branch-target")
 		if( node->class = AST_NODECLASS_BRANCH ) then
-			fbSemanticModelExportRelation("node", nodeid, node->sym, "branch-target")
+			if( node->op.semantic_scope_exit > 0 ) then hNumber(nodeid, "native-scope-exit", node->op.semantic_scope_exit)
 			select case node->op.op
 			case AST_OP_JMP: hProperty(nodeid, "branch-kind", "unconditional")
 			case AST_OP_JEQ: hProperty(nodeid, "branch-kind", "equal")

@@ -23,6 +23,7 @@
         - string glyph rendering
 */
 
+#include "../gfx3_exports.h"
 #include "../gfx3_api_internal.h"
 #include "../gfx3_gpu_surface.h"
 #include "../gfx3_image.h"
@@ -35,9 +36,6 @@ enum {
 	FB_GFX3_DRAW_PAINT_FILL = 0
 };
 
-FBCALL void fb_GfxPaint(void *target, float x, float y,
-	unsigned int color, unsigned int border_color, FBSTRING *pattern,
-	int paint_mode, int flags);
 
 /* ------------------------------------------------------------------------- */
 /* Parser helpers                                                            */
@@ -171,7 +169,7 @@ static int draw_target_line(void *target, FB_GFX3_IMAGE_VIEW *image,
 }
 
 static int draw_execute(void *target, FB_GFX3_IMAGE_VIEW *image,
-	FB_GFX3_DRAW_STATE *state, FBSTRING *command, unsigned int depth)
+	FB_GFX3_DRAW_STATE *state, FBSTRING_ACCESS *command, unsigned int depth)
 {
 	char *cursor;
 	float x;
@@ -264,14 +262,14 @@ static int draw_execute(void *target, FB_GFX3_IMAGE_VIEW *image,
 			break;
 
 		case 'X': {
-			FBSTRING *nested;
+			FBSTRING_ACCESS *nested;
 
 			cursor++;
 			if (!draw_parse_number(&cursor, &value1)) {
 				result = FB_GFX3_INVALID;
 				goto exit_draw;
 			}
-			nested = (FBSTRING *)(uintptr_t)value1;
+			nested = (FBSTRING_ACCESS *)(uintptr_t)value1;
 			state->last_x = x;
 			state->last_y = y;
 			result = draw_execute(target, image, state, nested, depth + 1u);
@@ -421,7 +419,7 @@ exit_draw:
 /* Public DRAW ABI                                                           */
 /* ------------------------------------------------------------------------- */
 
-FBCALL void fb_GfxDraw(void *target, FBSTRING *command)
+FBCALL void fb_GfxDraw(void *target, FBSTRING_ACCESS *command)
 {
 	FB_GFX3_DRAW_STATE *state;
 	FB_GFX3_SURFACE *gpu_surface;

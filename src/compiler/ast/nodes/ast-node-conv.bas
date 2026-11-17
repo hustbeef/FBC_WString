@@ -28,6 +28,7 @@
 #include once "runtime/rtl.bi"
 #include once "ast/ast.bi"
 #include once "support/numeric/fp-policy.bi"
+#include once "tooling/semantic-numeric-conversions.bi"
 
 private sub hConstConv( byval todtype as integer, byval l as ASTNODE ptr )
 	dim as integer ldtype = any
@@ -390,6 +391,11 @@ private function hCheckSameTypeCONV _
 	if( typeGetDtAndPtrOnly( ldtype ) <> typeGetDtAndPtrOnly( to_dtype ) ) then
 		exit function
 	end if
+	'' Preserve builtin C aliases such as CLong even when their FB type has
+	'' the same width and signedness as the source expression.
+	if( typeGetMangleDt( ldtype ) <> typeGetMangleDt( to_dtype ) ) then
+		exit function
+	end if
 
 	if( l->subtype <> to_subtype ) then
 		exit function
@@ -545,6 +551,7 @@ function astNewCONV _
 	end if
 
 	ldtype = astGetFullType( l )
+	fbSemanticModelNumericConversion(l, to_dtype, to_subtype, options)
 	if( typeIsInteger128Scalar( to_dtype ) andalso _
 	    typeIsInteger128Scalar( ldtype ) ) then
 		'' Signed and unsigned 128-bit values have the same representation.

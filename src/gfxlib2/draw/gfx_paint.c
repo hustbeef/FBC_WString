@@ -70,7 +70,7 @@ static int paint(void *target, float fx, float fy, unsigned int color,
 
 	FB_GRAPHICS_LOCK( );
 
-	if (!__fb_gfx) {
+	if (!fb_gfx) {
 		FB_GRAPHICS_UNLOCK( );
 		return FB_RTERROR_ILLEGALFUNCTIONCALL;
 	}
@@ -203,8 +203,8 @@ static int paint(void *target, float fx, float fy, unsigned int color,
 					fb_hPixelCpy(dest, src, s->x2 & 0x7);
 			}
 
-			if (__fb_gfx->framebuffer == context->line[0])
-				__fb_gfx->dirty[y] = TRUE;
+			if (fb_gfx->framebuffer == context->line[0])
+				fb_gfx->dirty[y] = TRUE;
 		}
 	}
 done:
@@ -223,7 +223,7 @@ done:
 }
 
 FBCALL void fb_GfxPaint(void *target, float fx, float fy, unsigned int color,
-	unsigned int border_color, FBSTRING *pattern, int mode, int flags)
+	unsigned int border_color, FBSTRING_ACCESS *pattern, int mode, int flags)
 {
 	unsigned char data[256] = { 0 };
 	ssize_t pattern_size = (pattern && pattern->data) ? FB_STRSIZE(pattern) : 0;
@@ -234,7 +234,7 @@ FBCALL void fb_GfxPaint(void *target, float fx, float fy, unsigned int color,
 	(void)paint(target, fx, fy, color, border_color, data, sizeof(data), mode, flags);
 }
 
-FBCALL int fb_GfxPaintPattern(void *target, float x, float y, FBSTRING *pattern,
+FBCALL int fb_GfxPaintPattern(void *target, float x, float y, FBSTRING_ACCESS *pattern,
 	unsigned int foreground, unsigned int background, unsigned int border,
 	int relative)
 {

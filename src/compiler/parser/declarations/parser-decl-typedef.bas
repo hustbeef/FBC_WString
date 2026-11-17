@@ -25,6 +25,11 @@
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
 #include once "parser/parser.bi"
+#include once "tooling/semantic-recovery.bi"
+
+declare function parserGetLastTypeAlias( ) as FBSYMBOL ptr
+declare sub fbSemanticModelTypeAliasDeclaration(byval subject as FBSYMBOL ptr, byval alias_symbol as FBSYMBOL ptr)
+
 
 declare sub fbSemanticModelDeclarationRepeat(byval sym as FBSYMBOL ptr, byref kind as const string, _
 	byval repeated as integer, byref source as LEX_LOCATION)
@@ -207,6 +212,41 @@ private sub hAddForwardRef _
 	dtype = typeMultAddrOf( dtype, ptrcount ) or constmask
 end sub
 
+private function hReadTypedefAlignment( byref typealign as integer ) as integer
+	typealign = 0
+	if( lexGetToken( ) <> FB_TK_FIELD ) then
+		return TRUE
+	end if
+
+	'' FIELD = ConstExpression raises the alias's minimum natural alignment.
+	lexSkipToken( LEXCHECK_POST_SUFFIX )
+	if( cAssignToken( ) = FALSE ) then
+		errReport( FB_ERRMSG_SYNTAXERROR )
+		return FALSE
+	end if
+
+	dim as ASTNODE ptr expr = cExpression( )
+	if( expr = NULL ) then
+		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
+		return FALSE
+	end if
+	if( astIsCONST( expr ) = FALSE ) then
+		errReport( FB_ERRMSG_EXPECTEDCONST )
+		astDelTree( expr )
+		return FALSE
+	end if
+
+	dim as longint requested = astConstFlushToInt( expr )
+	if( (requested < 1) or (requested > 16) or _
+	    ((requested and (requested - 1)) <> 0) ) then
+		errReport( FB_ERRMSG_INVALIDSIZE, TRUE )
+		return FALSE
+	end if
+
+	typealign = requested
+	return TRUE
+end function
+
 private sub hAddTypedef _
 	( _
 		byval pid as zstring ptr, _
@@ -218,8 +258,17 @@ private sub hAddTypedef _
 		byval attrib as FB_SYMBATTRIB, _
 		byref semantic_site as LEX_LOCATION, _
 		byval has_site as integer, _
-		byref forward_site as LEX_LOCATION _
+		byref forward_site as LEX_LOCATION, _
+		byval semantic_type_alias as FBSYMBOL ptr, _
+		byval requested_typealign as integer _
 	)
+
+	dim as integer typealign = requested_typealign
+	if( typeGetPtrCnt(dtype) = 0 andalso semantic_type_alias <> NULL ) then
+		if( semantic_type_alias->typealign > typealign ) then
+			typealign = semantic_type_alias->typealign
+		end if
+	end if
 
 	'' Forward ref? Note: may update dtype & co
 	if( pfwdname <> NULL ) then
@@ -232,8 +281,10 @@ private sub hAddTypedef _
 		end if
 	end if
 
-	dim as FBSYMBOL ptr typedef = symbAddTypedef( pid, dtype, subtype, lgt )
+	dim as FBSYMBOL ptr typedef = symbAddTypedef( _
+		pid, dtype, subtype, lgt, typealign)
 	if( typedef ) then
+		fbSemanticModelTypeAliasDeclaration(typedef, semantic_type_alias)
 		if( is_fixlenstr ) then
 			symbSetIsFixLenStr( typedef )
 		end if
@@ -260,7 +311,7 @@ private sub hAddTypedef _
 		if( sym <> NULL ) then
 			if( symbGetFullType( sym ) = dtype ) then
 				if( symbGetSubType( sym ) = subtype ) then
-					isdup = FALSE
+					if( sym->typealign = typealign ) then isdup = FALSE
 				end if
 			end if
 		end if
@@ -309,6 +360,8 @@ private function hReadId _
 		errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
 		'' error recovery: fake an id
 		id = *symbUniqueLabel( )
+		fbSemanticModelRecoveryName(id, __FUNCTION__, _
+			"parser/declarations/parser-decl-typedef.bas", __LINE__)
 	end select
 
 	function = @id
@@ -331,6 +384,12 @@ sub cTypedefMultDecl( byval attrib as FB_SYMBATTRIB )
 	dim as FBSYMBOL ptr subtype
 	dim as LEX_LOCATION forward_site
 	var pfwdname = hReadType( dtype, subtype, lgt, is_fixlenstr, forward_site )
+	dim as FBSYMBOL ptr semantic_type_alias = parserGetLastTypeAlias( )
+	dim as integer requested_typealign
+	if( hReadTypedefAlignment( requested_typealign ) = FALSE ) then
+		hSkipStmt( )
+		exit sub
+	end if
 
 	do
 		'' Parse the ID
@@ -339,7 +398,8 @@ sub cTypedefMultDecl( byval attrib as FB_SYMBATTRIB )
 		var pid = hReadId( semantic_site, has_site )
 
 		hAddTypedef( pid, pfwdname, dtype, subtype, lgt, is_fixlenstr, attrib, _
-		             semantic_site, has_site, forward_site )
+		             semantic_site, has_site, forward_site, semantic_type_alias, _
+		             requested_typealign )
 
 		'' ','?
 	loop while( hMatch( CHAR_COMMA ) )
@@ -372,9 +432,16 @@ sub cTypedefSingleDecl _
 		dim as FBSYMBOL ptr subtype
 		dim as LEX_LOCATION forward_site
 		var pfwdname = hReadType( dtype, subtype, lgt, is_fixlenstr, forward_site )
+		dim as FBSYMBOL ptr semantic_type_alias = parserGetLastTypeAlias( )
+		dim as integer requested_typealign
+		if( hReadTypedefAlignment( requested_typealign ) = FALSE ) then
+			hSkipStmt( )
+			exit sub
+		end if
 
 		hAddTypedef( pid, pfwdname, dtype, subtype, lgt, is_fixlenstr, attrib, _
-		             semantic_site, has_site, forward_site )
+		             semantic_site, has_site, forward_site, semantic_type_alias, _
+		             requested_typealign )
 
 		'' ','?
 		if( hMatch( CHAR_COMMA ) = FALSE ) then

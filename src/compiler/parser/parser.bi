@@ -286,6 +286,7 @@ end enum
 declare sub parserAsmInit( )
 declare sub parserAsmEnd( )
 
+declare function parserIsInlineAsmKeyword( byval id as const zstring ptr ) as integer
 declare function parserInlineAsmAddKeyword( byval id as const zstring ptr ) as integer
 
 declare function parserGlobalAsmAddKeyword( byval id as const zstring ptr ) as integer
@@ -396,7 +397,7 @@ declare function cIdentifierOrUDTMember _
 		byval chain_ as FBSYMCHAIN ptr = NULL _
 	) as FBSYMBOL ptr
 
-declare sub cProcDecl( )
+declare sub cProcDecl( byval attrib as FB_SYMBATTRIB, byval pattrib as FB_PROCATTRIB )
 
 declare function cProcHeader _
 	( _
@@ -744,7 +745,8 @@ declare function cProcCall _
 		byval thisexpr as ASTNODE ptr = NULL, _
 		byval checkprnts as integer = FALSE, _
 		byval options as FB_PARSEROPT = 0, _
-		byval semantic_site as LEX_LOCATION ptr = NULL _
+		byval semantic_site as LEX_LOCATION ptr = NULL, _
+		byval semantic_object_operation as longint = 0 _
 	) as ASTNODE ptr
 
 declare function cMethodCall _

@@ -5,7 +5,12 @@
 '' This file intentionally does NOT contain: name resolution or source parsing.
 
 #include once "tooling/semantic-private.bi"
+#include once "tooling/semantic-effects.bi"
+#include once "tooling/semantic-object-model.bi"
 #include once "tooling/semantic-access.bi"
+#include once "tooling/semantic-flags.bi"
+#include once "tooling/semantic-layout.bi"
+#include once "tooling/semantic-abi.bi"
 #include once "support/strings/hlp-str.bi"
 #include once "support/hlp.bi"
 #include once "crt/mem.bi"
@@ -141,10 +146,10 @@ sub fbSemanticModelExportContext(byref filename as string)
 		fbSemanticModelNumber(fbGetTargetWcharSize( )) + TABCHAR + _
 		fbSemanticModelTypeNumber(culng(env.lang.integerkeyworddtype)))
 	for dtype as integer = 0 to FB_DATATYPES - 1
-		dim as string type_name = *symb_dtypeTB(dtype).name
+		dim as string type_name = *symbGetDatatypeInfo(dtype).name
 		if( dtype = FB_DATATYPE_FIXSTR ) then type_name = "fixed-string"
 		dim as string type_class, size_text, alignment_text
-		select case symb_dtypeTB(dtype).class
+		select case symbGetDatatypeInfo(dtype).class
 		case FB_DATACLASS_INTEGER: type_class = "integer"
 		case FB_DATACLASS_FPOINT: type_class = "float"
 		case FB_DATACLASS_STRING: type_class = "string"
@@ -152,12 +157,12 @@ sub fbSemanticModelExportContext(byref filename as string)
 		case FB_DATACLASS_PROC: type_class = "procedure"
 		case else: type_class = "unknown"
 		end select
-		if( symb_dtypeTB(dtype).size >= 0 ) then size_text = fbSemanticModelNumber(symb_dtypeTB(dtype).size)
-		if( (symb_dtypeTB(dtype).size > 0) and _
+		if( symbGetDatatypeInfo(dtype).size >= 0 ) then size_text = fbSemanticModelNumber(symbGetDatatypeInfo(dtype).size)
+		if( (symbGetDatatypeInfo(dtype).size > 0) and _
 			(dtype <> FB_DATATYPE_XMMWORD) and _
-			(symb_dtypeTB(dtype).class <> FB_DATACLASS_UDT) and _
-			(symb_dtypeTB(dtype).class <> FB_DATACLASS_PROC) and _
-			(symb_dtypeTB(dtype).class <> FB_DATACLASS_UNKNOWN) ) then
+			(symbGetDatatypeInfo(dtype).class <> FB_DATACLASS_UDT) and _
+			(symbGetDatatypeInfo(dtype).class <> FB_DATACLASS_PROC) and _
+			(symbGetDatatypeInfo(dtype).class <> FB_DATACLASS_UNKNOWN) ) then
 			'' XMMWORD is an internal register type. The scalar layout helper
 			'' accepts source types aligned to at most eight bytes, not XMMWORD.
 			alignment_text = fbSemanticModelNumber(typeCalcNaturalAlign(dtype, NULL))
@@ -165,7 +170,8 @@ sub fbSemanticModelExportContext(byref filename as string)
 		fbSemanticModelAppendDetail("Y" + TABCHAR + fbSemanticModelTypeNumber(culng(dtype)) + _
 			TABCHAR + fbSemanticModelEscape(type_name) + TABCHAR + type_class + _
 			TABCHAR + size_text + TABCHAR + alignment_text + TABCHAR + _
-			fbSemanticModelNumber(abs(symb_dtypeTB(dtype).signed <> FALSE)))
+			fbSemanticModelNumber(abs(symbGetDatatypeInfo(dtype).signed <> FALSE)))
+		fbSemanticModelPrimitivePolicy(dtype)
 	next
 end sub
 
@@ -191,7 +197,7 @@ function fbSemanticModelFormatValue _
 	  byref value_kind as string, byref value_text as string ) as integer
 	value_kind = ""
 	value_text = ""
-	if( (fbSemanticModelFullEnabled( ) = FALSE) or (value = NULL) ) then return FALSE
+	if( (fbSemanticModelTypedExpressionsEnabled( ) = FALSE) or (value = NULL) ) then return FALSE
 	'' The current value wire kinds carry at most 64 integer bits. Withhold a
 	'' wider constant rather than publishing only its low word as an exact value.
 	if( (typeGetDtAndPtrOnly(dtype) = FB_DATATYPE_INTEGER128) or _
@@ -340,6 +346,7 @@ end sub
 private sub hExportWideLiteralPrefix(byval sym as FBSYMBOL ptr, byval symbolid as longint)
 
 	if( sym->var_.littextw = NULL ) then exit sub
+	if( fbSemanticModelClaimWideLiteralPrefix(sym) = FALSE ) then exit sub
 	select case env.clopt.backend
 	case FB_BACKEND_GAS, FB_BACKEND_GAS64
 		hExportAsmWideLiteralPrefix(sym, symbolid)
@@ -476,6 +483,7 @@ end sub
 
 private sub hExportProcedure(byval sym as FBSYMBOL ptr, byval symbolid as longint, _
 	byval variables_live as integer)
+	fbSemanticModelEffectDeclaration(sym, symbolid)
 	hExportProcedureObjectSymbol(sym, symbolid)
 	fbSemanticModelAppendDetail("K" + TABCHAR + "symbol" + TABCHAR + _
 		fbSemanticModelNumber(symbolid) + TABCHAR + "procedure-linkage" + TABCHAR + hProcedureLinkage(sym))
@@ -510,9 +518,12 @@ private sub hExportProcedure(byval sym as FBSYMBOL ptr, byval symbolid as longin
 		fbSemanticModelNumber(fbSemanticModelSymbolId(sym->proc.realsubtype)) + TABCHAR + _
 		fbSemanticModelNumber(sym->proc.returnMethod) + TABCHAR + operator_code + TABCHAR + _
 		fbSemanticModelNumber(overriddenid) + TABCHAR + fbSemanticModelNumber(vtableindex))
+	fbSemanticModelReturnMethod(sym, symbolid)
+	fbSemanticModelProcedureAbi(sym, symbolid)
 	fbSemanticModelExportRelation("symbol", symbolid, sym->proc.ovl.next, "overload-next")
 	if( sym->proc.ext <> NULL ) then
 		hSymbolNumber(symbolid, "procedure-status", sym->proc.ext->stats)
+		fbSemanticModelProcedureFlags(sym, symbolid)
 		hSymbolNumber(symbolid, "startup-priority", sym->proc.ext->priority)
 		hSymbolNumber(symbolid, "declaration-statement", sym->proc.ext->stmtnum)
 		hSymbolNumber(symbolid, "return-used", abs((sym->proc.ext->stats and FB_PROCSTATS_RETURNUSED) <> 0))
@@ -542,6 +553,7 @@ private sub hExportProcedure(byval sym as FBSYMBOL ptr, byval symbolid as longin
 			fbSemanticModelNumber(param->param.bydescdimensions) + TABCHAR + _
 			fbSemanticModelNumber(variableid) + TABCHAR + _
 			fbSemanticModelNumber(abs(ordinal < 0)))
+		fbSemanticModelParameterAbi(sym, param, paramid, ordinal, ordinal < 0)
 		'' A procedure-pointer signature copied from a method retains THIS's
 		'' raw attributes, but passes it as an explicit parameter at ordinal 0.
 		ordinal += 1
@@ -652,13 +664,20 @@ sub fbSemanticModelExportSymbolDetails(byval sym as FBSYMBOL ptr, byval variable
 		fbSemanticModelNumber(sym->stats) + TABCHAR + fbSemanticModelNumber(sym->lgt) + TABCHAR + _
 		fbSemanticModelNumber(sym->ofs) + TABCHAR + fbSemanticModelEscape(alias_name) + TABCHAR + _
 		hVisibility(sym) + TABCHAR + hStorage(sym) + TABCHAR + fbSemanticModelSymbolOrigin(sym))
+	fbSemanticModelSymbolFlags(sym, symbolid)
 
 	select case sym->class
 	case FB_SYMBCLASS_VAR, FB_SYMBCLASS_FIELD
 		if( sym->class = FB_SYMBCLASS_VAR ) then hSymbolNumber(symbolid, "direct-source-write", fbSemanticModelDirectSourceWrite(symbolid))
+		'' Use the same decision as automatic scope cleanup. Type spelling alone
+		'' cannot distinguish managed strings, fixed buffers, dynamic arrays,
+		'' POD aggregates and variables with selected destructors.
+		if( sym->class = FB_SYMBCLASS_VAR ) then
+			hSymbolNumber(symbolid, "automatic-cleanup", abs(symbGetVarHasDtor(sym) <> FALSE))
+		end if
 		'' An alias is not an object symbol under C++ mangling. Retain the
 		'' selected variable linkage independently of its spelling and storage.
-		if( (sym->class = FB_SYMBCLASS_VAR) andalso symbIsExtern(sym) ) then
+		if( sym->class = FB_SYMBCLASS_VAR ) then
 			fbSemanticModelAppendDetail("K" + TABCHAR + "symbol" + TABCHAR + _
 				fbSemanticModelNumber(symbolid) + TABCHAR + "variable-linkage" + TABCHAR + hProcedureLinkage(sym))
 		end if
@@ -713,6 +732,7 @@ sub fbSemanticModelExportSymbolDetails(byval sym as FBSYMBOL ptr, byval variable
 			hSymbolNumber(symbolid, "layout-finalized", abs(sym->udt.retdtype <> FB_DATATYPE_INVALID))
 			if( sym->udt.retdtype <> FB_DATATYPE_INVALID ) then
 				hSymbolNumber(symbolid, "aggregate-register-return", sym->udt.retin2regs)
+				fbSemanticModelAggregateReturn(sym->udt.retin2regs, symbolid)
 				'' Completed source-field membership is different from storage
 				'' layout: base storage and dynamic descriptors are hidden FIELDs,
 				'' while Static members are VARs. Anonymous fields have already
@@ -740,9 +760,12 @@ sub fbSemanticModelExportSymbolDetails(byval sym as FBSYMBOL ptr, byval variable
 				wend
 				hSymbolNumber(symbolid, "declared-field-count", field_count)
 			end if
-			'' udt.base is the compiler's hidden base FIELD, whose subtype is
-			'' the declared base type. Export that type, not the storage field.
-			if( sym->udt.base <> NULL ) then baseid = fbSemanticModelSymbolId(sym->udt.base->subtype)
+			'' U names the declared base type. The separate relation retains the
+			'' actual hidden FIELD used by construction and destruction lowering.
+			if( sym->udt.base <> NULL ) then
+				baseid = fbSemanticModelSymbolId(sym->udt.base->subtype)
+				fbSemanticModelExportRelation("symbol", symbolid, sym->udt.base, "base-field")
+			end if
 			alignment = sym->udt.natalign
 			if( sym->udt.align > 0 ) then alignment = sym->udt.align
 			unpadded = sym->udt.unpadlgt
@@ -761,6 +784,11 @@ sub fbSemanticModelExportSymbolDetails(byval sym as FBSYMBOL ptr, byval variable
 			TABCHAR + fbSemanticModelNumber(options) + TABCHAR + fbSemanticModelTypeNumber(culng(retdtype)) + _
 			TABCHAR + fbSemanticModelNumber(abstract_count) + TABCHAR + fbSemanticModelNumber(elements) + _
 			TABCHAR + fbSemanticModelNumber(start_line) + TABCHAR + fbSemanticModelNumber(end_line))
+		if( symbIsStruct(sym) ) then
+			fbSemanticModelAggregateFlags(sym, symbolid)
+			fbSemanticModelLayoutSnapshot(sym, symbolid)
+			fbSemanticModelObjectSnapshot(sym, symbolid)
+		end if
 		if( symbIsStruct(sym) andalso symbGetUDTIsAnon(sym) ) then
 			'' anonparent is initialized only for anonymous aggregate members.
 			fbSemanticModelExportRelation("symbol", symbolid, sym->udt.anonparent, "anonymous-parent")

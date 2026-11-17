@@ -27,7 +27,29 @@ SOURCE_SUFFIXES = {".c", ".h", ".s", ".cpp"}
 # Their documentation must be skipped by the BASIC preprocessor.
 SHARED_BASIC_HEADERS = {"drivers/win32/fbportio.h", "drivers/wince/fbportio.h"}
 QUOTED_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"\n]+)"', re.M)
+TAG_REFERENCE = re.compile(r'\b(?:struct|union|enum)\s+(_[A-Za-z0-9_]*)\b')
+MACRO_DEFINITION = re.compile(r'^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)', re.M)
+# The SDK owns these spellings: MinGW selects its CRT declarations with
+# _NO_OLDNAMES, while Unix headers select the 64-bit file API with
+# _FILE_OFFSET_BITS. The existing wide-character header selects the SDK's
+# ISO C95/C99 declarations with __USE_ISOC95/__USE_ISOC99. Keep each exception
+# attached to its owning header, rather than allowing arbitrary reserved names.
+SDK_MACROS = {
+    'fb_config.h': {'_NO_OLDNAMES', '_FILE_OFFSET_BITS'},
+    'fb_unicode.h': {'__USE_ISOC95', '__USE_ISOC99'},
+}
+
+ABI_C_NAME = re.compile(r'\b(?:__fb_[A-Za-z0-9_]+|_ZN[A-Za-z0-9_$]+)\b')
 COMMENTS = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*', re.S)
+DATA_ABI_LABEL = re.compile(
+    r'\b([A-Za-z_][A-Za-z_0-9]*)\s*(?:\[[^;]*?\])?\s+'
+    r'FB_(?:C|RTLIB)_SYMBOL\("([A-Za-z_][A-Za-z_0-9]*)"\)')
+# These files deliberately supply legacy ABI declarations without the shared
+# declaration: a minimal standalone runtime and an old-header link control.
+LEGACY_ABI_CONSUMERS = {
+    'src/rtlib/drivers/nuttx/fb_nuttx_object.c',
+    'tests/rtlib/runtime-symbol-legacy.c',
+}
 
 # These quoted names are supplied by platform SDKs, not this repository.
 # Keep exceptions attached to their consumers so a misspelled private include
@@ -50,6 +72,57 @@ def without_comments(text: str) -> str:
     """Keep quoted names intact while ignoring examples in engineering notes."""
     return COMMENTS.sub(lambda match: "" if match.group().startswith(("/*", "//"))
                         else match.group(), text)
+
+
+def reserved_runtime_tags(relative: str, text: str) -> list[str]:
+    """Check owned C tags without interpreting comments or quoted examples."""
+    names = set(TAG_REFERENCE.findall(COMMENTS.sub('', text)))
+    if relative == 'fb_file.h':
+        # UCRT owns struct _stat. The file API references that SDK type.
+        names.discard('_stat')
+    return sorted(names)
+
+
+def reserved_runtime_abi_names(text: str) -> list[str]:
+    """Keep legacy ABI names in quoted labels, rather than C declarations."""
+    return sorted(set(ABI_C_NAME.findall(COMMENTS.sub('', text))))
+
+
+def stale_abi_references(root: Path) -> list[str]:
+    """Catch old data identifiers in every platform, including C++ and templates.
+
+    Assembly and quoted labels still use the original linker names. Only
+    native source tokens must follow the ordinary names in shared headers.
+    Private platform identifiers without a shared alias are outside this check.
+    """
+    aliases = {}
+    for subsystem in ('rtlib', 'gfxlib2', 'gfxlib3', 'sfxlib'):
+        for path in (root / 'src' / subsystem).glob('*.h'):
+            text = without_comments(path.read_bytes().decode('latin-1'))
+            aliases.update({old: new for new, old in DATA_ABI_LABEL.findall(text)
+                            if old != new})
+    failures = []
+    for directory in ('src', 'tests'):
+        for path in (root / directory).rglob('*'):
+            relative = path.relative_to(root)
+            if (path.suffix.lower() not in {'.c', '.h', '.cpp', '.inc'} or
+                    {'obj', 'third_party'}.intersection(relative.parts) or
+                    relative.as_posix() in LEGACY_ABI_CONSUMERS):
+                continue
+            code = COMMENTS.sub('', path.read_bytes().decode('latin-1'))
+            names = set(re.findall(r'\b[A-Za-z_][A-Za-z_0-9]*\b', code))
+            for name in sorted(names.intersection(aliases)):
+                failures.append(f'{relative.as_posix()}: use {aliases[name]} '
+                                f'as the C identifier for ABI label {name}')
+    return failures
+
+
+def reserved_runtime_macros(relative: str, text: str) -> list[str]:
+    """Reject owned macro names in the implementation's reserved namespace."""
+    code = COMMENTS.sub(lambda match: '\n' * match.group().count('\n'), text)
+    names = set(MACRO_DEFINITION.findall(code))
+    reserved = {name for name in names if '__' in name or re.match(r'_[A-Z]', name)}
+    return sorted(reserved - SDK_MACROS.get(relative, set()))
 
 
 def graph(root: Path, make: str, work: Path, target: str, arch: str,
@@ -95,12 +168,16 @@ def expected_sources(rtl: Path, groups: list[str], target: str, arch: str,
         layers.append(list((drivers / "unix").glob("*.c")))
     layers.extend([list((drivers / source_os).glob("*.c")),
                    list((drivers / source_os / arch).glob("*.c"))])
+    native_directory = drivers / "win32" / "x86_64"
     for layer in layers:
         for path in layer:
+            if target != "win32" and path.parent == native_directory and path.name in {"error.c", "error_frame.c"}:
+                continue
             selected[path.name] = path.resolve()
     result = set(selected.values())
     for directory in ([drivers / "x86"] if arch == "x86" else []) + [drivers / source_os, drivers / source_os / arch]:
-        result.update(path.resolve() for path in directory.glob("*.s"))
+        result.update(path.resolve() for path in directory.glob("*.s")
+                      if target == "win32" or path != native_directory / "error_set_handler_win64.s")
     if disabled:
         result -= {drivers / "unix/io_xfocus.c", drivers / "unix/scancodes_x11.c"}
     return result
@@ -141,7 +218,7 @@ def check_collision_guards(root: Path, make: str, work: Path) -> int:
 
 def validate(root: Path, make: str) -> None:
     rtl = root / "src/rtlib"
-    failures: list[str] = []
+    failures: list[str] = stale_abi_references(root)
     files = sorted(path for path in rtl.rglob("*") if path.is_file()
                    and "obj" not in path.relative_to(rtl).parts and path.suffix in SOURCE_SUFFIXES)
     if not files:
@@ -161,6 +238,13 @@ def validate(root: Path, make: str) -> None:
                 failures.append(relative + ": shared BASIC header needs a skipped documentation block")
         if not text.replace("\r\n", "\n").rstrip().endswith(footer):
             failures.append(relative + ": missing identifying footer")
+        if path.parent == rtl and path.suffix == '.h':
+            for name in reserved_runtime_tags(relative, text):
+                failures.append(relative + ': implementation-reserved runtime tag ' + name)
+            for name in reserved_runtime_macros(relative, text):
+                failures.append(relative + ': implementation-reserved runtime macro ' + name)
+            for name in reserved_runtime_abi_names(text):
+                failures.append(relative + ': reserved ABI spelling used as a C name ' + name)
         for name in QUOTED_INCLUDE.findall(without_comments(text)):
             candidates = [path.parent / name, rtl / name, root / "src" / name]
             if relative == "drivers/haiku/haiku_debug.cpp" and name == "fb_gfx_haiku.h":
@@ -200,6 +284,13 @@ def validate(root: Path, make: str) -> None:
                     expected = expected_sources(rtl, groups, target, arch, disabled)
                     if set(sources) != expected or len(sources) != len(expected):
                         failures.append(label + ": selected source coverage differs from replacement policy")
+                    native = {rtl / "drivers/win32/x86_64" / name
+                              for name in ("error.c", "error_frame.c", "error_set_handler_win64.s")}
+                    if target == "win32" and arch == "x86_64":
+                        if not native.issubset(set(sources)):
+                            failures.append(label + ": native ERROR source closure is incomplete")
+                    elif native.intersection(sources):
+                        failures.append(label + ": Win64 ERROR source escaped its target")
                     duplicates = [name for name, count in Counter(path.stem for path in sources).items() if count > 1]
                     if duplicates:
                         failures.append(label + ": duplicate archive members " + ", ".join(duplicates))
@@ -219,9 +310,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--make", default="make")
+    parser.add_argument("--abi-names-only", action="store_true",
+                        help="Check shared C names without querying Make graphs")
     options = parser.parse_args()
     try:
-        validate(options.root.resolve(strict=True), options.make)
+        root = options.root.resolve(strict=True)
+        if options.abi_names_only:
+            failures = stale_abi_references(root)
+            if failures:
+                raise ValueError('\n'.join(failures))
+            print('RTLIB_ABI_NAMES=PASS')
+        else:
+            validate(root, options.make)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(error)
         return 1

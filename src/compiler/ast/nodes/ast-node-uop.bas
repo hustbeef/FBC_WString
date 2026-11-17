@@ -27,6 +27,7 @@
 #include once "backend/ir.bi"
 #include once "runtime/rtl.bi"
 #include once "ast/ast.bi"
+#include once "tooling/semantic-collection-empty.bi"
 #include once "support/numeric/fp-policy.bi"
 
 '' Need to use replacement function for sgn(longint) constant evaluation,
@@ -207,6 +208,7 @@ function astNewUOP _
 		proc = symbFindUopOvlProc( op, o, @err_num )
 		if( proc <> NULL ) then
 			'' build a proc call
+			if( op = AST_OP_LEN ) then return fbSemanticModelCollectionEmptyUnaryCall(proc, o)
 			return astBuildCall( proc, o )
 		else
 			if( err_num <> FB_ERRMSG_OK ) then
@@ -440,7 +442,10 @@ function astLoadUOP _
 
 	if( ast.doemit ) then
 		if( (n->op.options and AST_OPOPT_ALLOCRES) <> 0 ) then
-			vr = irAllocVREG( astGetFullType( o ), o->subtype )
+			'' Negation and SGN can produce a signed result from an unsigned
+			'' operand. Preserve the operator's type at the IR boundary so
+			'' consumers do not recover the operand's unsigned arithmetic.
+			vr = irAllocVREG( astGetFullType( n ), n->subtype )
 			v1->vector = n->vector
 			vr->vector = n->vector
 		else

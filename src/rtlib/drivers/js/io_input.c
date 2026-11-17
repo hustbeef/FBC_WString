@@ -293,8 +293,8 @@ static unsigned int js_multikey_handler(unsigned long key, unsigned long locatio
                 break;
         }
 
-        if( scancode < (sizeof(__fb_con.multikey) / sizeof(__fb_con.multikey[0])) )
-            __fb_con.multikey[scancode] = isKeyDown? 1: 0;
+        if( scancode < (sizeof(fb_console_context.multikey) / sizeof(fb_console_context.multikey[0])) )
+            fb_console_context.multikey[scancode] = isKeyDown? 1: 0;
     }
 
     return scancode;
@@ -302,11 +302,11 @@ static unsigned int js_multikey_handler(unsigned long key, unsigned long locatio
 
 static void js_key_buffer_add(unsigned int key)
 {
-    __fb_con.key_buffer[__fb_con.key_tail] = key;
-    __fb_con.key_tail = (__fb_con.key_tail + 1) % KEY_BUFFER_LEN;
+    fb_console_context.key_buffer[fb_console_context.key_tail] = key;
+    fb_console_context.key_tail = (fb_console_context.key_tail + 1) % KEY_BUFFER_LEN;
 
-    if( __fb_con.key_tail == __fb_con.key_head )
-        __fb_con.key_head = (__fb_con.key_head + 1) % KEY_BUFFER_LEN;
+    if( fb_console_context.key_tail == fb_console_context.key_head )
+        fb_console_context.key_head = (fb_console_context.key_head + 1) % KEY_BUFFER_LEN;
 
 }
 
@@ -314,6 +314,14 @@ EM_BOOL fb_hKeyEventHandler(int eventType, const EmscriptenKeyboardEvent *keyEve
 {
 	static unsigned int scancode;
 	static unsigned int keycode;
+
+	/* The editable IME bridge commits text through input/composition events.
+	 * Feeding the same key through these window callbacks would duplicate it. */
+	if (EM_ASM_INT({
+		var state = Module['fbSoftKeyboard'];
+		return !!(state && state.input && document.activeElement === state.input);
+	}))
+		return 0;
 
 	switch( eventType )
 	{
@@ -334,10 +342,10 @@ EM_BOOL fb_hKeyEventHandler(int eventType, const EmscriptenKeyboardEvent *keyEve
 
                 if( supress_keypress )
                 {
-                    if(__fb_ctx.hooks.posteventproc != NULL)
+                    if(fb_ctx.hooks.posteventproc != NULL)
                     {
                         EVENT fb_event = { .type = EVENT_KEY_PRESS, .scancode = scancode, .ascii = scancode };
-                        __fb_ctx.hooks.posteventproc(&fb_event);
+                        fb_ctx.hooks.posteventproc(&fb_event);
                     }
 
                 }
@@ -356,10 +364,10 @@ EM_BOOL fb_hKeyEventHandler(int eventType, const EmscriptenKeyboardEvent *keyEve
                 {
                     js_key_buffer_add(keycode);
 
-                    if(__fb_ctx.hooks.posteventproc != NULL)
+                    if(fb_ctx.hooks.posteventproc != NULL)
                     {
                         EVENT fb_event = { .type = EVENT_KEY_PRESS, .scancode = scancode, .ascii = keycode };
-                        __fb_ctx.hooks.posteventproc(&fb_event);
+                        fb_ctx.hooks.posteventproc(&fb_event);
                     }
                 }
             }
@@ -371,10 +379,10 @@ EM_BOOL fb_hKeyEventHandler(int eventType, const EmscriptenKeyboardEvent *keyEve
         {
             scancode = js_multikey_handler(keyEvent->keyCode, keyEvent->location, FALSE);
 
-            if(__fb_ctx.hooks.posteventproc != NULL)
+            if(fb_ctx.hooks.posteventproc != NULL)
             {
                 EVENT fb_event = { .type = EVENT_KEY_RELEASE, .scancode = scancode, .ascii = keycode };
-                __fb_ctx.hooks.posteventproc(&fb_event);
+                fb_ctx.hooks.posteventproc(&fb_event);
             }
 
             return 1;
@@ -384,6 +392,24 @@ EM_BOOL fb_hKeyEventHandler(int eventType, const EmscriptenKeyboardEvent *keyEve
         {
             return 0;
         }
+	}
+}
+
+/* Called only by the graphics IME bridge on the browser main thread. */
+EMSCRIPTEN_KEEPALIVE void fb_hJsTextInput(int key)
+{
+	EVENT event = { 0 };
+	if ((key <= 0) || (key > 255))
+		return;
+	js_key_buffer_add((unsigned int)key);
+	if (fb_ctx.hooks.posteventproc != NULL) {
+		event.type = EVENT_KEY_PRESS;
+		event.ascii = key;
+		if (key == 8) event.scancode = SC_BACKSPACE;
+		if (key == 13) event.scancode = SC_ENTER;
+		if (key == 9) event.scancode = SC_TAB;
+		if (key == 27) event.scancode = SC_ESCAPE;
+		fb_ctx.hooks.posteventproc(&event);
 	}
 }
 
@@ -490,6 +516,30 @@ static int js_touch_first(int *x, int *y)
 	return 0;
 }
 
+/*
+ * Emscripten leaves the deprecated canvasX/canvasY fields unset when legacy
+ * event-target lookup is disabled. Convert current client coordinates through
+ * the canvas rectangle instead. Both contact polling and mouse compatibility
+ * must use this transform, including CSS-scaled or offset canvases.
+ */
+EM_JS(int, js_canvas_point, (int client_x, int client_y, int *x_out, int *y_out), {
+    const canvas = Module['canvas'];
+    if (!canvas) return 0;
+    const rect = canvas.getBoundingClientRect();
+    if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) ||
+        rect.width <= 0 || rect.height <= 0 || canvas.width <= 0 || canvas.height <= 0)
+        return 0;
+    const x = (client_x - rect.left) * canvas.width / rect.width;
+    const y = (client_y - rect.top) * canvas.height / rect.height;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return 0;
+    // Preserve out-of-canvas drag positions within the C signed-int range.
+    const largest = 0x7fffffff;
+    const smallest = -largest - 1;
+    HEAP32[x_out >> 2] = Math.max(smallest, Math.min(largest, x));
+    HEAP32[y_out >> 2] = Math.max(smallest, Math.min(largest, y));
+    return 1;
+});
+
 static void update_touch_contacts(const EmscriptenTouchEvent *touchEvent, int buttons)
 {
 	int index;
@@ -502,7 +552,9 @@ static void update_touch_contacts(const EmscriptenTouchEvent *touchEvent, int bu
 		for( index = 0; index < touchEvent->numTouches; index++ )
 		{
 			const EmscriptenTouchPoint *touch = &touchEvent->touches[index];
-			js_touch_set(touch->identifier, touch->canvasX, touch->canvasY);
+			int x, y;
+			if( js_canvas_point(touch->clientX, touch->clientY, &x, &y) )
+				js_touch_set(touch->identifier, x, y);
 		}
 	}
 	else
@@ -548,9 +600,8 @@ static void update_touch_mouse(const EmscriptenTouchEvent *touchEvent, int butto
 	if( selected >= 0 ) {
 		const EmscriptenTouchPoint *touch = &touchEvent->touches[selected];
 
-		touch_valid = 1;
-		touch_x = touch->canvasX;
-		touch_y = touch->canvasY;
+		if( js_canvas_point(touch->clientX, touch->clientY, &touch_x, &touch_y) )
+			touch_valid = 1;
 	}
 
 	update_touch_contacts(touchEvent, buttons);
@@ -617,11 +668,11 @@ EM_BOOL fb_hMouseEventHandler(int eventType, const EmscriptenMouseEvent *mouseEv
         case EMSCRIPTEN_EVENT_MOUSEUP:
         case EMSCRIPTEN_EVENT_DBLCLICK:
         {
-            __fb_con.mouse.x = mouseEvent->clientX;
-            __fb_con.mouse.y = mouseEvent->clientY;
-            __fb_con.mouse.dx = mouseEvent->movementX;
-            __fb_con.mouse.dy = mouseEvent->movementY;
-            __fb_con.mouse.button = mouseEvent->button == 0? BUTTON_LEFT: (mouseEvent->button == 1? BUTTON_MIDDLE: BUTTON_RIGHT);
+            fb_console_context.mouse.x = mouseEvent->clientX;
+            fb_console_context.mouse.y = mouseEvent->clientY;
+            fb_console_context.mouse.dx = mouseEvent->movementX;
+            fb_console_context.mouse.dy = mouseEvent->movementY;
+            fb_console_context.mouse.button = mouseEvent->button == 0? BUTTON_LEFT: (mouseEvent->button == 1? BUTTON_MIDDLE: BUTTON_RIGHT);
 			break;
         }
     }

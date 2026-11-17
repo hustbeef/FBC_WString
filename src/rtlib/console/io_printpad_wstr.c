@@ -7,8 +7,6 @@
  */
 #include "fb.h"
 
-#define FB_PRINT_BUFFER_SIZE 2048
-
 static void fb_hPrintPadWstrEx
 	(
 		FB_FILE *handle,
@@ -18,10 +16,12 @@ static void fb_hPrintPadWstrEx
 	)
 {
 #ifdef FB_NATIVE_TAB
-    FB_PRINTWSTR_EX( handle, _LC("\t"), 1, mask );
+	(void)mask;
+    FB_PRINTWSTR_EX( handle, FB_WCHAR_LITERAL("\t"), 1, mask );
 
 #else
     FB_WCHAR tab_char_buffer[FB_TAB_WIDTH+1];
+	(void)mask;
 
     if (new_x <= current_x)
     {
@@ -35,7 +35,7 @@ static void fb_hPrintPadWstrEx
         size_t i, count = new_x - current_x;
 
         for( i = 0; i < count; i++ )
-        	tab_char_buffer[i] = _LC(' ');
+        	tab_char_buffer[i] = FB_WCHAR_LITERAL(' ');
 
         /* the terminating NUL shouldn't be required but it makes
          * debugging easier */
@@ -54,7 +54,7 @@ void fb_PrintPadWstrEx
 	)
 {
 #ifdef FB_NATIVE_TAB
-    FB_PRINTWSTR_EX( handle, _LC("\t"), 1, mask );
+    FB_PRINTWSTR_EX( handle, FB_WCHAR_LITERAL("\t"), 1, mask );
 
 #else
     FB_FILE *tmp_handle;

@@ -129,6 +129,7 @@ rbp-y -->  local vars
 '/
 
 #include once "core/fbint.bi"
+#include once "tooling/semantic-startup.bi"
 #include once "support/containers/flist.bi"
 #include once "lexer/lex.bi"
 #include once "backend/ir-private.bi"
@@ -169,8 +170,8 @@ const GAS64_WINDOWS_SHADOW_SPACE_BYTES = 32
 '' saved eight-byte address make a 96-byte frame, preserving 16-byte alignment.
 '' Both RET and RETURN label must release the same landing-pad space.
 const GAS64_GOSUB_FRAME_BYTES = 88
-const GAS64_SYSTEMV_INTEGER_SAVE_BASE = -152
-const GAS64_SYSTEMV_FLOAT_SAVE_BASE = -104
+const GAS64_SYSTEMV_INTEGER_SAVE_BASE = -216
+const GAS64_SYSTEMV_FLOAT_SAVE_BASE = -168
 
 '' comment to not get basic data
 '#define basicdata
@@ -356,6 +357,8 @@ type ASM64_CONTEXT
 	epilog_txt   as string
 	profile_str  as string
 	profile_dat  as string
+	currproc     as FBSYMBOL ptr
+	error_setter_label as string
 	argcptmax    as integer
 	arginteg     as integer
 	argfloat     as integer
@@ -3013,6 +3016,7 @@ private sub hemitvariable( byval sym as FBSYMBOL ptr )
 				asm_info("stk="+Str(ctx.stk))
 				if  symbGetType( sym )=FB_DATATYPE_STRUCT then
 					align=sym->subtype->udt.natalign
+					if( sym->var_.align > align ) then align=sym->var_.align
 					asm_info("length udt="+Str(sym->lgt)+" natalign="+Str(align)+" unpadlgt="+Str(sym->subtype->udt.unpadlgt))
 					if align<4 then
 						asm_info("Natalign= changed for 4")
@@ -3020,7 +3024,9 @@ private sub hemitvariable( byval sym as FBSYMBOL ptr )
 					end if
 					ctx.stk=(length+ctx.stk+align-1) And (Not(align-1))
 				else
-					ctx.stk=(length+ctx.stk+lgt-1) And (Not(lgt-1))
+					align=lgt
+					if( sym->var_.align > align ) then align=sym->var_.align
+					ctx.stk=(length+ctx.stk+align-1) And (Not(align-1))
 				end if
 				asm_info("stk1="+Str(ctx.stk))
 				sym->ofs=-ctx.stk
@@ -3046,12 +3052,13 @@ private sub hemitvariable( byval sym as FBSYMBOL ptr )
 		else
 			align=sym->lgt
 		end if
+		if( sym->var_.align > align ) then align=sym->var_.align
 		asm_info("var total size="+Str(length)+"align="+str(align))
 		align=pw2(align) ''must be a power of 2
 		if( typeIsInteger128Scalar( symbGetType( sym ) ) ) then
 			if( align > 16 ) then align = 16
-		elseif( align > 8 ) then
-			align = 8
+		elseif( align > 16 ) then
+			align = 16
 		end if
 		'if symbIsPublic( sym ) then
 		'    asm_info("Not for variable report please : .globl "+*symbGetMangledName( sym ))
@@ -3078,7 +3085,7 @@ private sub hmaybeemitglobalvar( byval sym as FBSYMBOL ptr )
 		hEmitVariable( sym )
 	end if
 end sub
-private sub no_roundsd(byval size as zstring ptr)
+private sub no_roundsd(byval size as const zstring ptr)
 	''when the CPU doesn't provide roundsd/roundss (needs see41)
 	asm_code("stmxcsr $mxcsr[rip]",KNOFREE)
 	asm_code("push $mxcsr[rip]",KNOFREE)
@@ -3297,6 +3304,7 @@ private function _emitbegin( ) as integer
 end function
 private sub hAddGlobalCtorDtor( byval proc as FBSYMBOL ptr )
 	const CTOR_DTOR_PRIORITY_MAX = 65535
+	dim as string semantic_placement, semantic_priority, semantic_name
 
 	if( symbGetIsFuncPtr( proc ) ) then
 		exit sub
@@ -3307,32 +3315,48 @@ private sub hAddGlobalCtorDtor( byval proc as FBSYMBOL ptr )
 			ctx.ctorcount += 1
 			asm_info("Constructor name/prio="+*symbGetMangledName( proc )+" / "+str( symbGetProcPriority( proc ) ))
 			if ctx.systemv=true andalso fbGetOption( FB_COMPOPT_OUTTYPE ) = FB_OUTTYPE_DYNAMICLIB then
-				asm_section(".init_array")
+				semantic_placement = ".init_array"
 			else
 				if symbGetProcPriority( proc )=0 then
-					asm_section(".ctors")
+					semantic_placement = ".ctors"
 				else
-					asm_section(".ctors."+str(CTOR_DTOR_PRIORITY_MAX-symbGetProcPriority( proc )))
+					semantic_priority = str(CTOR_DTOR_PRIORITY_MAX-symbGetProcPriority(proc))
+					semantic_placement = ".ctors." + semantic_priority
 				end if
 			end if
+			asm_section(semantic_placement)
 			asm_code(".align 8")
-			asm_code(".quad "+*symbGetMangledName( proc ))
+			semantic_name = *symbGetMangledName(proc)
+			asm_code(".quad "+semantic_name)
+			fbSemanticModelStartupEmission(proc, "constructor", "gas64", "section-entry", _
+				semantic_priority, semantic_placement, semantic_name)
 			asm_section(".text")
 		end if
 	elseif( symbGetIsGlobalDtor( proc ) ) then
 		ctx.dtorcount += 1
 		asm_info("Destructor name/prio="+*symbGetMangledName( proc )+" / "+str( symbGetProcPriority( proc ) ))
-		if ctx.systemv=true andalso fbGetOption( FB_COMPOPT_OUTTYPE ) = FB_OUTTYPE_DYNAMICLIB then
-			asm_section(".fini_array")
+		if( env.clopt.target = FB_COMPTARGET_NETBSD ) then
+			'' NetBSD walks finalizer arrays forwards, so reverse the priority.
+			dim as integer priority = symbGetProcPriority( proc )
+			if( priority = 0 ) then priority = CTOR_DTOR_PRIORITY_MAX
+			semantic_priority = right("00000" + str(CTOR_DTOR_PRIORITY_MAX - priority), 5)
+			semantic_placement = ".fini_array." + semantic_priority + ",""aw"",@fini_array"
+		elseif ctx.systemv=true andalso fbGetOption( FB_COMPOPT_OUTTYPE ) = FB_OUTTYPE_DYNAMICLIB then
+			semantic_placement = ".fini_array"
 		else
 			if symbGetProcPriority( proc )=0 then
-					asm_section(".dtors")
+				semantic_placement = ".dtors"
 				else
-					asm_section(".dtors."+str(CTOR_DTOR_PRIORITY_MAX-symbGetProcPriority( proc )))
+				semantic_priority = str(CTOR_DTOR_PRIORITY_MAX-symbGetProcPriority(proc))
+				semantic_placement = ".dtors." + semantic_priority
 			end if
 		end if
+		asm_section(semantic_placement)
 		asm_code(".align 8")
-		asm_code(".quad "+*symbGetMangledName( proc ))
+		semantic_name = *symbGetMangledName(proc)
+		asm_code(".quad "+semantic_name)
+		fbSemanticModelStartupEmission(proc, "destructor", "gas64", "section-entry", _
+			semantic_priority, semantic_placement, semantic_name)
 		asm_section(".text")
 	end if
 end sub
@@ -3626,6 +3650,25 @@ private function param_analyze(byval dtype as FB_DATATYPE,byval struc as FBSYMBO
 		return param_analyze_windows(dtype,struc,cptarg)
 	end if
 end function
+
+private function hIsCLongDoubleType _
+	( byval dtype as FB_DATATYPE, byval subtype as FBSYMBOL ptr ) as integer
+
+	if( typeGetDtAndPtrOnly( dtype ) <> FB_DATATYPE_STRUCT ) then return FALSE
+	if( subtype = NULL ) then return FALSE
+	'' The source alias resolves to its byte-backed UDT during ABI lowering.
+	var subtype_name = ucase( *symbGetName( subtype ) )
+	return (subtype_name = "CLONGDOUBLE") orElse _
+	       (subtype_name = "__CLONGDOUBLE_STORAGE")
+end function
+
+private function hUsesSystemVCAbi _
+	( byval proc as FBSYMBOL ptr ) as integer
+
+	if( (proc = NULL) orElse (ctx.systemv = FALSE) ) then return FALSE
+	return (symbGetProcMode( proc ) = FB_FUNCMODE_CDECL)
+end function
+
 private sub reg_fillm(byval ofs as integer,argregs() as integer,byval lgt as integer,byval prev as integer=0,byval offst as integer=0)
 	select case as const lgt-offst
 		case 1
@@ -3879,7 +3922,14 @@ private sub _procallocarg( byval proc as FBSYMBOL ptr, byval sym as FBSYMBOL ptr
 		'asm_info("dtdtand ptr="+str(typeGetDtAndPtrOnly(dtype)))
 			if typeGetDtAndPtrOnly(dtype)= FB_DATATYPE_STRUCT then
 				''byval structure
-				paramtype=param_analyze(FB_DATATYPE_STRUCT,sym->subtype,,ctx.arginteg,ctx.argfloat )
+				if( hUsesSystemVCAbi( proc ) andalso _
+				    hIsCLongDoubleType( dtype, subtype ) andalso _
+				    (sym->subtype->lgt = 16) ) then
+					'' SysV C long double parameters occupy a 16-byte stack slot.
+					paramtype = KPARAMSK0
+				else
+					paramtype=param_analyze(FB_DATATYPE_STRUCT,sym->subtype,,ctx.arginteg,ctx.argfloat )
+				end if
 				asm_info("KPARAM="+str(paramtype))
 				procallocarg_sysv_struct(sym,paramtype)
 			elseif( typeIsInteger128Scalar( dtype ) ) then
@@ -4071,7 +4121,7 @@ private sub _emitlabel( byval label as FBSYMBOL ptr )
 		asm_code("sub rsp, " + str(GAS64_GOSUB_FRAME_BYTES) + " #stack for gosub")
 	end if
 end sub
-private sub prepare_idx(byval v1 as IRVREG ptr, byref op1 as string, byref op3 as string)
+private sub prepare_idx(byval v1 as IRVREG ptr, byref op1 as string)
 
 	dim as string regtempo
 	'asm_info("prepare_op v1->sym="+str(v1->sym)+" "+str(v1->vidx->sym))
@@ -4186,7 +4236,7 @@ private sub prepare_idx(byval v1 as IRVREG ptr, byref op1 as string, byref op3 a
 	asm_error("prepare_IDX case not handled 01")
 	if op1="" then op1="X X" '''to avoid crashes
 end sub
-private function hgetbopcode(byval op as Integer) as zstring ptr
+private function hgetbopcode(byval op as Integer) as const zstring ptr
 
 	select case as const( op )
 		case AST_OP_ADD
@@ -4270,7 +4320,7 @@ private sub hGetFloatRelRecipe _
 		byref lname1 as string, _
 		byref lname2 as string, _
 		byref parity as string, _
-		byref jmpcode as zstring ptr, _
+		byref jmpcode as const zstring ptr, _
 		byref swapregs as integer, _
 		byref swapinit as integer _
 	)
@@ -4406,7 +4456,7 @@ private sub hEmitFloatRelational _
 	)
 
 	dim as string lname1,lname2,parity
-	dim as zstring ptr jmpcode
+	dim as const zstring ptr jmpcode
 	dim as integer swapregs,swapinit
 
 	hGetFloatRelRecipe( op, label, options, lname1, lname2, parity, _
@@ -4468,9 +4518,6 @@ private sub bop_float( _
 	byval vr as IRVREG ptr, _
 	byref op1 as string, _
 	byref op2 as string, _
-	byref op3 as string, _
-	byref op4 as string, _
-	byref prefix as string, _
 	byval label as FBSYMBOL ptr, _
 	byval options as IR_EMITOPT _
 	)
@@ -4696,7 +4743,7 @@ private sub hBopLoadOperand _
 		prefix = ""
 
 	case IR_VREGTYPE_IDX
-		prepare_idx( vreg, operand, setup_code )
+		prepare_idx( vreg, operand)
 
 	case IR_VREGTYPE_PTR
 		operand = hPointerOperand(vreg)
@@ -4828,6 +4875,12 @@ private sub hBopPrepareIntegerOperands _
 	elseif( v1->typ = IR_VREGTYPE_OFS ) then
 		vrreg2 = reg_findtemp( )
 		hBopMaterializeOperand( v1, dtype, vrreg2, op1 )
+		if( v2->typ = IR_VREGTYPE_OFS ) then
+			'' Both operands denote addresses. Leaving the right offset as
+			'' memory would compare against the bytes stored at that address.
+			var right_reg = reg_findtemp()
+			hBopMaterializeOperand(v2, dtype, right_reg, op2)
+		end if
 	elseif( (op = AST_OP_MUL) andalso _
 	        (v1->typ <> IR_VREGTYPE_REG) ) then
 		vr = irhlAllocVreg( FB_DATATYPE_INTEGER, NULL )
@@ -5008,7 +5061,8 @@ private sub hBopEmitCompare _
 	)
 
 	dim as integer is_unsigned
-	is_unsigned = (v1->dtype = FB_DATATYPE_UINT) or _
+	is_unsigned = typeIsPtr(v1->dtype) or typeIsPtr(v2->dtype) or _
+	              (v1->dtype = FB_DATATYPE_UINT) or _
 	              (v1->dtype = FB_DATATYPE_ULONGINT) or _
 	              (v2->dtype = FB_DATATYPE_UINT) or _
 	              (v2->dtype = FB_DATATYPE_ULONGINT)
@@ -5410,7 +5464,7 @@ private sub hloadoperandsandwritebop(byval op as integer,byval v1 as IRVREG ptr,
 
 	If( typeGetClass( v1->dtype ) = FB_DATACLASS_FPOINT) Or ( typeGetClass( v2->dtype ) = FB_DATACLASS_FPOINT) then
 		asm_info("Bop with float")
-		bop_float(op,v1,v2,vr,op1,op2,op3,op4,prefix1,label,options)
+		bop_float(op,v1,v2,vr,op1,op2,label,options)
 		exit sub
 	end if
 
@@ -5807,7 +5861,7 @@ private sub _emituop(byval op as integer,byval v1 as IRVREG ptr,byval vr as IRVR
 			prefix=""
 
 		case IR_VREGTYPE_IDX
-			prepare_idx(v1,op1,op3)
+			prepare_idx(v1,op1)
 		case IR_VREGTYPE_PTR ''format ofs1 <vidx=reg>
 			op1=Str(v1->ofs)+"["+*regstrq(reg_findreal(v1->vidx->reg))+"]"
 
@@ -5907,6 +5961,16 @@ private function hConvertCanonicalDtype _
 	end select
 end function
 
+private sub hConvertReuseValue(byval destination as IRVREG ptr, byval source as IRVREG ptr)
+	'' Sharing storage does not change the requested value type. Later
+	'' operations choose signedness and pointer behavior from this view.
+	var target_dtype = destination->dtype
+	var target_subtype = destination->subtype
+	*destination = *source
+	destination->dtype = target_dtype
+	destination->subtype = target_subtype
+end sub
+
 private function hConvertInitialize _
 	( _
 		byval v1 as IRVREG ptr, _
@@ -5924,7 +5988,7 @@ private function hConvertInitialize _
 
 	if( typeIsPtr( v1dtype ) andalso typeIsPtr( v2dtype ) ) then
 		asm_info( "pointer2 -> pointer1" )
-		*v1 = *v2
+		hConvertReuseValue(v1, v2)
 		return TRUE
 	end if
 
@@ -5946,7 +6010,7 @@ private function hConvertInitialize _
 	    ((v1dtype = FB_DATATYPE_ULONGINT) andalso _
 	     (v2dtype = FB_DATATYPE_ULONGINT)) ) then
 		asm_info( "no convert as exactly same datatype" )
-		*v1 = *v2
+		hConvertReuseValue(v1, v2)
 		return TRUE
 	end if
 
@@ -5955,9 +6019,7 @@ private function hConvertInitialize _
 	    ((v2dtype = FB_DATATYPE_LONGINT) andalso _
 	     (v1dtype = FB_DATATYPE_ULONGINT)) ) then
 		asm_info( "no convert as INTEGER/UINT" )
-		dim as FB_DATATYPE original_dtype = v1->dtype
-		*v1 = *v2
-		v1->dtype = original_dtype
+		hConvertReuseValue(v1, v2)
 		return TRUE
 	end if
 
@@ -6006,20 +6068,20 @@ end function
 
 private function hConvertLoadSource _
 	( _
-		byval v1 as IRVREG ptr, _
 		byval v2 as IRVREG ptr, _
+		byval v1dtype as FB_DATATYPE, _
 		byref v2dtype as FB_DATATYPE, _
 		byref prefix1 as string, _
 		byref prefix2 as string, _
 		byref op1 as string, _
 		byref op2 as string, _
-		byref op4 as string, _
-		byref srcreg as integer _
+		byref srcreg as integer, _
+		byval regresult as integer _
 	) as integer
 
 	select case v2->typ
 	case IR_VREGTYPE_IDX
-		prepare_idx( v2, op2, op4 )
+		prepare_idx( v2, op2)
 
 	case IR_VREGTYPE_REG
 		prefix2 = ""
@@ -6047,6 +6109,12 @@ private function hConvertLoadSource _
 	case IR_VREGTYPE_OFS
 		op2 = *symbGetMangledName( v2->sym ) + _
 		      "[rip+" + str( v2->ofs ) + "]"
+		dim as string address_register = op1
+		if( typeGetSize( v1dtype ) = GAS64_BYTE_BYTES ) then
+			'' LEA has no byte-register form. Materialize the address in the
+			'' same physical GPR; subsequent byte uses retain the low bits.
+			address_register = *regstrq( regresult )
+		end if
 		if( (typeGetDtOnly( v2->dtype ) = FB_DATATYPE_FUNCTION) andalso _
 		    ctx.systemv andalso _
 		    (fbGetOption( FB_COMPOPT_OUTTYPE ) = FB_OUTTYPE_DYNAMICLIB) ) then
@@ -6056,9 +6124,15 @@ private function hConvertLoadSource _
 			end if
 			asm_code( "mov rax, QWORD PTR " + _
 			          left( op2, bracket - 1 ) + "@GOTPCREL[rip]" )
-			asm_code( "mov " + op1 + ", rax", KNOOPTIM )
+			asm_code( "mov " + address_register + ", rax", KNOOPTIM )
 		else
-			asm_code( "lea " + op1 + ", " + op2, KNOOPTIM )
+			asm_code( "lea " + address_register + ", " + op2, KNOOPTIM )
+		end if
+		if( v1dtype = FB_DATATYPE_BOOLEAN ) then
+			'' Boolean conversion tests the complete address, not its low byte.
+			'' Keep the result register live across this instruction pair.
+			asm_code( "test " + address_register + ", " + address_register, KNOFREE )
+			asm_code( "setne " + op1, KNOFREE )
 		end if
 		return TRUE
 
@@ -6087,7 +6161,6 @@ private function hConvertLoadOperands _
 		byref prefix2 as string, _
 		byref op1 as string, _
 		byref op2 as string, _
-		byref op4 as string, _
 		byref regresult as integer, _
 		byref srcreg as integer _
 	) as integer
@@ -6108,13 +6181,12 @@ private function hConvertLoadOperands _
 	end if
 
 	prefix2 = hConvertSourcePrefix( v2dtype )
-	function = hConvertLoadSource( v1, v2, v2dtype, prefix1, prefix2, _
-	                               op1, op2, op4, srcreg )
+	function = hConvertLoadSource( v2, v1dtype, v2dtype, prefix1, prefix2, _
+	                               op1, op2, srcreg, regresult )
 end function
 
 private sub hConvertToFloat _
 	( _
-		byval v1 as IRVREG ptr, _
 		byval v2 as IRVREG ptr, _
 		byval v1dtype as FB_DATATYPE, _
 		byval v2dtype as FB_DATATYPE, _
@@ -6422,7 +6494,7 @@ private sub _emitconvert( byval v1 as IRVREG ptr, byval v2 as IRVREG ptr )
 	end if
 
 	if( hConvertLoadOperands( v1, v2, v1dtype, v2dtype, _
-	                          prefix1, prefix2, op1, op2, op4, _
+	                          prefix1, prefix2, op1, op2, _
 	                          regresult, srcreg ) ) then
 		exit sub
 	end if
@@ -6430,7 +6502,7 @@ private sub _emitconvert( byval v1 as IRVREG ptr, byval v2 as IRVREG ptr )
 	''====================  writing code ===============================
 	if op4<>"" then emitop3_op4(op4)
 	if( typeGetClass( v1dtype ) = FB_DATACLASS_FPOINT ) then
-		hConvertToFloat( v1, v2, v1dtype, v2dtype, op1, op2, prefix2 )
+		hConvertToFloat( v2, v1dtype, v2dtype, op1, op2, prefix2 )
 		exit sub
 	end if
 
@@ -6549,7 +6621,7 @@ private sub _emitconvert( byval v1 as IRVREG ptr, byval v2 as IRVREG ptr )
 	end if
 
 end sub
-private sub emitStoreStruct(byval v1 as IRVREG ptr, byval v2 as IRVREG ptr,byref op1 as string,byref op3 as string)
+private sub emitStoreStruct( byval v2 as IRVREG ptr,byref op1 as string,byref op3 as string)
 	dim as string dest
 	'' A dereferenced pointer or array element need not carry a variable symbol.
 	'' Copy the returned UDT's size, not the size of an enclosing array variable.
@@ -6659,7 +6731,7 @@ private sub hStoreLoadDestination _
 
 	select case v1->typ
 	case IR_VREGTYPE_IDX
-		prepare_idx( v1, op1, setup_code )
+		prepare_idx( v1, op1)
 
 	case IR_VREGTYPE_REG
 		dim as integer real_reg = reg_findreal( v1->reg )
@@ -6680,7 +6752,9 @@ private sub hStoreLoadDestination _
 		end if
 
 	case IR_VREGTYPE_VAR
-		if( hIsNativeElfTlsSymbol( v1->sym ) ) then
+		if( v1->sym = NULL ) then
+			op1 = str( v1->ofs ) + "[rbp]"
+		elseif( hIsNativeElfTlsSymbol( v1->sym ) ) then
 			op1 = hNativeElfTlsOperand( v1->sym, v1->ofs )
 		elseif( symbIsStatic( v1->sym ) orElse symbIsShared( v1->sym ) ) then
 			op1 = *symbGetMangledName( v1->sym ) + _
@@ -6720,13 +6794,12 @@ private sub hStoreLoadSource _
 	( _
 		byval v1 as IRVREG ptr, _
 		byval v2 as IRVREG ptr, _
-		byref op2 as string, _
-		byref setup_code as string _
+		byref op2 as string _
 	)
 
 	select case v2->typ
 	case IR_VREGTYPE_IDX
-		prepare_idx( v2, op2, setup_code )
+		prepare_idx( v2, op2)
 
 	case IR_VREGTYPE_REG
 		dim as FB_DATATYPE dtype = typeGetDtAndPtrOnly( v2->dtype )
@@ -6736,7 +6809,9 @@ private sub hStoreLoadSource _
 		op2 = hBopRegisterName( reg_findreal( v2->reg ), dtype )
 
 	case IR_VREGTYPE_VAR
-		if( hIsNativeElfTlsSymbol( v2->sym ) ) then
+		if( v2->sym = NULL ) then
+			op2 = str( v2->ofs ) + "[rbp]"
+		elseif( hIsNativeElfTlsSymbol( v2->sym ) ) then
 			op2 = hNativeElfTlsOperand( v2->sym, v2->ofs )
 		elseif( (v2->sym <> NULL) andalso _
 		    (symbIsStatic( v2->sym ) orElse symbIsShared( v2->sym )) ) then
@@ -7032,7 +7107,7 @@ private sub _emitstore( byval v1 as IRVREG ptr, byval v2 as IRVREG ptr )
 			exit sub
 		end if
 		hStoreLoadDestination( v1, v2, op1, op3 )
-		hStoreLoadSource( v1, v2, op2, op4 )
+		hStoreLoadSource( v1, v2, op2)
 		if( op4 <> "" ) then emitop3_op4( op4 )
 		if( op3 <> "" ) then emitop3_op4( op3 )
 		dim as integer scratch_reg = reg_findtemp( )
@@ -7060,7 +7135,7 @@ private sub _emitstore( byval v1 as IRVREG ptr, byval v2 as IRVREG ptr )
 	hStoreLoadDestination( v1, v2, op1, op3 )
 
 
-	if( hIsStructIn2Regs( v2 ) ) then
+	if( (v2->typ = IR_VREGTYPE_REG) andalso hIsStructIn2Regs( v2 ) ) then
 		'' for Linux structures can be returned in 2 registers so needs a special handling
 		if( (v1->sym <> NULL) andalso _
 		    (v1->sym->stats and FB_SYMBSTATS_IMPLICIT) ) then
@@ -7068,12 +7143,20 @@ private sub _emitstore( byval v1 as IRVREG ptr, byval v2 as IRVREG ptr )
 			v1->sym->ofs=v2->ofs
 			asm_info("v1="+vregdumpfull(v1))
 		else
-			emitStoreStruct(v1,v2,op1,op3)
+			emitStoreStruct(v2,op1,op3)
 		end if
 		exit sub
 	end if
 
-	hStoreLoadSource( v1, v2, op2, op4 )
+	hStoreLoadSource( v1, v2, op2)
+	if( (typeGetDtAndPtrOnly( v1->dtype ) = FB_DATATYPE_STRUCT) andalso _
+	    (typeGetDtAndPtrOnly( v2->dtype ) = FB_DATATYPE_STRUCT) andalso _
+	    hStoreUsesMemory( v1 ) andalso hStoreUsesMemory( v2 ) ) then
+		if( op4 <> "" ) then emitop3_op4( op4 )
+		if( op3 <> "" ) then emitop3_op4( op3 )
+		memcopy( symbGetSizeOf( v1->subtype ), op2, op1, KUSE_LEA, KUSE_LEA )
+		exit sub
+	end if
 	dtype = typeGetDtAndPtrOnly( v1->dtype )
 	if( typeIsPtr( dtype ) ) then
 		dtype = FB_DATATYPE_INTEGER
@@ -7101,7 +7184,7 @@ private sub _emitloadres(byval v1 as IRVREG ptr,byval vr as IRVREG Ptr)
 	select case v1->typ ''source
 
 		case IR_VREGTYPE_IDX
-			prepare_idx(v1,op1,op3)
+			prepare_idx(v1,op1)
 
 		case IR_VREGTYPE_VAR ''format varname ofs1   local/static  ofs1 could be zero
 			if hIsNativeElfTlsSymbol(v1->sym) then
@@ -7134,6 +7217,14 @@ private sub _emitloadres(byval v1 as IRVREG ptr,byval vr as IRVREG Ptr)
 		asm_code( "mov rax, QWORD PTR " + op1 )
 		asm_code( "mov rdx, QWORD PTR " + _
 			hOffsetMemoryOperand( op1, GAS64_QWORD_BYTES ) )
+		exit sub
+	end if
+
+	if( hUsesSystemVCAbi( ctx.currproc ) andalso _
+	    hIsCLongDoubleType( v1->dtype, v1->subtype ) andalso _
+	    (v1->subtype->lgt = 16) ) then
+		'' A public CDecl procedure returns SysV long double through ST(0).
+		asm_code( "fld TBYTE PTR " + op1 )
 		exit sub
 	end if
 
@@ -7226,7 +7317,6 @@ private sub _emitaddr(byval op as integer,byval v1 as IRVREG ptr,byval vr as IRV
 
 	dim as string op1,op3
 	dim as integer is_native_tls_address = FALSE
-
 	asm_info( IIf(op=AST_OP_ADDROF,"addrof ","deref ") + vregPretty( v1 ) )
 	asm_info("v1="+vregdumpfull(v1))
 	asm_info("vr="+vregdumpfull(vr))
@@ -7251,10 +7341,12 @@ private sub _emitaddr(byval op as integer,byval v1 as IRVREG ptr,byval vr as IRV
 			select case v1->typ ''source
 
 				case IR_VREGTYPE_IDX
-					prepare_idx(v1,op1,op3)
+					prepare_idx(v1,op1)
 
 				case IR_VREGTYPE_VAR ''format varname ofs1   local/static  ofs1 could be zero
-					if hIsNativeElfTlsSymbol(v1->sym) then
+					if v1->sym = NULL then
+						op1 = Str(v1->ofs) + "[rbp]"
+					elseif hIsNativeElfTlsSymbol(v1->sym) then
 						hLoadNativeElfTlsAddress( _
 							v1->sym, regstrq(reg_findreal(vr->reg)), v1->ofs)
 						is_native_tls_address = TRUE
@@ -7285,11 +7377,13 @@ private sub _emitaddr(byval op as integer,byval v1 as IRVREG ptr,byval vr as IRV
 		case AST_OP_DEREF '' ====== DEREF =========================================================
 			select case v1->typ ''source
 				case IR_VREGTYPE_IDX
-					prepare_idx(v1,op1,op3)
+					prepare_idx(v1,op1)
 					if op3<>"" then emitop3_op4(op3)
 
 				case IR_VREGTYPE_VAR ''format varname ofs1   local/static  ofs1 could be zero
-					if hIsNativeElfTlsSymbol(v1->sym) then
+					if v1->sym = NULL then
+						op1 = Str(v1->ofs) + "[rbp]"
+					elseif hIsNativeElfTlsSymbol(v1->sym) then
 						op1 = hNativeElfTlsOperand(v1->sym, v1->ofs)
 					elseif symbIsStatic(v1->sym) Or symbisshared(v1->sym) then
 						if (symbIsCommon(v1->sym)) andalso ctx.systemv=true andalso fbGetOption( FB_COMPOPT_OUTTYPE ) = FB_OUTTYPE_DYNAMICLIB then
@@ -7349,7 +7443,6 @@ private sub hCallLoadArgument _
 		byval vreg as IRVREG ptr, _
 		byref dtype as FB_DATATYPE, _
 		byref operand as string, _
-		byref setup_code as string, _
 		byref real_reg as integer _
 	)
 
@@ -7369,7 +7462,7 @@ private sub hCallLoadArgument _
 
 	select case vreg->typ
 	case IR_VREGTYPE_IDX
-		prepare_idx( vreg, operand, setup_code )
+		prepare_idx( vreg, operand)
 
 	case IR_VREGTYPE_REG
 		real_reg = reg_findreal( vreg->reg )
@@ -7566,7 +7659,7 @@ private sub hCallEmitWindowsStackSlot _
 	if dtype=FB_DATATYPE_STRUCT then
 		lgt=v2->subtype->lgt
 	else
-		lgt=symb_dtypeTB(dtype).size
+		lgt=symbGetDatatypeInfo(dtype).size
 	end if
 
 	if v2->typ=IR_VREGTYPE_REG then
@@ -7923,7 +8016,6 @@ end function
 private sub hCallEmitInteger128RegisterArgument _
 	( _
 		byval v2 as IRVREG ptr, _
-		byval dtype as FB_DATATYPE, _
 		byval cptarg as integer, _
 		byval cptint as integer, _
 		byval cptfloat as integer, _
@@ -7983,7 +8075,7 @@ private sub hCallEmitRegisterArgument _
 		                                    cptfloat, reg2, variadic, op1 )
 
 	elseif( typeIsInteger128Scalar( dtype ) ) then
-		hCallEmitInteger128RegisterArgument( v2, dtype, cptarg, cptint, _
+		hCallEmitInteger128RegisterArgument( v2, cptarg, cptint, _
 			cptfloat, reg2, variadic, op1, op3 )
 	elseif dtype=FB_DATATYPE_STRUCT then
 		hCallEmitStructRegisterArgument( v2, paramtype, cptarg, cptint, _
@@ -8066,6 +8158,22 @@ private sub hCallStoreResult _
 	dim as FB_DATATYPE dtype
 	dim as string op1
 if( vr ) then ''return value
+	if( hUsesSystemVCAbi( proc ) andalso _
+	    hIsCLongDoubleType( vr->dtype, vr->subtype ) andalso _
+	    (vr->subtype->lgt = 16) ) then
+		'' SysV returns native long double in ST(0). Store its 80-bit value
+		'' into CLongDouble storage after clearing the ABI padding.
+		ctx.stk = (vr->subtype->lgt + ctx.stk + GAS64_STACK_ALIGNMENT - 1) And _
+		          (Not(GAS64_STACK_ALIGNMENT - 1))
+		vr->typ = IR_VREGTYPE_VAR
+		vr->ofs = -ctx.stk
+		asm_code( "mov QWORD PTR " + str( vr->ofs ) + "[rbp], 0" )
+		asm_code( "mov QWORD PTR " + str( vr->ofs + GAS64_QWORD_BYTES ) + _
+		         "[rbp], 0" )
+		asm_code( "fstp TBYTE PTR " + str( vr->ofs ) + "[rbp]" )
+		exit sub
+	end if
+
 	if( typeIsInteger128Scalar( vr->dtype ) ) then
 		ctx.stk = (GAS64_INT128_BYTES + ctx.stk + GAS64_INT128_ALIGNMENT - 1) And _
 		          (Not(GAS64_INT128_ALIGNMENT - 1))
@@ -8205,14 +8313,22 @@ private sub hdocall(byval proc as FBSYMBOL ptr,byref pname as string,byref first
 		asm_info("arg " + vregPretty( v2 ) )
 		asm_info("arg="+vregdumpfull(v2)+" "+"vreg="+Str(v2->reg))
 
-		hCallLoadArgument( v2, dtype, op1, op3, reg2 )
+		hCallLoadArgument( v2, dtype, op1, reg2 )
 ''======================
 		''============
 		''writing code
 		''============
 
 		if typeget(dtype)=FB_DATATYPE_POINTER then dtype=FB_DATATYPE_INTEGER
-		paramtype=param_analyze(dtype,v2->subtype,cptarg,cptint,cptfloat)
+		if( (ctx.systemv <> 0) andalso _
+		    (hIsCLongDoubleType( dtype, v2->subtype ) <> FALSE) andalso _
+		    ( (hUsesSystemVCAbi( proc ) <> FALSE) orElse _
+		      (variadic <> FALSE) ) ) then
+			'' SysV passes fixed and variadic C long double values in memory.
+			paramtype = KPARAMSK0
+		else
+			paramtype=param_analyze(dtype,v2->subtype,cptarg,cptint,cptfloat)
+		end if
 		asm_info("KPARAM="+str(paramtype))
 
 		if paramtype>=KPARAMSK0 then
@@ -8321,7 +8437,15 @@ private sub _emitcall _
 			variadic=true ''need to mov also the float parameter into register
 		end if
 	end if
-	hDoCall(proc,*symbGetMangledName( proc ),,vr, level,variadic,false)
+	var target = *symbGetMangledName(proc)
+	if( ctx.target = FB_COMPTARGET_WIN32 andalso symbIsNaked(ctx.currproc) = FALSE andalso _
+	    symbGetIsRTL(proc) andalso target = "fb_ErrorSetHandler" ) then
+		'' This private leaf retains the setter's one-argument source ABI.
+		'' Its exact outgoing size is known only after all calls are emitted.
+		if( len(ctx.error_setter_label) = 0 ) then ctx.error_setter_label = *symbUniqueLabel()
+		target = ctx.error_setter_label
+	end if
+	hDoCall(proc, target,, vr, level, variadic, FALSE)
 end sub
 private sub _emitcallptr _
 	( _
@@ -8345,7 +8469,7 @@ private sub _emitcallptr _
 			op1=*regstrq(reg_findreal(v1->reg))
 
 		case IR_VREGTYPE_IDX
-			prepare_idx(v1,op1,op3)
+			prepare_idx(v1,op1)
 
 		case IR_VREGTYPE_PTR ''format ofs1 <vidx=reg>
 			op1=Str(v1->ofs)+"["+*regstrq(reg_findreal(v1->vidx->reg))+"]"
@@ -8699,7 +8823,7 @@ private sub emitmemmove(byval v1 as IRVREG ptr,byval v2 as IRVREG ptr,byval byte
 
 			select case v1->typ
 				case IR_VREGTYPE_IDX
-					prepare_idx(v1,op1,op3)
+					prepare_idx(v1,op1)
 
 				case IR_VREGTYPE_REG
 					op1=*regstrq(reg_findreal(v1->reg))
@@ -8866,6 +8990,7 @@ private sub _emitvarinibegin( byval sym as FBSYMBOL ptr )
 			align=typeGetSize(symbGetType( sym ))
 		end if
 	end if
+	if( sym->var_.align > align ) then align=sym->var_.align
 	asm_section(".data")
 	if symbIsPublic( sym ) then
 		asm_code(".globl "+*symbGetMangledName( sym ))
@@ -8937,6 +9062,8 @@ end sub
 private sub _emitprocbegin(byval proc as FBSYMBOL ptr,byval initlabel as FBSYMBOL ptr)
 
 	irhlEmitProcBegin( ) ''just : irhl.regcount = 0
+	ctx.currproc = proc
+	ctx.error_setter_label = ""
 
 	ctx.prolog_txt=""
 	ctx.epilog_txt=""
@@ -8985,8 +9112,9 @@ private sub _emitprocbegin(byval proc as FBSYMBOL ptr,byval initlabel as FBSYMBO
 		if( symbGetParamMode( param ) = FB_PARAMMODE_VARARG ) then
 			ctx.variadic=true
 			if ctx.systemv then
-				''14 registers (6 rxx and 8 xmmn) could be used for arguments, the others are on stack
-				ctx.stk+=14*8
+				''SysV saves six 8-byte GP slots followed by eight 16-byte XMM slots.
+				ctx.stk += GAS64_SYSTEMV_INTEGER_ARG_REGISTERS * GAS64_QWORD_BYTES + _
+				           GAS64_SYSTEMV_FLOAT_ARG_REGISTERS * 16
 			end if
 		end if
 	end if
@@ -9042,6 +9170,240 @@ private sub hSaveUsedNonvolatileRegisters(byref restreg as string)
 	end if
 
 	if restreg<>"" then restreg=rtrim(restreg)
+end sub
+
+'' C va_arg returns UDTs through memory in the gas64 IR. Materialize the
+'' aggregate there, while reading each ABI eightbyte from its classified area.
+private sub hCvaArgAllocateStructTemp(byval vr as IRVREG ptr, _
+	byval minimum_alignment as integer)
+
+	dim as integer lgt = symbGetSizeOf( vr->subtype )
+	dim as integer alignment = vr->subtype->udt.natalign
+
+	if( lgt <= 0 ) then
+		asm_error( "Cva_Arg cannot read a zero-sized aggregate" )
+		exit sub
+	end if
+
+	if( alignment < minimum_alignment ) then alignment = minimum_alignment
+	if( alignment > GAS64_STACK_ALIGNMENT ) then alignment = GAS64_STACK_ALIGNMENT
+
+	ctx.stk = (lgt + ctx.stk + alignment - 1) And Not(alignment - 1)
+	vr->typ = IR_VREGTYPE_VAR
+	vr->ofs = -ctx.stk
+
+end sub
+
+'' Copy one register-save-area slice into a temporary aggregate slot.
+private sub hCvaArgCopyFromSaveArea(byval valist_slot as integer, _
+	byval offset_field as integer, byval save_area_offset as integer, _
+	byval destination_offset as integer, byval bytes as integer)
+
+	if( bytes <= 0 ) then exit sub
+	if( offset_field <> 0 andalso offset_field <> 4 ) then
+		asm_error( "Cva_Arg has an invalid register-save-area offset" )
+		exit sub
+	end if
+
+	dim as integer valist_reg = reg_findtemp( )
+	dim as integer source_reg = reg_findtemp( )
+	dim as string valist = *regstrq( valist_reg )
+	dim as string source = *regstrq( source_reg )
+	asm_code( "mov " + valist + ", QWORD PTR " + str( valist_slot ) + "[rbp]" )
+	asm_code( "mov " + source + ", QWORD PTR 16[" + valist + "]" )
+	if( offset_field = 0 ) then
+		asm_code( "mov eax, DWORD PTR [" + valist + "]" )
+	else
+		asm_code( "mov eax, DWORD PTR 4[" + valist + "]" )
+	end if
+	asm_code( "add " + source + ", rax" )
+	if( save_area_offset <> 0 ) then
+		asm_code( "add " + source + ", " + str( save_area_offset ) )
+	end if
+	reghandle( valist_reg ) = KREGFREE
+	memcopy( bytes, source, str( destination_offset ) + "[rbp]", KUSE_MOV, KUSE_LEA )
+	reghandle( source_reg ) = KREGFREE
+
+end sub
+
+'' A memory-class aggregate consumes one aligned slot in overflow_arg_area.
+private sub hCvaArgCopyFromOverflowArea(byval valist_slot as integer, _
+	byval vr as IRVREG ptr, byval alignment as integer)
+
+	dim as integer lgt = symbGetSizeOf( vr->subtype )
+	dim as integer slot_size = (lgt + GAS64_QWORD_BYTES - 1) And _
+	                            Not(GAS64_QWORD_BYTES - 1)
+	dim as integer next_pointer_slot
+	dim as integer valist_reg = reg_findtemp( )
+	dim as integer source_reg = reg_findtemp( )
+	dim as string valist = *regstrq( valist_reg )
+	dim as string source = *regstrq( source_reg )
+
+	asm_code( "mov " + valist + ", QWORD PTR " + str( valist_slot ) + "[rbp]" )
+	asm_code( "mov " + source + ", QWORD PTR 8[" + valist + "]" )
+	if( alignment > GAS64_QWORD_BYTES ) then
+		asm_code( "add " + source + ", " + str( alignment - 1 ) )
+		asm_code( "and " + source + ", " + str( -alignment ) )
+	end if
+	ctx.stk = (GAS64_QWORD_BYTES + ctx.stk + _
+	           GAS64_QWORD_BYTES - 1) And Not(GAS64_QWORD_BYTES - 1)
+	next_pointer_slot = -ctx.stk
+	asm_code( "mov QWORD PTR " + str( next_pointer_slot ) + _
+	          "[rbp], " + source )
+	asm_code( "add QWORD PTR " + str( next_pointer_slot ) + _
+	          "[rbp], " + str( slot_size ) )
+	reghandle( valist_reg ) = KREGFREE
+	memcopy( lgt, source, str( vr->ofs ) + "[rbp]", KUSE_MOV, KUSE_LEA )
+	reghandle( source_reg ) = KREGFREE
+	valist_reg = reg_findtemp( )
+	dim as integer next_reg = reg_findtemp( )
+	valist = *regstrq( valist_reg )
+	dim as string next_address = *regstrq( next_reg )
+	asm_code( "mov " + valist + ", QWORD PTR " + str( valist_slot ) + "[rbp]" )
+	asm_code( "mov " + next_address + ", QWORD PTR " + _
+	          str( next_pointer_slot ) + "[rbp]" )
+	asm_code( "mov QWORD PTR 8[" + valist + "], " + next_address )
+	reghandle( valist_reg ) = KREGFREE
+	reghandle( next_reg ) = KREGFREE
+
+end sub
+
+'' System V classifies at most two eightbytes into GP/SSE registers. If either
+'' register bank cannot satisfy the complete aggregate, the whole value spills.
+private sub hCvaArgSystemvStruct(byval vr as IRVREG ptr, _
+	byval valist_slot as integer)
+
+	dim as integer lgt = symbGetSizeOf( vr->subtype )
+	dim as integer alignment = vr->subtype->udt.natalign
+	dim as integer stack_alignment = alignment
+	dim as integer cptarg = 0
+	dim as integer cptint = 0
+	dim as integer cptfloat = 0
+	dim as integer paramtype = KPARAMSK0
+	dim as integer valist_reg
+	dim as integer first_bytes = iif( lgt > GAS64_QWORD_BYTES, _
+	                                  GAS64_QWORD_BYTES, lgt )
+	dim as integer second_bytes = lgt - first_bytes
+	dim as string regvalist
+	dim as string stack_label = *symbUniqueLabel( )
+	dim as string done_label = *symbUniqueLabel( )
+
+	if( alignment < GAS64_QWORD_BYTES ) then stack_alignment = GAS64_QWORD_BYTES
+	if( stack_alignment > GAS64_STACK_ALIGNMENT ) then _
+		stack_alignment = GAS64_STACK_ALIGNMENT
+	hCvaArgAllocateStructTemp( vr, stack_alignment )
+	valist_reg = reg_findtemp( )
+	regvalist = *regstrq( valist_reg )
+	asm_code( "mov " + regvalist + ", QWORD PTR " + str( valist_slot ) + "[rbp]" )
+
+	if( lgt <= GAS64_QWORD_BYTES * 2 ) then
+		paramtype = param_analyze_sysv( FB_DATATYPE_STRUCT, vr->subtype, _
+		                                cptarg, cptint, cptfloat )
+	end if
+
+	if( paramtype <> KPARAMSK0 ) then
+		if( cptint > 0 ) then
+			asm_code( "cmp DWORD PTR [" + regvalist + "], " + _
+			          str( GAS64_SYSTEMV_INTEGER_ARG_REGISTERS * _
+		               GAS64_QWORD_BYTES - cptint * GAS64_QWORD_BYTES ) )
+			asm_code( "ja " + stack_label )
+		end if
+		if( cptfloat > 0 ) then
+			asm_code( "cmp DWORD PTR 4[" + regvalist + "], " + _
+			          str( GAS64_SYSTEMV_INTEGER_ARG_REGISTERS * _
+		               GAS64_QWORD_BYTES + _
+		               GAS64_SYSTEMV_FLOAT_ARG_REGISTERS * 16 - cptfloat * 16 ) )
+			asm_code( "ja " + stack_label )
+		end if
+		reghandle( valist_reg ) = KREGFREE
+		valist_reg = -1
+
+		select case as const paramtype
+		case KPARAMR1
+			hCvaArgCopyFromSaveArea( valist_slot, 0, 0, vr->ofs, lgt )
+		case KPARAMX1
+			hCvaArgCopyFromSaveArea( valist_slot, 4, 0, vr->ofs, lgt )
+		case KPARAMRR
+			hCvaArgCopyFromSaveArea( valist_slot, 0, 0, vr->ofs, first_bytes )
+			hCvaArgCopyFromSaveArea( valist_slot, 0, GAS64_QWORD_BYTES, _
+			                         vr->ofs + GAS64_QWORD_BYTES, second_bytes )
+		case KPARAMRX
+			hCvaArgCopyFromSaveArea( valist_slot, 0, 0, vr->ofs, first_bytes )
+			hCvaArgCopyFromSaveArea( valist_slot, 4, 0, _
+			                         vr->ofs + GAS64_QWORD_BYTES, second_bytes )
+		case KPARAMXR
+			hCvaArgCopyFromSaveArea( valist_slot, 4, 0, vr->ofs, first_bytes )
+			hCvaArgCopyFromSaveArea( valist_slot, 0, 0, _
+			                         vr->ofs + GAS64_QWORD_BYTES, second_bytes )
+		case KPARAMXX
+			hCvaArgCopyFromSaveArea( valist_slot, 4, 0, vr->ofs, first_bytes )
+			hCvaArgCopyFromSaveArea( valist_slot, 4, 16, _
+			                         vr->ofs + GAS64_QWORD_BYTES, second_bytes )
+		case else
+			paramtype = KPARAMSK0
+		end select
+
+		if( paramtype <> KPARAMSK0 ) then
+			valist_reg = reg_findtemp( )
+			regvalist = *regstrq( valist_reg )
+			asm_code( "mov " + regvalist + ", QWORD PTR " + _
+			          str( valist_slot ) + "[rbp]" )
+			if( cptint > 0 ) then
+				asm_code( "add DWORD PTR [" + regvalist + "], " + _
+				          str( cptint * GAS64_QWORD_BYTES ) )
+			end if
+			if( cptfloat > 0 ) then
+				asm_code( "add DWORD PTR 4[" + regvalist + "], " + _
+				          str( cptfloat * 16 ) )
+			end if
+			reghandle( valist_reg ) = KREGFREE
+			valist_reg = -1
+			asm_code( "jmp " + done_label )
+		end if
+	end if
+
+	asm_code( stack_label + ":" )
+	if( valist_reg >= 0 ) then reghandle( valist_reg ) = KREGFREE
+	hCvaArgCopyFromOverflowArea( valist_slot, vr, stack_alignment )
+	asm_code( done_label + ":" )
+	reghandle( valist_reg ) = KREGFREE
+
+end sub
+
+'' Microsoft x64 passes small aggregates in an eightbyte and larger ones
+'' indirectly. va_list is a pointer to the next eightbyte slot on this target.
+private sub hCvaArgWindowsStruct(byval v1 as IRVREG ptr, _
+	byval vr as IRVREG ptr)
+
+	dim as integer lgt = symbGetSizeOf( vr->subtype )
+	dim as integer alignment = vr->subtype->udt.natalign
+	dim as IRVREG ptr argument_address = irhlAllocVreg( FB_DATATYPE_INTEGER, NULL )
+	dim as IRVREG ptr next_slot = irhlAllocVrImm( FB_DATATYPE_INTEGER, NULL, _
+	                                               GAS64_QWORD_BYTES )
+	dim as integer argument_reg
+	dim as string argument_ptr
+
+	if( alignment < 1 ) then alignment = 1
+	if( alignment > GAS64_STACK_ALIGNMENT ) then alignment = GAS64_STACK_ALIGNMENT
+	hCvaArgAllocateStructTemp( vr, alignment )
+
+	_emitaddr( AST_OP_DEREF, v1, argument_address )
+	argument_reg = reg_findreal( argument_address->reg )
+	argument_ptr = *regstrq( argument_reg )
+	_emitbop( AST_OP_ADD, v1, next_slot, 0, 0, IR_EMITOPT_NONE )
+	reg_findfree( vr->reg )
+
+	if( lgt = 1 orElse lgt = 2 orElse lgt = 4 orElse lgt = 8 ) then
+		memcopy( lgt, argument_ptr, str( vr->ofs ) + "[rbp]", _
+		         KUSE_MOV, KUSE_LEA )
+	else
+		asm_code( "mov " + argument_ptr + ", QWORD PTR [" + argument_ptr + "]" )
+		memcopy( lgt, argument_ptr, str( vr->ofs ) + "[rbp]", _
+		         KUSE_MOV, KUSE_LEA )
+	end if
+	reghandle( argument_reg ) = KREGFREE
+	reg_findfree( vr->reg )
+
 end sub
 
 '' Procedure teardown keeps ABI restoration and emitted epilogue order together.
@@ -9122,8 +9484,8 @@ private sub _emitprocend _
 			asm_code("test eax, eax")
 			asm_code("jz "+lname)
 			for idx = ctx.argfloat to GAS64_SYSTEMV_FLOAT_ARG_REGISTERS-1
-				asm_code("movq QWORD PTR "+ _
-				         Str(GAS64_SYSTEMV_FLOAT_SAVE_BASE+idx*GAS64_QWORD_BYTES)+ _
+				asm_code("movdqu XMMWORD PTR "+ _
+				         Str(GAS64_SYSTEMV_FLOAT_SAVE_BASE+idx*16)+ _
 				         "[rbp], xmm"+Str(idx))
 			next
 			asm_code(lname+":")
@@ -9161,6 +9523,20 @@ private sub _emitprocend _
 		asm_code(lname+":")
 	end if
 
+	if( len(ctx.error_setter_label) > 0 ) then
+		'' Only the argument area is needed on the alternate handler stack;
+		'' locals and BYVAL object copies continue to use the owner's RBP.
+		dim as longint outgoing = GAS64_WINDOWS_SHADOW_SPACE_BYTES
+		if( ctx.argcptmax > GAS64_WINDOWS_ARG_REGISTERS ) then outgoing = clngint(ctx.argcptmax) * GAS64_QWORD_BYTES
+		asm_code(".p2align 4")
+		cfi_windows_asm_code(".seh_proc " + ctx.error_setter_label)
+		asm_code(ctx.error_setter_label + ":")
+		cfi_windows_asm_code(".seh_endprologue")
+		asm_code("mov rdx, rbp", KNOALL)
+		asm_code("mov r8, " + str(outgoing), KNOALL)
+		asm_code("jmp fb_ErrorSetNativeHandlerSized", KNOALL)
+		cfi_windows_asm_code(".seh_endproc")
+	end if
 	asm_info("===== End of proc =====")
 
 	flistReset( @ctx.spillvregs )
@@ -9179,8 +9555,10 @@ private sub _emitvariniofs(byval sym as FBSYMBOL ptr,byval rhs as FBSYMBOL ptr,b
 	asm_info("ofs="+Str(ofs))
 
 	var s = *symbGetMangledName( rhs )
+#ifdef __GAS64_DEBUG__
 	var symdtype = symbGetType( sym )
 	var ptrdtype = typeAddrOf( symbGetType( rhs ) )
+#endif
 
 	asm_info("symdtype="+typedumpToStr(symdtype,0))
 	asm_info("ptrdtype="+typedumpToStr(ptrdtype,0))
@@ -9264,7 +9642,7 @@ end sub
 
 private sub _emitMacro( byval op as integer,byval v1 as IRVREG ptr, byval v2 as IRVREG ptr, byval vr as IRVREG ptr )
 	dim as IRVREG ptr tempo1,tempo2
-	dim as integer savereg,startarg,vreg
+	dim as integer savereg,startarg,vreg,valist_slot
 	dim as string regvalist,lname1,lname2
 	asm_info( "Macro op=" + astdumpopToStr( op ))
 	asm_info("v1="+vregdumpfull(v1))
@@ -9293,7 +9671,7 @@ private sub _emitMacro( byval op as integer,byval v1 as IRVREG ptr, byval v2 as 
 				regvalist=*regstrq(reg_findreal(tempo1->reg))
 				asm_code("mov DWORD PTR ["+regvalist+"], "+str(ctx.arginteg*GAS64_QWORD_BYTES),KNOALL)  ''offset reg size 4
 				asm_code("mov DWORD PTR 4["+regvalist+"], "+ _
-				         str(ctx.argfloat*GAS64_QWORD_BYTES+ _
+				         str(ctx.argfloat*16+ _
 				             GAS64_SYSTEMV_INTEGER_ARG_REGISTERS*GAS64_QWORD_BYTES)) ''offset float 4
 				startarg=(iif(ctx.arginteg<=GAS64_SYSTEMV_INTEGER_ARG_REGISTERS,0, _
 				              ctx.arginteg-GAS64_SYSTEMV_INTEGER_ARG_REGISTERS)+ _
@@ -9334,7 +9712,24 @@ private sub _emitMacro( byval op as integer,byval v1 as IRVREG ptr, byval v2 as 
 '# Info --> vr=reg 3 [integer] or double if single/double
 
 
-			if ctx.systemv then
+			if( typeGetDtAndPtrOnly( vr->dtype ) = FB_DATATYPE_STRUCT ) then
+				if( ctx.systemv ) then
+					tempo1 = irhlAllocVreg( FB_DATATYPE_INTEGER, NULL )
+					reg_findfree( vr->reg )
+					_emitaddr( AST_OP_ADDROF, v1, tempo1 )
+					regvalist = *regstrq( reg_findreal( tempo1->reg ) )
+					ctx.stk = (GAS64_QWORD_BYTES + ctx.stk + _
+					           GAS64_QWORD_BYTES - 1) And _
+					          Not(GAS64_QWORD_BYTES - 1)
+					valist_slot = -ctx.stk
+					asm_code( "mov QWORD PTR " + str( valist_slot ) + _
+					          "[rbp], " + regvalist )
+					reg_findfree( tempo1->reg )
+					hCvaArgSystemvStruct( vr, valist_slot )
+				else
+					hCvaArgWindowsStruct( v1, vr )
+				end if
+			elseif( ctx.systemv ) then
 				''linux
 				tempo1 = irhlAllocVreg( FB_DATATYPE_INTEGER, 0 )
 				reg_findfree(vr->reg)
@@ -9344,11 +9739,11 @@ private sub _emitMacro( byval op as integer,byval v1 as IRVREG ptr, byval v2 as 
 				lname2 = *symbUniqueLabel( )
 				if vr->dtype=FB_DATATYPE_DOUBLE or vr->dtype=FB_DATATYPE_SINGLE then
 					''double/single
-					asm_code("cmp DWORD PTR 4["+regvalist+"], 104")
-					asm_code("jg "+lname1)
+					asm_code("cmp DWORD PTR 4["+regvalist+"], 160")
+					asm_code("ja "+lname1)
 					''in a register
 					asm_code("mov eax, DWORD PTR 4["+regvalist+"]")
-					asm_code("add DWORD PTR 4["+regvalist+"], 8")
+					asm_code("add DWORD PTR 4["+regvalist+"], 16")
 					'asm_code("neg rax")
 					asm_code("add rax, QWORD PTR 16["+regvalist+"]")
 					asm_code("jmp "+lname2)
@@ -9361,7 +9756,7 @@ private sub _emitMacro( byval op as integer,byval v1 as IRVREG ptr, byval v2 as 
 				else
 					''others
 					asm_code("cmp DWORD PTR ["+regvalist+"], 40")
-					asm_code("jg "+lname1)
+					asm_code("ja "+lname1)
 					''in a register
 					asm_code("mov eax, DWORD PTR ["+regvalist+"]")
 					asm_code("add DWORD PTR ["+regvalist+"], 8")

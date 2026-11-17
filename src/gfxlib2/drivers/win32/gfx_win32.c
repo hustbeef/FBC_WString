@@ -10,6 +10,12 @@
 #include <process.h>
 #include "fb_win32_drop.h"
 
+#if defined(__clang__) || (defined(__GNUC__) && (__GNUC__ >= 7))
+#define FB_FALLTHROUGH __attribute__((fallthrough))
+#else
+#define FB_FALLTHROUGH ((void)0)
+#endif
+
 static int win32_drop_submit(void *user, int kind, const char *data,
 	size_t bytes, int count)
 {
@@ -56,9 +62,7 @@ static int win32_drop_submit(void *user, int kind, const char *data,
 #define TOUCH_COORD_TO_PIXEL(x) ((x) / 100)
 #endif
 
-#ifndef PROCESS_DPI_UNAWARE
-#define PROCESS_DPI_UNAWARE 0
-#define PROCESS_SYSTEM_DPI_AWARE 1
+#ifndef PROCESS_PER_MONITOR_DPI_AWARE
 #define PROCESS_PER_MONITOR_DPI_AWARE 2
 #endif
 
@@ -89,7 +93,7 @@ typedef struct FB_WIN32_TOUCH_STATE_ {
 
 WIN32DRIVER fb_win32;
 
-const GFXDRIVER *__fb_gfx_drivers_list[] = {
+const GFXDRIVER *fb_gfx_drivers_list[] = {
 #ifndef HOST_CYGWIN
 #ifndef DISABLE_D3D10
 	&fb_gfxDriverD2D,
@@ -141,7 +145,7 @@ static KEYCONVINFO keyconv1 = {{NULL}, 0};
 static KEYCONVINFO keyconv2 = {{NULL}, 0};
 
 static void keyconv_clear( KEYCONVINFO *k );
-static void keyconv_grow( KEYCONVINFO *k, int nchars, int charsize );
+static int keyconv_grow( KEYCONVINFO *k, int nchars, size_t charsize );
 
 static unsigned int hIntlConvertChar( int key, int source_cp, int dest_cp );
 
@@ -344,7 +348,7 @@ static void ToggleFullScreen( EVENT *e )
 		fb_win32.init();
 	}
 	fb_hRestorePalette();
-	fb_hMemSet(__fb_gfx->dirty, TRUE, fb_win32.h);
+	fb_hMemSet(fb_gfx->dirty, TRUE, (size_t)fb_win32.h);
 	fb_win32.is_active = TRUE;
 	has_focus = FALSE;
 }
@@ -362,6 +366,9 @@ static VOID CALLBACK fb_hTrackMouseTimerProc(
 {
 	POINT pt, rect_pt[2];
 	RECT *rect = (RECT *)rect_pt;
+	(void)hWnd;
+	(void)uMsg;
+	(void)dwTime;
 
 	GetClientRect(fb_win32.wnd, rect);
 	MapWindowPoints(fb_win32.wnd, NULL, rect_pt, 2);
@@ -603,10 +610,10 @@ LRESULT CALLBACK fb_hWin32WinProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 				}
 			}
 
-			fb_hMemSet(__fb_gfx->key, FALSE, 128);
+			fb_hMemSet(fb_gfx->key, FALSE, 128);
 			mouse_buttons = 0;
 			touch_clear_all();
-			fb_hMemSet(__fb_gfx->dirty, TRUE, fb_win32.h);
+			fb_hMemSet(fb_gfx->dirty, TRUE, (size_t)fb_win32.h);
 			if ((!fb_win32.is_active) && (has_focus)) {
 				e.type = EVENT_MOUSE_EXIT;
 				fb_hPostEvent(&e);
@@ -669,9 +676,9 @@ LRESULT CALLBACK fb_hWin32WinProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 					e.dy = mouse_pos.y - last_mouse_pos.y;
 				}
 			}
-			if( __fb_gfx->scanline_size != 1 ) {
-				e.y /= __fb_gfx->scanline_size;
-				e.dy /= __fb_gfx->scanline_size;
+			if( fb_gfx->scanline_size != 1 ) {
+				e.y /= fb_gfx->scanline_size;
+				e.dy /= fb_gfx->scanline_size;
 			}
 			last_mouse_pos = mouse_pos;
 			if (((!e.dx) && (!e.dy)) || (!fb_win32.is_active)) {
@@ -787,15 +794,15 @@ LRESULT CALLBACK fb_hWin32WinProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 				int client_width = LOWORD(lParam);
 				int client_height = HIWORD(lParam);
 
-				client_height = (client_height + __fb_gfx->scanline_size - 1) /
-					__fb_gfx->scanline_size;
+				client_height = (client_height + fb_gfx->scanline_size - 1) /
+					fb_gfx->scanline_size;
 				fb_hRequestResize(client_width, client_height);
 				if (fb_win32.mouse_clip)
 					fb_hSetMouseClip();
 			}
 			else if (fb_hWin32IsWindowScalingEnabled()) {
 				fb_hWin32UpdateWindowLayout();
-				fb_hMemSet(__fb_gfx->dirty, TRUE, fb_win32.h);
+				fb_hMemSet(fb_gfx->dirty, TRUE, (size_t)fb_win32.h);
 				if (fb_win32.mouse_clip)
 					fb_hSetMouseClip();
 			}
@@ -814,7 +821,7 @@ LRESULT CALLBACK fb_hWin32WinProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 					return FALSE;
 				}
 			}
-			/* fall through */
+			FB_FALLTHROUGH;
 
 		case WM_KEYDOWN:
 		case WM_KEYUP:
@@ -893,7 +900,7 @@ LRESULT CALLBACK fb_hWin32WinProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 				if( key < 256 ) {
 					int target_cp = FB_GFX_GET_CODEPAGE();
 					if( target_cp!=-1 )
-						key = hIntlConvertChar( key, CP_ACP, target_cp );
+					key = (int)hIntlConvertChar( key, CP_ACP, target_cp );
 
 					while( repeat_count-- ) {
 						fb_hPostKey(key);
@@ -919,15 +926,15 @@ LRESULT CALLBACK fb_hWin32WinProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 				// window update rect as dirty
 				 */
 				LONG dirtyStartLine, numLines;
-				int scanlineShift = __fb_gfx->scanline_size - 1;
+				int scanlineShift = fb_gfx->scanline_size - 1;
 
 				BeginPaint(fb_win32.wnd, &ps);
 				if (fb_win32.flags & DRIVER_RESIZABLE) {
-					fb_hMemSet(__fb_gfx->dirty, TRUE,
-						(size_t)__fb_gfx->h * __fb_gfx->scanline_size);
+					fb_hMemSet(fb_gfx->dirty, TRUE,
+						(size_t)fb_gfx->h * (size_t)fb_gfx->scanline_size);
 				}
 				else if (fb_hWin32IsWindowScalingEnabled()) {
-					fb_hMemSet(__fb_gfx->dirty, TRUE, fb_win32.h);
+					fb_hMemSet(fb_gfx->dirty, TRUE, (size_t)fb_win32.h);
 				}
 				else {
 					dirtyStartLine = ps.rcPaint.top;
@@ -937,7 +944,16 @@ LRESULT CALLBACK fb_hWin32WinProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 					dirtyStartLine >>= scanlineShift;
 					numLines = max(numLines >> scanlineShift, 1);
 
-					fb_hMemSet(__fb_gfx->dirty + dirtyStartLine, TRUE, numLines);
+					if (dirtyStartLine < 0)
+						dirtyStartLine = 0;
+					if (dirtyStartLine >= fb_gfx->h)
+						numLines = 0;
+					else if (numLines > fb_gfx->h - dirtyStartLine)
+						numLines = fb_gfx->h - dirtyStartLine;
+					if (numLines > 0) {
+						fb_hMemSet(fb_gfx->dirty + (size_t)dirtyStartLine, TRUE,
+							(size_t)numLines);
+					}
 				}
 
 				fb_win32.paint();
@@ -947,7 +963,7 @@ LRESULT CALLBACK fb_hWin32WinProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 		
 		case WM_DISPLAYCHANGE:
 			fb_win32.paint();
-			fb_hMemSet(__fb_gfx->dirty, TRUE, __fb_gfx->h);
+			fb_hMemSet(fb_gfx->dirty, TRUE, (size_t)fb_gfx->h);
 			break;
 		
 		case WM_MOVING:
@@ -959,8 +975,8 @@ LRESULT CALLBACK fb_hWin32WinProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 			mmi = (MINMAXINFO *)lParam;
 			if (fb_win32.flags & DRIVER_RESIZABLE) {
 				RECT minimum = { 0, 0, 8,
-					(__fb_gfx && __fb_gfx->font) ?
-					 __fb_gfx->font->h * __fb_gfx->scanline_size : 16 };
+					(fb_gfx && fb_gfx->font) ?
+					 fb_gfx->font->h * fb_gfx->scanline_size : 16 };
 				DWORD style = (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE);
 				DWORD extended_style =
 					(DWORD)GetWindowLongPtr(hWnd, GWL_EXSTYLE);
@@ -1035,7 +1051,7 @@ int fb_hInitWindow(DWORD style, DWORD ex_style, int x, int y, int w, int h)
 	if (!fb_win32.wnd)
 		return -1;
 	EVENT_LOCK();
-	__fb_gfx->drops.supported = TRUE;
+	fb_gfx->drops.supported = TRUE;
 	EVENT_UNLOCK();
 
 	fb_hWin32UpdateWindowLayout();
@@ -1055,13 +1071,13 @@ int fb_hWin32Init(char *title, int w, int h, int depth, int refresh_rate, int fl
 	OSVERSIONINFO info;
 	HMODULE module;
 	HANDLE events[2];
-	long result;
+	DWORD result;
 	int i;
 	int os_major_version;
 
 	info.dwOSVersionInfoSize = sizeof(info);
 	if (GetVersionEx(&info)) {
-		fb_win32.version = (info.dwMajorVersion << 8) | info.dwMinorVersion;
+		fb_win32.version = (int)((info.dwMajorVersion << 8) | info.dwMinorVersion);
 		os_major_version = (int)info.dwMajorVersion;
 	} else {
 		fb_win32.version = 0;
@@ -1101,7 +1117,7 @@ int fb_hWin32Init(char *title, int w, int h, int depth, int refresh_rate, int fl
 
 	/* Make a unique name for the window class, by encoding the address of the global context into it,
 	   so that the window class won't be re-used by other instances of gfxlib2 (e.g. from DLLs). */
-	snprintf( fb_win32.window_class, WINDOW_CLASS_SIZE-1, "%s%p", WINDOW_CLASS_PREFIX, &fb_win32 );
+	snprintf( fb_win32.window_class, WINDOW_CLASS_SIZE-1, "%s%p", WINDOW_CLASS_PREFIX, (void *)&fb_win32 );
 	fb_win32.window_class[WINDOW_CLASS_SIZE-1] = '\0';
 
 	fb_win32.w = w;
@@ -1171,9 +1187,9 @@ void fb_hWin32StopThread(void)
 
 	fb_win32.is_running = FALSE;
 
-	if (__fb_gfx && (__fb_gfx->lock_count != 0)) {
-		__fb_gfx->lock_count = 0;
-		__fb_gfx->driver->unlock();
+	if (fb_gfx && (fb_gfx->lock_count != 0)) {
+		fb_gfx->lock_count = 0;
+		fb_gfx->driver->unlock();
 	}
 
 	if (handle) {
@@ -1197,7 +1213,7 @@ void fb_hWin32Exit(void)
 	if (fb_win32.exit)
 		fb_win32.exit();
 
-	SystemParametersInfo(SPI_SETSCREENSAVEACTIVE, screensaver_active, NULL, 0);
+	SystemParametersInfo(SPI_SETSCREENSAVEACTIVE, (UINT)screensaver_active, NULL, 0);
 	UnregisterClass(fb_win32.window_class, fb_win32.hinstance);
 
 	if (fb_win32.mouse_clip) {
@@ -1229,7 +1245,7 @@ void fb_hWin32SetPalette(int index, int r, int g, int b)
 
 void fb_hWin32WaitVSync(void)
 {
-	Sleep(1000 / (__fb_gfx->refresh_rate ? __fb_gfx->refresh_rate : 60));
+	Sleep((DWORD)(1000 / (fb_gfx->refresh_rate ? fb_gfx->refresh_rate : 60)));
 }
 
 int fb_hWin32GetMouse(int *x, int *y, int *z, int *buttons, int *clip)
@@ -1327,11 +1343,11 @@ void fb_hWin32SetMouse(int x, int y, int cursor, int clip)
 
 void fb_hWin32SetWindowTitle(char *title)
 {
-	if (__fb_gfx->lock_count != 0)
+	if (fb_gfx->lock_count != 0)
 		LeaveCriticalSection(&update_lock);
 	fb_win32.window_title = title;
 	SetWindowText(fb_win32.wnd, title);
-	if (__fb_gfx->lock_count != 0)
+	if (fb_gfx->lock_count != 0)
 		EnterCriticalSection(&update_lock);
 }
 
@@ -1388,13 +1404,21 @@ static void keyconv_clear( KEYCONVINFO *k )
 	k->size = 0;
 }
 
-static void keyconv_grow( KEYCONVINFO *k, int nchars, int charsize )
+static int keyconv_grow( KEYCONVINFO *k, int nchars, size_t charsize )
 {
-	void * p = realloc( k->v, (nchars+1) * charsize );
-	if( p ) {
-		k->v = p;
-		k->size = nchars;
-	}
+	size_t char_count;
+	void *p;
+
+	if ((nchars < 0) || (charsize == 0) || ((size_t)nchars > ((size_t)-1 - 1u)))
+		return FALSE;
+	char_count = (size_t)nchars + 1u;
+	if (char_count > ((size_t)-1 / charsize))
+		return FALSE;
+	p = realloc(k->v, char_count * charsize);
+	if (!p)
+		return FALSE;
+	k->v = p;
+	k->size = nchars;
 	if( k->v )
 	{
 		if( charsize == 2 )
@@ -1402,6 +1426,7 @@ static void keyconv_grow( KEYCONVINFO *k, int nchars, int charsize )
 		else
 			k->w[0] = 0;
 	}
+	return TRUE;
 }
 
 static unsigned int hIntlConvertChar( int key, int source_cp, int dest_cp )
@@ -1423,45 +1448,53 @@ static unsigned int hIntlConvertChar( int key, int source_cp, int dest_cp )
 	};
 	int length1, length2;
 
-	if( !key )
+	if( (key <= 0) || (source_cp < 0) || (dest_cp < 0) )
 		return 0;
 
 	/* convert source (key) to wide character */
-	length1 = MultiByteToWideChar( source_cp, 0,
+	length1 = MultiByteToWideChar( (UINT)source_cp, 0,
 									(LPCSTR)ch, 1,
 									NULL, 0 );
+	if (length1 <= 0)
+		return 0;
 
-	if( length1 > keyconv1.size )
-		keyconv_grow( &keyconv1, length1, sizeof(WCHAR) );
+	if( (length1 > keyconv1.size) &&
+	    !keyconv_grow( &keyconv1, length1, sizeof(WCHAR) ) )
+		return 0;
 
 	if(!keyconv1.w)
 		return 0;
 
-	length1 = MultiByteToWideChar( source_cp, 0,
+	length1 = MultiByteToWideChar( (UINT)source_cp, 0,
 							(LPCSTR)ch, 1,
 							keyconv1.w, keyconv1.size );
+	if ((length1 <= 0) || (length1 > keyconv1.size))
+		return 0;
 
 	keyconv1.w[length1] = 0;
 
 	/* convert wide character to code page character */
-	length2 = WideCharToMultiByte( dest_cp, 0,
+	length2 = WideCharToMultiByte( (UINT)dest_cp, 0,
 									(LPCWSTR)keyconv1.w, length1,
 									(LPSTR)NULL, 0,
 									NULL, NULL );
 
-	if( length2 > keyconv2.size )
-		keyconv_grow( &keyconv2, length2, sizeof(char) );
+	if( (length2 > keyconv2.size) &&
+	    !keyconv_grow( &keyconv2, length2, sizeof(char) ) )
+		return 0;
 
 	if(!keyconv2.a)
 		return 0;
 
-	length2 = WideCharToMultiByte( dest_cp, 0,
+	length2 = WideCharToMultiByte( (UINT)dest_cp, 0,
 		(LPCWSTR)keyconv1.w, length1,
 		(LPSTR)keyconv2.a, keyconv2.size,
 		NULL,NULL );
+	if ((length2 <= 0) || (length2 > keyconv2.size))
+		return 0;
 
 	keyconv2.a[length2] = 0;
 
-	return keyconv2.a[0];
+	return (unsigned char)keyconv2.a[0];
 }
 /* end of gfx_win32.c */

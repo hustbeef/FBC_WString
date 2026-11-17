@@ -72,6 +72,18 @@ def archive_members(listing: str) -> list[str]:
     return [name for name in listing.splitlines() if name not in indexes]
 
 
+def archive_objects(working: Path, names: list[str]) -> None:
+    # Apple's archive indexing can discard non-object inputs. Compile one
+    # native object, then copy it to keep batching fixtures small and fast.
+    result = subprocess.run([FIXTURE_CC, "-x", "c", "-c", "-o", names[0], "-"],
+                            input="int archive_fixture(void) { return 0; }\n",
+                            cwd=working, capture_output=True, text=True,
+                            timeout=30, check=False)
+    require(result.returncode == 0, "could not compile archive fixture", result)
+    for name in names[1:]:
+        shutil.copyfile(working / names[0], working / name)
+
+
 # -------------------------------------------------------------------------
 # Compiler links, distribution staging, and installation ownership
 # -------------------------------------------------------------------------
@@ -258,17 +270,20 @@ def test_archive_dryrun(root: Path, working: Path) -> None:
 
 
 def test_archive_portable_arguments(root: Path, working: Path) -> None:
-    # Model Apple's rejection of GNU response files and Windows' command
-    # limit while letting the native archiver verify the resulting members.
-    names = ["unit-" + str(index) + "-" + "x" * 60 + ".o" for index in range(600)]
-    for name in names:
-        write(working / name)
+    # Keep the fixture small for hosted Windows runners while making its
+    # argument list exceed xargs' batch size.
+    names = ["unit-" + str(index) + "-" + "x" * 120 + ".o" for index in range(128)]
+    archive_objects(working, names)
     write(working / "ar.sh", "#!/bin/sh\nset -eu\nlength=0\n"
           "for argument in \"$@\"; do\n"
           "  case \"$argument\" in @*) exit 1 ;; esac\n"
           "  length=$((length + ${#argument} + 1))\n"
           "done\n[ \"$length\" -lt 32768 ] || exit 1\n"
-          "if [ -f fail-after-first ] && [ -e \"$2\" ]; then exit 1; fi\n"
+          "call_number=0\n"
+          "if [ -f ar.calls ]; then call_number=$(cat ar.calls); fi\n"
+          "call_number=$((call_number + 1))\n"
+          "printf '%s\\n' \"$call_number\" > ar.calls\n"
+          "if [ -f fail-after-first ] && [ \"$call_number\" -gt 1 ]; then exit 1; fi\n"
           "exec ar \"$@\"\n")
     write(working / "GNUmakefile",
           ".DEFAULT_GOAL := runtime/libfb.a\nlibdir := runtime\n"
@@ -277,14 +292,18 @@ def test_archive_portable_arguments(root: Path, working: Path) -> None:
           + include(root, "build/archive-rules.mk") + "\nruntime:\n\t@mkdir -p runtime\n")
     result = make(working)
     require(result.returncode == 0, "archive exceeded portable tool arguments", result)
+    require(int((working / "ar.calls").read_text().strip()) > 1,
+            "archive arguments were not split into bounded batches")
     result = subprocess.run(["ar", "t", "runtime/libfb.a"], cwd=working,
                             capture_output=True, text=True, timeout=10, check=False)
     require(result.returncode == 0 and archive_members(result.stdout) == names,
             "batched archive lost or reordered members", result)
     published = (working / "runtime/libfb.a").read_bytes()
+    write(working / "ar.calls", "0\n")
     write(working / "fail-after-first")
     result = make(working, "-B")
-    require(result.returncode != 0 and (working / "runtime/libfb.a").read_bytes() == published,
+    require(result.returncode != 0 and int((working / "ar.calls").read_text().strip()) > 1
+            and (working / "runtime/libfb.a").read_bytes() == published,
             "a later archiver batch failure published a partial archive", result)
     require(not list((working / "runtime").glob("*.tmp"))
             and not list((working / "runtime").glob("*.rsp")),
@@ -521,20 +540,18 @@ def test_cppflags_forwarding(root: Path, working: Path) -> None:
 
 def test_semantic_footer_boundary(root: Path, working: Path) -> None:
     source = (root / "mk/tests/compiler/smoke.mk").read_text(encoding="utf-8")
-    programs = re.findall(
-        r"@awk -F '\\t' -v minimum_schema=[^\n]* '\\\n(.*?)' \\\n\s*\"\$\(TEST_TMP\)/([^\"]+)\"",
-        source, re.S,
-    )
-    selected = [body for body, name in programs if name == "semantic-recovery.tsv"]
-    require(len(selected) == 1, "could not locate the production recovery-model validator")
-    program = selected[0].replace("\\\n", "").replace("$$", "$")
-    write(working / "validate.awk", program)
+    require('check-semantic-smoke-expressions.py" --root "$(rootdir)" --recovery '
+            '"$(TEST_TMP)/semantic-recovery.tsv"' in source,
+            "could not locate the production recovery-model validator")
     rows = ["FBCSEM\t27\texpression", "M\tfixture", "D\tfixture",
-            "E\t1\t1\tfixture.bas\t3\t0\t3\t1\t0\t0\tnone\tnone\t0\t0\t0\tdouble",
+            "E\t1\t1\tfixture.bas\t3\t0\t3\t1\t0\t0\t\tnone\t0\t0\t0\tdouble",
             "R\t27\t1", "RECOVERY\t27\t1\t1\t1\t0\t1\t1"]
-    command = ["awk", "-F", "\t", "-v", "minimum_schema=15", "-f", "validate.awk"]
+    artifact = working / "recovery.tsv"
+    command = [sys.executable, "-B", str(root / "build_scripts/check-semantic-smoke-expressions.py"),
+               "--root", str(root), "--recovery", str(artifact)]
     for trailing, expected in (("", True), ("FILE\t1\t2\t3\t4\t5\t6\n", False)):
-        result = subprocess.run(command, cwd=working, input="\n".join(rows) + "\n" + trailing,
+        write(artifact, "\n".join(rows) + "\n" + trailing)
+        result = subprocess.run(command, cwd=working,
                                 capture_output=True, text=True, timeout=10, check=False)
         require((result.returncode == 0) == expected,
                 "semantic recovery validator accepted records after its footer", result)
@@ -556,8 +573,7 @@ def test_prerequisite_order(root: Path, working: Path) -> None:
 
 
 def test_archive_membership(root: Path, working: Path) -> None:
-    write(working / "first.o")
-    write(working / "second.o")
+    archive_objects(working, ["first.o", "second.o"])
     write(working / "GNUmakefile",
           ".DEFAULT_GOAL := runtime/libfb.a\nlibdir := runtime\n"
           "RTLIB_OBJ := first.o second.o\nAR := ar\nARFLAGS := rcs\nRANLIB := ranlib\n"
@@ -626,17 +642,29 @@ def test_missing_cross_toolchain(root: Path, working: Path) -> None:
     # Keep the top-level prerequisite wiring, replacing only source emission
     # and archiving so this regression never copies or builds the working tree.
     # Its policy probes need more time on native Windows than small fragments.
+    # A clean runner has no system fbc. Supply the host compiler explicitly,
+    # and clear compiler discovery so an installed SDK cannot hide that input.
+    host_fbc = working / "host-fbc.sh"
+    write(host_fbc, "#!/bin/sh\nexit 0\n")
+    host_fbc.chmod(0o755)
     write(working / "GNUmakefile", "include "
           + (root / "GNUmakefile").as_posix().replace(" ", "\\ ") + "\n"
           "bootstrap-check:\n\t@true\n"
           "bootstrap-emit:\n\t@printf source > emitted-source\n"
           "bootstrap-dist-target:\n\t@test -s emitted-source\n")
-    result = make(working, "bootstrap-dist-target", "HOST_CC=sh host.sh",
-                  "TARGET_TRIPLET=aarch64-fixture-linux-gnu", "FBC_TARGET=linux-aarch64",
-                  "PR_COMMON_TOOLS=make tar", "ENABLE_REPRODUCIBLE=", "ENABLE_CET=",
-                  "ENABLE_NO_PLT=", "ENABLE_AUTO_VAR_INIT=", timeout=120)
+    arguments = ("bootstrap-dist-target", "HOST_CC=sh host.sh",
+                 "TARGET_TRIPLET=aarch64-fixture-linux-gnu", "FBC_TARGET=linux-aarch64",
+                 "LOCAL_FBC=", "SYSTEM_FBC=", "PR_COMMON_TOOLS=make tar",
+                 "ENABLE_REPRODUCIBLE=", "ENABLE_CET=", "ENABLE_NO_PLT=",
+                 "ENABLE_AUTO_VAR_INIT=")
+    result = make(working, *arguments, "BUILD_FBC=" + host_fbc.as_posix(), timeout=120)
     require(result.returncode == 0 and (working / "emitted-source").is_file(),
             "package bootstrap target still required the target SDK", result)
+    (working / "emitted-source").unlink()
+    result = make(working, *arguments, "BUILD_FBC=missing-host-fbc", timeout=120)
+    require(result.returncode != 0 and "no usable FreeBASIC compiler" in result.stdout
+            and not (working / "emitted-source").exists(),
+            "source bootstrap target accepted a missing host compiler", result)
 
 
 def test_multilib_identity(root: Path, working: Path) -> None:
@@ -945,6 +973,61 @@ def test_build_configuration(root: Path, working: Path) -> None:
             and not list(working.rglob("*.tmp")), "dry-run changed configured artifacts", result)
 
 
+def test_error_unwind_configuration(root: Path, working: Path) -> None:
+    # A Win64 longjmp needs native unwind records in both error entry points.
+    # Check every archive variant, including builds with command-line C flags,
+    # and ensure that unrelated runtime objects keep their selected policy.
+    variants = ("", "pic", "mt", "mtpic")
+    for os_name, architecture, override in (("win32", "x86_64", False),
+                                            ("win32", "x86_64", True),
+                                            ("win32", "x86", False),
+                                            ("linux", "x86_64", False)):
+        lane = working / (os_name + "-" + architecture + ("-override" if override else ""))
+        lane.mkdir()
+        write(lane / "cc.sh", "#!/bin/sh\nset -eu\n"
+              "arguments=$*\nwhile [ \"$#\" -gt 0 ]; do\n"
+              "  if [ \"$1\" = -o ]; then shift; output=$1; fi\n"
+              "  shift\ndone\nprintf '%s\\n' \"$arguments\" >\"$output\"\n")
+        targets = []
+        assignments = ""
+        for variant in variants:
+            directory = "obj/" + (variant or "ordinary")
+            assignments += "libfb" + variant + "objdir := " + directory + "\n"
+            for name in ("error", "error_frame"):
+                targets.append(directory + "/errors/" + name + ".o")
+        unrelated = "obj/ordinary/strings/unrelated.o"
+        targets.append(unrelated)
+        for source in ("errors/error.c", "errors/error_frame.c", "strings/unrelated.c"):
+            write(lane / "source/rtlib" / source, "")
+        for target in targets:
+            (lane / target).parent.mkdir(parents=True, exist_ok=True)
+        write(lane / "GNUmakefile", ".DEFAULT_GOAL := all\nrootdir := .\n"
+              "srcdir := source\nmkpath := " + (root / "mk").as_posix() + "\n"
+              "TARGET_OS := " + os_name + "\nTARGET_ARCH := " + architecture + "\n"
+              "CC := sh cc.sh\nlibdir := lib\n"
+              "ALLCFLAGS := -O2 -fno-unwind-tables -fno-asynchronous-unwind-tables\n"
+              + assignments + include(root, "build/compile-rules.mk")
+              + "all: " + " ".join(targets) + "\n"
+              + include(root, "build/config-rules.mk")
+              + "\n$(file >signature,$(BUILD_CONFIG_RTL))\n.PHONY: signature\nsignature:\n")
+        arguments = ["ALLCFLAGS=-O0 -fno-unwind-tables -fno-asynchronous-unwind-tables"] if override else []
+        result = make(lane, *arguments)
+        require(result.returncode == 0, "error unwind command selection failed", result)
+        required = os_name == "win32" and architecture == "x86_64"
+        for target in targets:
+            flags = (lane / target).read_text().split()
+            enabled = required and target != unrelated
+            require(("-funwind-tables" in flags) == enabled,
+                    "incorrect unwind policy for " + str(lane / target))
+            if enabled:
+                require(flags.index("-funwind-tables") > flags.index("-fno-unwind-tables"),
+                        "runtime unwind requirement lost to command-line flags")
+        signature = (lane / "signature").read_bytes()
+        result = make(lane, "signature", *arguments, "RTLIB_ERROR_CFLAGS=")
+        require(result.returncode == 0 and ((lane / "signature").read_bytes() != signature) == required,
+                "runtime cache identity does not follow the error unwind policy", result)
+
+
 def test_build_rule_dependencies(root: Path, working: Path) -> None:
     configuration_fixture(root, working)
     dependency = working / ("source-dependencies-" + "x" * 96 + ".d")
@@ -1046,6 +1129,13 @@ def test_warning_normalization(root: Path, working: Path) -> None:
           'puts("probe.bas(7) warning 25(1): expected source warning");\n'
           'puts("include.bi(12) warning 3(2): expected include warning");\n'
           'if (getenv("WARNING_FIXTURE_CHANGED")) puts("unexpected warning");\n'
+          'if (getenv("WARNING_FIXTURE_TEMPS")) {\n'
+          'const char *first = getenv("WARNING_FIXTURE_RENUMBER") ? "TMP$9" : "TMP$2";\n'
+          'const char *second = getenv("WARNING_FIXTURE_COLLAPSE") ? first : '
+          '(getenv("WARNING_FIXTURE_RENUMBER") ? "TMP$10" : "TMP$3");\n'
+          'printf("Branch crossing local variable definition, to label: A, variable: %s\\n", first);\n'
+          'printf("Branch crossing local variable definition, to label: B, variable: %s\\n", second);\n'
+          '}\n'
           'return 0; }\n')
     compiler = working / "fake-fbc.exe"
     result = subprocess.run([FIXTURE_CC, "fake-compiler.c", "-o", str(compiler)],
@@ -1077,6 +1167,21 @@ def test_warning_normalization(root: Path, working: Path) -> None:
                             capture_output=True, text=True, timeout=30, check=False)
     require(result.returncode == 0 and all("unexpected warning" in path.read_text() for path in references),
             "explicit warning update failed", result)
+    write(working / "branch-cross-with-fb.bas", "end 0\n")
+    environment.pop("WARNING_FIXTURE_CHANGED")
+    environment.update(TEST_FILTER="branch-cross-with-fb.bas", WARNING_FIXTURE_TEMPS="1")
+    result = subprocess.run(command + ["--update"], cwd=working, env=environment,
+                            capture_output=True, text=True, timeout=30, check=False)
+    require(result.returncode == 0, "temporary warning fixture update failed", result)
+    environment["WARNING_FIXTURE_RENUMBER"] = "1"
+    result = subprocess.run(command, cwd=working, env=environment,
+                            capture_output=True, text=True, timeout=30, check=False)
+    require(result.returncode == 0, "renumbered generated temporaries did not match", result)
+    environment["WARNING_FIXTURE_COLLAPSE"] = "1"
+    result = subprocess.run(command, cwd=working, env=environment,
+                            capture_output=True, text=True, timeout=30, check=False)
+    require(result.returncode != 0 and "WARNING_REPORT_DIFF" in result.stdout,
+            "distinct generated temporary identities were not checked", result)
 
 
 def test_source_artifact_guard(root: Path, working: Path) -> None:
@@ -1310,7 +1415,8 @@ def main() -> int:
              test_manual_removed_zip_member, test_example_helper_headers, test_example_cleanup_arguments,
              test_cross_host_identity, test_sound_member_collision, test_multi_module_fixtures,
              test_doc_target_guard, test_source_artifact_guard, test_compiler_link_failure,
-             test_build_configuration, test_build_rule_dependencies, test_compiler_configuration,
+             test_build_configuration, test_error_unwind_configuration,
+             test_build_rule_dependencies, test_compiler_configuration,
              test_warning_normalization,
              test_tool_replacement, test_bootstrap_configuration, test_bootstrap_emission_configuration,
              test_isolated_builds, test_source_docs)

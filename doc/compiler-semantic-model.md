@@ -38,9 +38,19 @@ means the native table has only 27 slots. Existing signed/unsigned `C` value
 kinds carry at most 64 integer bits. Wider constants are not published through
 those carriers; a missing value does not establish a narrowed constant.
 
+The supplied Python `Model` validates either vocabulary and checks it against
+the encoding capability when present. `model.datatype_abis` identifies the
+encoding per module. Raw rows, type codes and primitive identities retain the
+chosen encoding; validators resolve primitive families through that module's
+`Y` dictionary. Normalized type meaning remains the same across encodings.
+Reduced modes identify the encoding from their explicit capabilities while
+retaining their deliberate omission of target layout tables. Older reduced
+models without those receipts report the encoding unavailable.
+
 `-semantic-extra-facts <list>` requests additional full-model source
-observations. The comma-separated names are `hints`, `declarators`, `keywords`
-and `macro-access`; `all` requests all four. Repeated options accumulate requests.
+observations. The comma-separated names are `hints`, `declarators`, `keywords`,
+`macro-access`, `includes`, `builtins`, `literal-groups`, `preprocessor`,
+`initializers`, `type-shapes` and `native-bytes`; `all` requests all eleven. Repeated options accumulate requests.
 The complete request `none` clears them. Names are case-insensitive, surrounding
 spaces are ignored, and unknown names or empty list fields are rejected before
 the request is changed. No extra group is enabled by default.
@@ -55,6 +65,59 @@ the required facts. Macro-access observations additionally need macro
 provenance. Request configuration persists across modules while each module's
 observations and completion counts reset. These are compiler facts, not rule
 selection or permission to reconstruct missing syntax from text.
+
+The same `macro-access` request publishes `macro-source-access-node-bindings`.
+A surviving tagged node has `K node <node-id> macro-source-access-reference
+<reference-id>`. Its reference selects the exact variable/member `MR` occurrence
+and the matching `macro-source-access:<reference-id>` role. These are not B
+ordinals. A transparent ByRef/array wrapper may retain the tag; clients must
+follow its native value edge rather than substitute a source-location match.
+Each available module has one global-namespace-owned
+`macro-source-access-node-count:<module-id>` closure, including zero. It counts
+surviving associations, which can include AST copies of one occurrence. Source
+occurrence counts remain independent: lowering can replace or remove a tagged
+node. Generated cleanup has no original access tag and acquires no association.
+Reduced models, compact macro provenance and unrequested captures omit these
+observations and mark their capability unavailable. The facts do not establish
+callee purity, hidden aliases or the lifetime of a proposed reference.
+
+The `includes` group publishes `counted-include-requests` and
+`include-request-scopes`. Per-source request closure includes repeated once-only
+requests, distinguishes written directives from compiler preincludes, and links
+each request to its native procedure, block, namespace and compound owners.
+These observations describe accepted preprocessing and scope, including quiet
+requests; inactive source text does not establish a request.
+
+The `builtins` group publishes `counted-builtin-function-uses`. It links accepted
+grammar intrinsics and original runtime-library calls to their physical or macro
+binding owners. Lowered helper calls do not become additional source calls. This
+group needs full-model macro provenance, as does `preprocessor`.
+
+The `literal-groups` group publishes `string-literal-adjacency-inputs`. Original
+implicit string joins retain the two child expression identities before folding
+releases their AST nodes. Module completion counts close the observation stream;
+explicit concatenation and final folded values remain separate facts.
+
+The `preprocessor` group publishes `counted-preprocessor-events`. Its module
+closure `preprocessor-event-counts:<module>` stores five tab-separated counts,
+in order: `PPB`, `PPD`, `PPE`, `PPT`, `ML`. Counters advance only after successful
+record publication and reset at each module boundary. This permits a consumer to
+check complete guard evidence without reconstructing directives from source.
+
+The `initializers` group publishes `array-initializer-input-closure`. Existing
+original array-element facts remain available independently. When requested in
+a full model, each accepted element also has an `array-initializer-target` edge
+from its original expression to its array symbol; the edge rank is the one-based
+innermost dimension. One `original-array-initializer-count` property on the
+module's global namespace symbol closes the stream, including zero elements.
+The counter resets between modules. Scalar initializers, defaults and implicit
+runtime helper arguments do not acquire array-element roles.
+
+The reference reader converts Windows filename bytes only at its filesystem
+boundary: strict UTF-8 takes precedence, followed by the host ANSI code page for
+legacy bytes. Serialized identities remain unchanged. Current size and digest
+checks still reopen the actual file on every operation; a same-size edit is stale.
+The normal semantic-sidecar runner covers both compiler-observed path spellings.
 
 Identifier-hint inputs retain an independent source binding or macro owner.
 Compiler-generated unnamed parameters can exist for ABI checking without any
@@ -102,6 +165,28 @@ Each artifact describes one compilation context. Tooling can retain that
 context incrementally when the compiler, arguments, source hashes and include
 resolution still match. It remains responsible for project state and process
 lifetime.
+
+### Direct array variable mutations
+
+Full models with macro provenance publish
+`native-array-variable-mutation-inputs`. The focused
+`tooling/semantic-array-mutations.bas` observer records direct variable targets of
+source ERASE, REDIM and REDIM PRESERVE before runtime lowering consumes their AST.
+DIM allocation is not a source REDIM operation. Field and indirect places keep
+their ordinary source uses but are outside this direct-variable family.
+
+Each `K symbol <array-id> native-array-mutation:<ordinal>` payload contains the
+operation kind, statement ID, source-context ID, `variable` or `expanded` place,
+and macro identity. Its matching H self-relation identifies the selected array;
+LOC/MR records preserve the original operand location or macro origin. Ordinals
+start at one per module. A global-namespace-owned
+`native-array-mutation-count:<module-id>` closes the sequence, including zero.
+The compiler resets the count for each source module in a multi-root invocation.
+
+Reduced or compact macro models mark the feature unavailable and omit its
+observations. This is a small ordinary full-model input, independent of the
+optional token observation groups. It does not establish alias effects, prove
+that an array is useful or change allocation, construction or cleanup behavior.
 
 ## Completion and transactions
 
@@ -544,11 +629,17 @@ identity is distinct from symbol allocation identity. A formal's preserved
 written name can supply T's name when the compiler intentionally discarded its
 internal prototype name.
 
-CTX/OPT snapshots contain all current compiler option, language-default, and
-literal/feature-policy fields. AST nodes retain the context at construction,
+CTX/OPT snapshots contain the compiler option, language-default, and
+literal/feature-policy fields listed by their capability contract. AST nodes
+retain the context at construction,
 including through cloning. USE connects node and declaration identities to
 those snapshots. A later snapshot never retroactively changes an earlier
 declaration or node. Rolled-back parse attempts discard their context records.
+`complete-effective-contexts` explicitly promises all 65 fixed keys in current
+full snapshots. Reduced modes mark it unavailable. The reader rejects every
+missing required key, unknown keys and foreign OPTION occurrence statements
+even if the record totals have been repaired. Older producers without this
+promise retain their documented optional-key behavior.
 Full models add optional `OPT <context> language-policy remkeyword-active <flag>`.
 The flag is one while the native REM keyword remains installed, and zero after
 an accepted `OPTION NOKEYWORD REM` removes that keyword from the lookup hash.
@@ -1098,6 +1189,102 @@ snapshots may repeat as forward declarations become complete; the latest
 snapshot applies, matching `T` metadata. Expression and node subjects have
 one snapshot. All `NT` records contribute to the detail count.
 
+`normalized-type-closure` is available only in full models. It requires one
+normalized type for each valid native `T`, `N` and `E` snapshot. The invalid
+datatype sentinel has no `NT`. A symbol `NT` belongs to its following `T`;
+node/expression snapshots belong to their preceding native record. Parser
+receipts may occur before the delayed expression `NT`. Readers check the
+native base/nominal type, pointer count, const/reference bits and mangling
+modifier at that capture point. Pointer storage must equal the module's target
+width. Missing, duplicated, foreign or contradictory pairs are rejected.
+Older producers without this capability do not promise complete `NT` coverage.
+
+The same capability supplies five global-namespace
+`mangling-modifier-definition:<ordinal>` properties, numbered from zero. Each
+value contains the native/selected-ABI primitive ID and its stable mangling
+meaning: `c-long`, `c-unsigned-long`, `c-char`, `c-bool` or `c-va-list`.
+`NT` retains the classifier's primitive name in its last field for compatibility.
+That name is not a source type: the mangler uses the `integer` slot for C long
+and the `zstring` slot for C char. These definitions provide the meaning without
+requiring a consumer to reconstruct private compiler enums. The independent
+reader exposes the per-module dictionary as `mangling_modifiers` and requires
+the complete, unique vocabulary.
+
+A fixed-string variable, array element or field supplies its initialized
+storage length to its expression and node snapshots. An unavailable length
+stays empty. A pointer to a fixed string still reports the pointer's width.
+The exporter reads only the selected symbol's common header for this length;
+it does not inspect an inactive AST or symbol payload.
+ZSTRING and WSTRING `NT` widths describe their primitive code units; `T` retains
+the selected variable or field's complete storage width. Accepted primitive
+layout observations additionally retain the written bound and type spelling.
+
+### Named symbol flags and primitive policy
+
+Full models advertise `named-symbol-flags` and `primitive-type-policy`.
+Bindings-only and expression-only models mark both unavailable and omit
+their properties. These extensions use existing `K` records and do not change
+schema 27 or either transport's record layout.
+
+The module's global namespace owns the flag dictionary:
+
+| Property | Decoded value fields |
+| --- | --- |
+| `named-flag-contract` | `1` |
+| `flag-definition:<ordinal>` | group, stable name, native unsigned 32-bit mask, applicable symbol classes or `*` |
+| `flag-definition-count` | number of definitions |
+| `return-method-definition:<ordinal>` | native enum value, stable name |
+| `aggregate-return-definition:<ordinal>` | native enum value, stable name |
+| `named-flag-counts:<module>` | common symbol, aggregate and procedure-status snapshot counts |
+
+Dictionary ordinals start at zero. Contract 1 defines 100 named flags in
+`attributes`, `procedure-attributes`, `status`, `aggregate-options` and
+`procedure-status`. The public names and class applicability are stable;
+consumers obtain the current native masks from the dictionary. A mask has
+one bit, and two definitions cannot apply to the same bit and symbol class
+within a group. Aggregate classes use `type` for both structs and unions.
+
+Each `T` is immediately followed by `symbol-flags:<ordinal>` on that symbol.
+Its six fields are attribute names and unmapped bits, procedure-attribute
+names and unmapped bits, then status names and unmapped bits. Each aggregate
+`U` similarly has `aggregate-flags:<ordinal>` with option names and unmapped
+bits. Each initialized `procedure-status` property has an adjacent
+`procedure-flags:<ordinal>` with status names and unmapped bits. These three
+ordinal sequences start at one independently per module. They describe the
+adjacent native snapshot, including subsequent changes to the same symbol.
+
+Names are comma-separated in dictionary order. Unmapped bits are canonical
+unsigned decimal values, including zero. A reused status bit can mean
+`temporary-lifetime` for a variable, `union-field` for a field, and
+`procedure-emitted` for a procedure. A class-inapplicable bit remains unmapped;
+it never acquires another class's meaning. The aggregate va_list type mask
+is a nonboolean field and remains in the unmapped bits. None of these
+observations mutates flags or implies source visibility, execution or effect.
+
+Each `F` has an adjacent `return-method-kind` with `fpu`, `sse` or `default`.
+Each initialized `aggregate-register-return` has an adjacent
+`aggregate-register-return-kind` with `none`, `integer`, `integer-integer`,
+`integer-float`, `float`, `float-integer` or `float-float`. The dictionaries
+associate these names with the native enums. They retain the compiler's
+classifier at capture; they do not describe final physical registers.
+
+For every `Y`, the global namespace owns `primitive-type-policy:<Y type ID>`
+with four fields: primitive name, native integer promotion rank, remapped
+primitive name, and storage category. Categories are `none`, `boolean`,
+`signed-N`/`unsigned-N` for N of 8, 16, 32, 64 or 128, and `float-32`/`float-64`.
+This is the initialized target datatype table, including the actual WCHAR
+remapping. `integer-promotion-policy` is `disabled-qb` in QB mode and
+`rank-based` otherwise. These policy facts are separate from the selected
+types already recorded on individual operations.
+
+The independent reader requires complete dictionaries, class-correct
+decoding, adjacent snapshot agreement, dense sequences, exact module closure
+and one policy entry per primitive. It rejects invented names, overlapping
+definitions, foreign owners, missing snapshots and false coverage claims
+even when transport totals have been corrected.
+
+### Procedure flow
+
 `PH` observes a procedure's `pre-load` AST, with an emitted flag distinguishing
 emitted and observed-only procedures. `NP` assigns each body node to that phase.
 Symbol initializer and default-argument trees remain separate metadata trees,
@@ -1125,6 +1312,602 @@ its path and line describe an informational point, not an editable range.
 Procedure symbol IDs are absent in expression-only output. These records
 contribute to the detail count in complete output and preserve the compiler's
 message, detail, and custom text without parsing console output.
+
+## Aggregate packing and native layout observations
+
+Full models advertise `aggregate-packing-inputs` and `native-aggregate-layout`.
+These observations separate the accepted source request, the argument passed
+to the native type constructor, and its initialized packing policy. They also
+retain the native field, anonymous-member and tail-padding decisions. The
+observer copies decisions during the original operation. It does not run
+layout again or infer a machine location from an early symbol offset.
+
+All properties below belong to the module's global namespace. Each family has
+an independent one-based module sequence, except insertion results, which use
+their insertion's ID. Subject IDs refer to actual STRUCT/UNION symbols.
+
+| Property | Decoded value fields |
+| --- | --- |
+| `aggregate-packing-input:<id>` | type, header statement/source/compound, FIELD present, expression or zero, folded native integer request or empty, coerced request, passed alignment, initialized packing, anonymous parent or zero |
+| `aggregate-layout-begin:<id>` | type, passed alignment, initialized packing, union flag, anonymous parent or zero, observation statement/source/compound |
+| `aggregate-layout-field:<id>` | parent, field, storage kind, alignment decision, applied padding, selected dtype/subtype, element bytes, original field offset, storage bytes, bit position/width, descriptor field or zero, parent offset/length/natural alignment afterward |
+| `aggregate-layout-insert:<id>` | parent, inner type, alignment decision, old parent offset/length/natural alignment, insertion base offset, inner length/natural alignment, union flag |
+| `aggregate-layout-promote:<id>` | insertion, member, old offset, new offset, new symbol-table owner, FIELD-class flag |
+| `aggregate-layout-insert-result:<id>` | resulting parent offset/length/natural alignment, relocated member count |
+| `aggregate-layout-end:<id>` | type, tail alignment decision, unpadded length, padded length, natural alignment, initialized packing |
+| `aggregate-layout-snapshot:<id>` | type, natural alignment, initialized packing, length, unpadded length, native finalized flag, hidden base storage field or zero |
+| `aggregate-layout-subject:<id>` | type, `created` or `preexisting`, last observed finalized flag, seven family counts |
+| `aggregate-layout-counts:<module>` | seven family counts, subject count |
+
+The seven counted families are packing input, creation, field, insertion,
+promotion, completion and snapshot, in that order. Every native aggregate U
+has one layout snapshot companion. Its values agree with that capture's T/U
+and initialized alignment/finalization properties. An incomplete native type
+can have a growing length while its finalized flag remains zero; that is not
+a completed ABI layout. The hidden base storage field remains distinct from
+the declared base type identified by U.
+
+An alignment decision has eight fields: input offset, initialized packing,
+input dtype/subtype, natural alignment, chosen alignment, reason and computed
+padding. Reasons are `natural`, `packing`, `managed-descriptor` and `none`.
+`none` has seven zero numeric fields and means the native calculation did not
+take place. It does not describe an ANY-typed allocation. This occurs for a
+shared bitfield unit, a logical dynamic-array field, and a union overlay.
+
+Field storage kinds are `allocated`, `shared-bitfield` and `dynamic-alias`.
+Storage bytes do not mean additional allocation for the latter two kinds.
+Dynamic aliases select the actual descriptor FIELD that owns their storage.
+Array element bytes and total storage bytes remain separate. The array
+descriptor attribute applies to both VAR and FIELD symbols in the named flag
+dictionary.
+
+Bitfield container selection can consume computed padding by choosing a
+smaller integer container. Applied padding and selected dtype/element width
+therefore remain separate from the original alignment calculation. Natural
+aggregate alignment follows the selected native container. Anonymous insertion
+can relocate a field several times; the relocation sequence preserves each
+intermediate offset rather than treating its first S as final layout.
+
+FIELD=3 is coerced to 2 by the native parser. Negative requests and requests
+larger than the target pointer width become zero. Other in-range requests
+retain their native behavior, including non-power-of-two values. Anonymous
+aggregates inherit the enclosing packing when the coerced request is zero,
+including an explicitly written FIELD=0. QB supplies its native default of
+one when the passed value is zero, except for the JS target. Absence, explicit
+zero, coercion, inheritance and language defaults remain distinct facts.
+
+Managed string and dynamic-array descriptors keep natural field alignment
+under packing. A consumer must not derive every field's alignment from one
+minimum of aggregate natural alignment and packing. The recorded decision
+describes that native operation, not an unconditional runtime base address.
+
+`created` means that native creation was observed in this module transaction.
+`preexisting` does not invent a source declaration or earlier creation event.
+Header contexts and expression IDs preserve source ownership; they supply no
+new editing range. Generated types do not acquire a written FIELD request.
+Inactive declarations have no request or layout creation event.
+
+The independent reader validates initialized snapshots, request coercion,
+language policy, field storage dispositions, actual offset changes, hidden
+base storage, exact per-subject and module closure, and every native field
+owned by an observed creation. Recounting a missing logical field does not
+make its model complete. Each sequence and the subject set is bounded at one
+million, with the ordinary staging bound still enforced. Rollback and module
+reset release all owned hash keys and counters. Reduced modes mark both
+capabilities unavailable and omit the family. The wire record layout and
+schema 27 remain unchanged.
+
+## Frontend procedure ABI snapshots
+
+`frontend-procedure-abi` is available in full models. It supplies one
+`frontend-procedure-abi:<ordinal>` K on each F's procedure and one
+`frontend-parameter-abi:<ordinal>` K on each G's formal. The two module-local
+ordinal sequences begin at one independently. Global-namespace
+`frontend-abi-counts:<module>` closes them with procedure and formal counts.
+
+The procedure value has six fields: state, source dtype/subtype, cached ABI
+result dtype/subtype, and frontend result kind. State is `available`,
+`pending-type`, `pending-layout` or `unavailable`. Available result kinds are
+`value`, `byref` and `hidden`; unresolved states have an empty kind. `byref`
+is the source BYREF result, while `hidden` is the native frontend's explicit
+caller-result storage policy. C/LLVM can retain a frontend aggregate value
+whose later backend ABI still selects hidden storage. These records do not
+replace backend return decomposition.
+
+The formal value has thirteen fields:
+
+1. Procedure symbol ID.
+2. Source ordinal, including -1 for an implicit instance formal.
+3. State.
+4. Source passing mode.
+5. Source dtype.
+6. Source subtype or zero.
+7. Lowered frontend dtype or empty.
+8. Lowered frontend subtype or empty.
+9. Native frontend argument-slot bytes.
+10. Native frontend register ordinal, including zero when unassigned there.
+11. Actual descriptor type or zero.
+12. Implicit-instance flag.
+13. Classification or empty.
+
+Available classifications are `value`, `implicit-reference`, `reference`
+and `descriptor`. The production lowering helper maps nontrivial BYVAL values
+to implicit references, explicit BYREF values to pointers and BYDESC formals
+to their selected descriptor pointers. This observer passes only local output
+variables to that readonly helper. It does not reselect an overload or change
+a formal. A copied method callback can retain the raw instance attribute while
+its G ordinal makes that argument explicit; the ABI instance flag follows G.
+
+Unfinished by-value types use `pending-type` or `pending-layout`. A missing
+BYDESC descriptor uses `pending-descriptor`. An invalid source type can be
+`unavailable`. None of these states invents a lowered dtype/subtype or
+classification. A VARARG marker instead has state and classification
+`variadic`, no lowered value and zero slot bytes. It never reaches the native
+helper's unsupported VARARG branch.
+
+Slot bytes describe the frontend parameter policy, including pointer-size
+rounding. They do not prove that those bytes occupy the final machine stack.
+The frontend register ordinal similarly does not describe all C/LLVM or
+machine register assignment. These distinctions preserve actual compiler
+knowledge without claiming final backend locations.
+
+The independent reader checks live T/F and G ownership, mode/ordinal/instance
+agreement, reference qualifiers, descriptor identity, scalar slot sizes,
+explicit pending states and exact complete closure. Both sequences are bounded
+at one million snapshots. Reduced models mark the capability unavailable and
+omit these properties. The record layout and schema 27 remain unchanged.
+
+## Selected C and LLVM ABI signatures
+
+`selected-backend-abi` is available in full C/Clang/LLVM exports. Native
+assembler backends and reduced modes mark it unavailable. The C and LLVM
+signature formatters copy the choices they actually made, including nested
+function-pointer types. They do not invoke a second formatting or ABI pass.
+
+Global-namespace properties use these decoded values:
+
+| Property | Fields |
+| --- | --- |
+| `emitted-abi-signature:<id>` | procedure/type symbol, `c` or `llvm`, role, selected result spelling, selected convention spelling |
+| `emitted-abi-parameter:<ordinal>` | signature, formal or zero, emitted position, part index, part count, kind, exact type spelling, native dtype or empty, native subtype or empty, attributes |
+| `emitted-abi-end:<signature>` | component count, complete selected header spelling |
+| `emitted-abi-counts:<module>` | signature count, component count |
+
+Signature and component sequences start at one independently per module.
+Positions and part indices start at zero. Roles are `declaration`, `definition`
+and `pointer-type`. Explicit identities permit recursive formatting without
+retaining native pointers or confusing an inner signature with its caller.
+Repeated signatures are separate observations of actual formatting calls.
+
+Kinds are `value`, `argv`, `libc-callback`, `libc-adjusted`, `hidden-result`,
+`variadic`, `i386-int128-low`, `i386-int128-high`, `memory-byval` and
+`va-list-decay`. A hidden result has no source formal. A variadic marker is
+`...`, has zero parts, and describes no fixed value. Ordinary values have one
+part. An i386 integer128 formal has two adjacent i64 components in low/high
+order. Its LLVM result can instead select void plus an sret pointer with the
+actual alignment attribute.
+
+LLVM large System V aggregate arguments retain the selected pointer and byval
+attribute; pointer types omit declaration-only parameter attributes. The
+selected va_list array decay remains distinct from an ordinary aggregate.
+C records also distinguish main argv spelling, callback prototype overrides
+and adjusted libc parameter types from the frontend formal type. Native type
+fields remain empty when a C-only override does not supply a corresponding
+BASIC datatype. They are never inferred from a C spelling.
+
+The selected header is formatting evidence. A C or LLVM type is not final
+machine register assignment, a runtime address, or evidence that an external
+compiler/linker retained the declaration. Unused source prototypes have no
+invented backend signature observation. Function-pointer types remain types.
+Source-formal order and emitted order can differ, as for PASCAL; formal IDs
+preserve that correspondence.
+
+The reader validates backend/role ownership, exact component positions,
+complete split words, formal membership, special attributes, header result
+and convention consistency, and complete signature/module closure. Signatures
+and components are each bounded at one million. Each spelling is bounded at
+65,536 bytes; excessive facts fail publication instead of being truncated.
+Module completion or rollback releases all owned signature keys and counters.
+The production collector is also exercised independently with the compiler's
+real hash, list and allocation modules. These controls reject malformed or
+oversized observations, prove nested signatures keep separate identities,
+and check that reset, rollback and inactive hooks retain no observations.
+The wire record layout and schema 27 are unchanged.
+
+## Selected C and LLVM call-site ABI
+
+`selected-call-abi` covers full C/Clang/LLVM call formatter observations.
+Native assembler backends and reduced modes mark it unavailable. The AST
+copies its carried caller, expression, statement, source occurrence and
+virtual static-target identities immediately before native call dispatch.
+Zero means the call carries no such identity. Compiler-generated profiling
+and copyback operations receive their own context instead of inheriting the
+previous source call. Call target symbols for indirect dispatch describe the
+selected procedure-pointer type; the static virtual target has a separate
+field.
+
+Global-namespace properties contain these decoded fields:
+
+| Property | Fields |
+| --- | --- |
+| `emitted-abi-call:<id>` | target/type symbol, stage, direct/indirect dispatch, caller or zero, carried expression or zero, statement or zero, source occurrence or zero, virtual static target or zero, result demanded, result native dtype or empty, result subtype or empty, explicit result spelling, convention spelling, native nesting level, frontend bytes-to-pop counter |
+| `emitted-abi-argument:<ordinal>` | call, formal or zero, emitted position, part index, part count, kind, input dtype, input subtype, selected dtype or empty, selected subtype or empty, exact explicit type spelling, attributes, exact selected value spelling |
+| `emitted-abi-call-end:<call>` | component count, complete selected call text |
+| `emitted-abi-call-counts:<module>` | call count, component count |
+
+The input type is the already lowered operand entering the backend. Its
+source spelling and pre-conversion type belong to the source expression and
+argument graph. LLVM records its explicit selected result and argument type
+tokens. C syntax has no corresponding explicit call result/type tokens, so
+those spellings remain empty. Its selected native expression type is copied
+where available. A C array callback adapter has no invented BASIC callback
+type. Native register-value demand and the frontend bytes-to-pop counter
+retain their capture-phase meaning; they describe no final machine location.
+
+Kinds include `value`, `variadic-value`, `hidden-result`, `unmapped-value`,
+`i386-int128-low`, `i386-int128-high`, `memory-byval`, `va-list-decay`,
+`array-callback`, `libc-adjusted`, `graphics-blender` and
+`graphics-blender-context`. A graphics blender retains its selected procedure
+pointer type. Its caller-owned generated C context has no invented BASIC type;
+both graphics components retain their actual by-value formals and C stage.
+Variadic values carry their actual promoted
+types and share the declaration's variadic marker symbol. Hidden result
+storage has no source formal. An argument emitted without a formal or carried
+hidden-result context remains `unmapped-value`. Split values keep adjacent
+low/high parts and the same input type. Memory-byval and sret attributes are
+copied from the actual call formatting branch. Component positions describe
+emitted order, including PASCAL's reversed formal order.
+
+LLVM's selected builtin route can consume a call without entering the ordinary
+call formatter. The full LLVM-only `llvm-builtin-call-lowering` capability
+exposes separate `emitted-abi-builtin:<ordinal>` properties containing target,
+`llvm-builtin-lowering`, caller, carried expression, statement, source
+occurrence, virtual static target and nesting level. The target here is a
+direct builtin and the virtual target is zero. `emitted-abi-builtin-count:<module>`
+closes that sequence. These receipts identify selected builtin lowering;
+they do not invent an ordinary call or assert that one machine call results.
+
+The reader checks ownership, context references, fixed versus variadic formal
+membership, native types, complete split pairs, component spellings against
+selected call text, and exact call/module closure. Call, component and builtin
+sequences are independently bounded at one million; individual text fields
+are bounded at 65,536 bytes. Completion and rollback clear all copied state.
+The producer retains no AST, symbol, expression-tree or virtual-register
+pointers. The record layout and schema 27 are unchanged.
+
+## Native object tables and RTTI phases
+
+Full models advertise `native-object-model` for every backend. Reduced modes
+mark it unavailable. The compiler copies its completed initializer payloads
+and assigned virtual-member indices; the observer performs no lookup,
+override selection, formatting or object-model lowering.
+
+Every type/union `U` has an `object-model-snapshot:<ordinal>` property on that
+type. Its fields are state, declared base type or zero, table symbol or zero,
+RTTI symbol or zero, table element count, abstract count, table-unused flag,
+RTTI-unused flag and has-RTTI flag. States are `plain`, `pending`, `owned`,
+`runtime` and `runtime-pending`. A plain type retains zero virtual storage.
+A pending snapshot keeps its actual incomplete pointers. The compiler's
+OBJECT root has an external RTTI declaration and no compiler-owned table
+symbol; runtime snapshots preserve that boundary.
+
+Other properties belong to the module's global namespace:
+
+| Property | Decoded fields |
+| --- | --- |
+| `virtual-table-build:<id>` | owner type, table, RTTI, declared base type, base table or zero, table elements, selected base elements, actually copied elements, unused-table flag |
+| `virtual-table-slot:<build>:<index>` | `null` or `address`, selected symbol or zero, actual byte offset, actual assignment bytes |
+| `virtual-table-member:<build>:<ordinal>` | assigned slot, declared procedure, abstract flag, overridden procedure or zero |
+| `virtual-table-end:<build>` | actual slot count, own assigned-member count |
+| `rtti-initialization:<ordinal>` | owner type, RTTI symbol, state, declared base type or zero, selected base RTTI or zero, selected name literal or zero, stdlib-table state, field count, three actual field offsets |
+| `object-model-counts:<module>` | type snapshots, table builds, slots, assigned members, RTTI events |
+
+Slots start at zero. Slot zero is the reserved null pointer; slot one points
+to this table's RTTI. Method slots start at two. The runtime virtual pointer
+uses the method portion of this native layout. Selected method addresses
+describe the table for that known class; they do not identify a dynamically
+dispatched object's actual class.
+
+The base's copied payload and the type's own declarations remain separate.
+Concrete members replace their assigned slot. A new abstract slot keeps its
+native null initializer. An abstract redeclaration of an inherited concrete
+method can retain the inherited pointer because the compiler does not replace
+that entry. The reader preserves that actual result instead of changing it
+to null from the declaration's abstract flag.
+
+With `-z optabstract`, an unused pure-abstract type can have a deferred RTTI
+placeholder. Its receipt contains state `deferred`, unavailable stdlib state,
+zero selected name/base payloads and no field offsets. A later descendant can
+activate the descriptor, producing a separate `activated` receipt with the
+actual three pointer fields. Normal creation uses `initialized`. Literal
+symbols supply exact mangled RTTI identity bytes, including namespace identity.
+An optimization-skipped base payload records zero selected/copied elements
+while the declared base and its independent table remain identifiable.
+
+The reader requires complete native slot/member sets, checks copied contents,
+overrides, field offsets, RTTI state transitions and per-type/module closure,
+and exposes each slot's declaration, selected member and copied-from table.
+Removing facts and correcting totals cannot hide a missing type snapshot,
+assigned abstract member, owned table build or required RTTI activation.
+Counts and traversals are bounded at one million, and pointer-conversion
+inspection is bounded. The observer owns counters and copied data only;
+completion and rollback retain no AST or symbol pointers. Schema 27 and the
+wire record layouts are unchanged.
+
+## Startup registrations and guarded instance paths
+
+Full models advertise `native-startup-lifecycle`. Reduced modes mark it
+unavailable. The observer copies native list append order, accepted source
+priorities, generated wrapper ownership and actual backend registration
+choices. Registration order and emission order remain independent sequences.
+They establish no extra ordering guarantee for the target loader.
+
+All properties belong to the module's global namespace:
+
+| Property | Decoded fields |
+| --- | --- |
+| `startup-registration:<ordinal>` | procedure, constructor/destructor kind, append ordinal within that native kind's list |
+| `startup-priority-input:<ordinal>` | procedure, accepted source priority |
+| `global-instance:<id>` | variable, initializer-present flag, cleanup-requested flag |
+| `static-instance:<id>` | variable, parent procedure, cleanup wrapper or zero, initializer-present flag, cleanup-requested flag, atexit-expression-created flag, path purpose |
+| `static-instance-guard:<ordinal>` | static path, flag variable, exit label, `zero`, `before-actions` |
+| `startup-instance-wrapper:<ordinal>` | generated procedure, constructor/destructor kind |
+| `global-instance-action:<ordinal>` | global instance, wrapper procedure, initialize/cleanup kind, ordinal within that wrapper's traversal |
+| `static-cleanup-body:<ordinal>` | variable, parent procedure, cleanup wrapper |
+| `startup-emission:<ordinal>` | procedure, kind, backend stage, role, requested native priority, selected/encoded priority or empty, placement, exact selected fragment/name |
+| `startup-lifecycle-counts:<module>` | nine counts in the table's family order, excluding this closure |
+
+MinGW C startup groups use the `wrapper-call` role. The procedure still names
+the original BASIC callback; placement names `fb_c_startup_c_<priority>` or
+`fb_c_startup_d_<priority>`, and the selected fragment is its emitted C callee
+followed by `()`. Default priority is 65535 for grouping, while requested and
+selected priority fields retain the native default/explicit distinction. The
+reader requires the selected callback name, kind and priority to agree. These
+C wrappers do not create BASIC procedure identities or reorder source lists.
+
+The source parser assigns priority after appending a constructor/destructor
+to its native list. Separate receipts preserve that sequence instead of
+publishing an earlier zero as the final priority. Generated wrappers can have
+the native default priority without a written priority input. Existing
+procedure/variable/label declaration-statement properties retain the native
+statement counter; those values do not come from semantic export-ID order.
+Procedure status flags remain distinct from symbol status flags.
+The native `gosub-label` flag denotes the assembler landing pad: C/LLVM and
+`-z gosub-setjmp` keep it false even for a source GOSUB target. Source `SOP`
+receipts retain the GOSUB operation independently of that backend flag.
+
+The full-only `accepted-declarator-order` capability supplies a separate
+`accepted-declarator-order:<ordinal>` sequence for the accepted DIM, STATIC,
+COMMON, EXTERN, CONST and VAR group inputs. Its fields are declared symbol,
+group owner, declaration group identity, item ordinal, accepted statement and
+source occurrence. `accepted-declarator-count:<module>` closes the sequence.
+This is the order of actual accepted parser inputs. In unscoped dialects,
+native declaration statement numbers can be equal because storage declarations
+move to function scope; the source sequence preserves their distinct order.
+The reader requires one matching native group input per receipt and rejects
+removed receipts even when the advertised count and ordinals are corrected.
+
+Full models advertise `native-block-structure`; reduced modes omit these
+observations. Namespace-owned K records retain the native AST wrapper data
+before procedure loading and scope break-list consumption:
+
+| Property | Value fields |
+| --- | --- |
+| `native-procedure-block:<ordinal>` | procedure, entry label, exit label, first native statement, last native statement, native ismain flag |
+| `native-scope-block:<ordinal>` | scope, parent procedure/scope, procedure, first native statement, last native statement |
+| `native-scope-exit:<ordinal>` | procedure, origin procedure/scope, target label, native depth, native statement, native line, accepted statement or zero |
+| `native-exit-cleanup:<ordinal>` | source exit ordinal, ordinal within that exit, storage symbol, owning procedure/scope |
+| `native-scope-exit-end:<exit ordinal>` | actual selected cleanup count |
+| `native-block-counts:<module>` | procedure, scope, exit and cleanup observation counts |
+
+The additional `native-block-provenance` capability supplies
+`native-block-origin:<ordinal>` with block kind (`procedure` or `scope`),
+block symbol, creation statement, source occurrence and configuration. The
+last three fields are the AST constructor's copied context; zero preserves an
+absent origin for generated nodes. An origin does not classify a generated
+block as authored source. Repeated includes retain different source occurrence
+identities even when their paths and source text are equal.
+
+Each selected cleanup also has `native-cleanup-insertion:<cleanup ordinal>`
+with a zero/one flag copied from the result of `astAddAfter`. The compiler's
+`astUpdate` can replace or eliminate the destruction expression, so capture
+tags the actual returned root. Retained nodes have a `native-exit-cleanup`
+property pointing to that selected cleanup. The reader requires one retained
+root per inserted action, none for an eliminated action, and the same exiting
+procedure. `native-block-provenance-counts:<module>` closes block origins and
+retained cleanup-node links. Removing a link and correcting the advertised
+link count still contradicts the independent insertion choice.
+
+Surviving BRANCH nodes carry `native-scope-exit` with their original exit
+ordinal. A source exit can survive as history after native optimization removes
+its branch. Its receipt does not claim the transfer executes. Cleanup records
+are captured only after the compiler actually creates a destruction expression;
+they describe insertion order for that particular exiting edge. No list or
+cursor addresses are exported. Native statement intervals are compiler counters,
+not source ranges or accepted declaration ordinals. The native ismain input is
+kept independently of the invocation's module/link role.
+
+These records cover native scope-break processing, including routine returns,
+GOTO and structured EXIT/CONTINUE paths. GOSUB calls/returns have their separate
+statement operations and native transfer records; they do not acquire invented
+scope-exit cleanup. Conditional temporary lifetime, late error-handler transfers
+and a complete final execution graph require their respective capabilities.
+
+Full models advertise `native-lexical-cleanup` for normal scope/procedure
+teardown. These observations describe the existing reverse symbol-table
+traversal, including groups that select no destructors:
+
+| Property | Value fields |
+| --- | --- |
+| `native-lexical-cleanup-group:<ordinal>` | owning scope/procedure, procedure, current statement or zero, source occurrence or zero, configuration or zero |
+| `native-lexical-cleanup:<ordinal>` | group, ordinal within that traversal, selected storage, zero/one inserted-root flag |
+| `native-lexical-cleanup-end:<group>` | selected action count |
+| `native-lexical-cleanup-counts:<module>` | group, action and retained-node-link counts |
+
+An inserted root has a node property `native-lexical-cleanup` naming the
+selected action. Capture occurs after `astAdd` returns from native AST updating.
+The reader closes every native block owner, including empty groups, requires
+actual automatic-cleanup storage owned by that block, and checks retained roots
+against insertion choices and procedure phases. Source-exit cleanup has its
+separate exit identity; a node cannot acquire both owners. Native selection
+excludes borrowed, static and plain storage. A retained teardown action is part
+of the observed procedure body and does not establish that a runtime path
+reaches it. Conditional temporary lifetime and late lowering still require
+their separate observations.
+
+The full-only `native-temporary-lifetime-events` capability preserves native
+destructor-list transitions in `native-temp-event:<ordinal>` K records. The
+first value field is the event kind; the remaining fields are:
+
+| Kind | Value fields after kind |
+| --- | --- |
+| `add` | native generation, storage symbol, cookie, reference count, scope occurrence or zero, reset epoch, statement or zero, source occurrence or zero, configuration or zero, current procedure or zero |
+| `reference-add`, `reference-remove` | generation, current cookie, new reference count |
+| `rescope` | generation, old cookie, new cookie |
+| `remove` | generation, reason (`flush`, `discard`, `reference-release`, `explicit-delete`) |
+| `scope-begin` | reset epoch, native cookie, allocated flag, new depth |
+| `scope-end` | scope-begin event identity, native cookie, new depth |
+| `flush-begin` | reset epoch, selected native cookie |
+| `flush-action` | flush-begin event identity, selected generation, destructor-expression-created flag |
+| `flush-end` | flush-begin event identity, selected-action count, removed-entry count |
+| `conditional` | result storage, actual true-branch flush or zero, actual false-branch flush or zero |
+
+`native-temp-counts:<module>` closes event, registration, flush, conditional,
+live-entry and open-scope counts. Native generation distinguishes registrations
+before list storage is recycled. Scope occurrences use their begin event IDs;
+cookie integers alone are insufficient because flush(0) resets their allocator.
+Reset epochs record that reset without claiming that a numeric cookie is a
+globally unique region identity. A scope can be reopened with an existing
+cookie. Flush observations name the registrations actually selected by the
+native traversal, including cancellation tombstones, without inferring a new
+selection from the cookie history.
+
+IIf lowering supplies the identities returned by its actual two branch flush
+calls. Retaining actions for both branches does not mean both execute. Constant
+folding can instead unscope the selected arm and mark the other for discard;
+discarded entries do not acquire destructor actions. The reader replays native
+reference/cookie/removal state, nested scope and flush occurrences, and their
+closures. A created destructor expression is an observation before later AST
+updating; it is not a claim about final machine actions or reachability.
+
+The additional full-only `native-temporary-cleanup-nodes` capability attaches
+`native-temp-cleanup` to retained N records, naming their original flush-action
+event. `native-temp-action-nodes:<event>` records the actual projection count
+for every selected action, including zero. Cloned roots can retain the same
+action provenance. `native-temp-projection-counts:<module>` closes action
+projections and retained node links. Zero means no tagged root was retained in
+the exported AST; it does not invent an optimization reason or runtime outcome.
+
+The reader checks each projected action was actually created, remains in the
+same module, and agrees with its per-action and total counts. For IIf branch
+actions it also follows the retained EV true/false arm trees and rejects a
+cleanup node assigned to the opposite branch, even if both flush IDs exist.
+
+Full models advertise `native-ast-load-actions`. Namespace-owned K records
+preserve native recursive loading intervals and actions after the retained
+pre-load AST snapshot:
+
+| Property | Value fields |
+| --- | --- |
+| `native-load-enter:<ordinal>` | parent load or zero, procedure, own snapshot origin or zero, inherited snapshot origin or zero, actual native AST class, construction statement or zero, source occurrence or zero, configuration or zero, native emission flag, depth |
+| `native-load-end:<load>` | zero/one produced-IR-value flag |
+| `native-load-call:<ordinal>` | active load, selected callee declaration, indirect flag, `call` or `profile-end`, native runtime-declaration flag |
+| `native-load-check:<ordinal>` | active load, `bounds-or-dimensions` or `null-pointer`, actual continuation label, `nonzero-handler`, `unknown-indirect` |
+| `native-load-counts:<module>` | load-entry, load-return, emitted-call and check-transfer counts |
+
+Own snapshot origin is copied through cloning as provenance. It does not claim
+the clone is the original N occurrence. A newly created loader node can have no
+own origin and inherit the enclosing load's origin. Entries record the actual
+node class at loading; it can differ from an earlier snapshot after native
+updating. No IR value, register or callback address is serialized.
+
+Intervals are ordered compiler loading work. Both IIf arms can be loaded while
+emitting guarded runtime paths; this sequence does not claim both arms execute.
+Likewise, the native emission flag distinguishes an unemitted private body.
+Its unused loader return carrier is not inspected or reported as an IR value.
+Calls are observed at actual IR dispatch, including runtime Unicode scalar reads
+created inside the USTRING index loader and direct profiling completion calls.
+Bounds/null checks retain the actual continuation and the native conditional
+handler transfer, whose dynamic target remains unknown. The reader requires
+properly nested intervals, active action owners, class/policy consistency,
+same-module snapshot/source references and complete closure. These records do
+not advertise a complete final machine graph or external-call effect summary.
+
+`native-ast-load-payloads` adds a shape and active payload for every load entry.
+`native-load-shape:<load>` contains raw datatype in the selected native/stable
+encoding, subtype, attached symbol, vector width and left/right child presence.
+`native-load-payload:<load>` starts with an active-union kind and its fields:
+
+| Kind | Fields after kind |
+| --- | --- |
+| `none` | empty field |
+| `constant` | exact value kind, exact value text or empty unavailable value, written-suffix flag |
+| `result-load`, `assignment`, `address-of`, `label`, `conditional` | result flag, assignment options, initialized address opcode, label flush flag, or false-target symbol respectively |
+| `operator` | native opcode, mapped code, option bits, optional extra target |
+| `call` | declared argument count, runtime flag, optional result temporary, optional static virtual target, pointer-expression flag |
+| `conversion` | performs conversion, float narrowing, dropped const |
+| `offset`, `index` | signed offset; index additionally has native multiplier |
+| `sequence` | `left`, `right` or `none` result edge |
+| `memory` | opcode, mapped code, byte count, fill byte |
+| `stack`, `runtime-macro` | opcode, mapped code |
+| `loop` | opcode, actual loop target |
+| `jump-table` | pair count, unsigned bias/span, default target |
+| `assembly` | entry token count, unknown-memory/register/control contract |
+| `text`, `debug` | literal text; debug has opcode, scalar extra and filename |
+
+The `text` payload has one free-form field after its kind. Tabs in literal or
+debug-source text remain part of that field; the reader splits only the first
+separator. Structured union payloads retain their exact field counts and kind
+checks. This does not change the outer record escaping or transport schema.
+
+`native-load-argument:<load>:<zero-based ordinal>` retains parameter, passing
+mode, byte count, raw datatype, subtype, operand snapshot origin and omission
+flag. `native-load-jump:<load>:<ordinal>` retains unsigned value/target pairs.
+`native-load-assembly:<load>:<ordinal>` retains text-or-symbol tokens at entry.
+`native-load-payload-counts:<module>` closes shapes, payloads, arguments, jump
+pairs and entry assembly tokens. The reader enforces active-class contracts
+and compares call/table/token sequences with their independent native counts.
+ADDROF exposes only its initialized opcode, never stale operator union slots.
+
+The separate `native-asm-load-emission` capability observes the actual token
+stream after native line joining. `native-load-assembly-output:<ordinal>`
+contains active load and token count;
+`native-load-assembly-output-token:<ordinal>:<token ordinal>` contains kind,
+symbol or zero, and text. `native-load-assembly-output-counts:<module>` closes
+groups and tokens. C/LLVM can transfer later ASM line streams into the current
+statement after entry; the later emptied nodes do not acquire another emission.
+Entry payload and emitted stream therefore remain distinct, both observable.
+
+Global instance IDs follow actual native list insertion. Generated initialization
+actions follow the native forward traversal; cleanup follows the reverse
+traversal, filtered by the actual initializer/cleanup flags. Each action names
+its real generated wrapper. The existing procedure graph retains the body.
+These are compiler-generated actions, not additional source callee references.
+
+Local static records describe guarded paths. Their purposes are `initialization`
+and `array-allocation`; the same storage can have distinct paths. The actual
+native flag branch skips the path when nonzero, sets it before the actions,
+and keeps temporary destruction inside that path. A created atexit expression
+is a conditional registration site, not proof that execution reached it.
+Only emitted parents receive generated static cleanup body receipts; an
+unused parent's declared static does not invent a flushed cleanup body.
+The observer adds no runtime synchronization or initialization guarantee.
+
+C records exact constructor/destructor attributes, keeping declaration and
+definition roles separate. An implicit C priority has an empty encoded field.
+LLVM array entries retain the selected number, including its actual default
+conversion from zero to 65535. GAS records the logical section request and
+native priority argument. GAS64 records the selected section, including shared
+library arrays and NetBSD's reversed finalizer suffix. These fields describe
+their specific backend phase rather than one invented universal runtime order.
+
+The reader checks symbol classes, append/action ordinals, forward/reverse
+instance order, wrapper ownership, guarded atexit paths, emitted-parent cleanup
+coverage, target-stage choices and complete module closure. Each sequence is
+bounded at one million and emitted fragments at 65,536 bytes. Completion and
+rollback reset copied counters; no native list or tree address is serialized.
+The new field in the private global-instance list stores only the copied
+module-local identity. Schema 27 and the wire record layouts are unchanged.
 
 ## Source statements and compounds
 
@@ -1201,6 +1984,186 @@ extent, configuration, module, and source context; OWN links connect generated
 operations with that owner. Identifier lookalikes and graphics GET/PUT routes
 do not acquire a file-operation classification. These observations describe
 accepted source operations, not runtime success or external effects.
+
+Rejected parser roots can retain an unformattable datatype or a missing nominal
+subtype. `native-expression-recovery` then records the common root snapshot with
+kind `unformattable-type` and the actual exporter guard site. Such a root does
+not become an E record and does not enter the ordinary diagnostic type formatter.
+This preserves native diagnostics and avoids inventing a normalized type from
+recovery bits. Other observations in the rejected statement remain provisional.
+
+Native overload and access explanations
+
+Full and expression models advertise `native-overload-explanations` as available.
+Bindings models advertise it as unavailable. This capability covers the native
+`symbFindClosestOvlProc` and nonempty `symbFindCastOvlProc` searches, plus actual
+`symbCheckAccess` and `symbCheckAccessStruct` returns. It does not claim a complete
+lexical or prototype lookup trace.
+
+Module metadata `native-resolution:<ordinal>` forms a dense native event stream.
+The value's first tab-separated field identifies the event. Scope and candidate
+IDs are local to this module and this attempt. Names and owner names are copied
+hints rather than invented S identities; candidates are not call, binding or
+effect records. No pointer is retained or used later to reconstruct a decision.
+The source point is the lexer's last consumed token at observation time. A zero
+ST means no current parser statement; that point is not a certified callee extent.
+
+```
+begin     scope parent-scope parent-candidate kind args options requested-type ST CFG SRC point[7] symbol[8]
+candidate scope candidate ordinal pass symbol[8]
+argument  scope candidate ordinal score reason argument-mode parameter-mode optional dimensions parameter-type parameter-subtype argument-present argument-class argument-type argument-subtype parameter-name
+score     scope candidate score matches exact-count-known exact-count effective-parameters reason native-error-code
+rank      scope candidate action maximum-score tied-best-count current-choice
+end       scope choice confirmation maximum-score tied-best-count native-error-code returned-procedure
+access    scope candidate route allowed ST CFG point[7] symbol[8]
+```
+
+A symbol snapshot has presence, raw native class, datatype, attributes, procedure
+attributes, declared parameter count, inner-escaped name and inner-escaped owner
+name. Only procedure symbols have a nonnegative parameter count. An absent
+snapshot uses class zero, the invalid datatype sentinel, zero attributes,
+parameter count -1 and empty names. A point has inner-escaped filename, source
+context, displayed line/column, raw line/column and physical flag. Nonphysical
+points keep raw coordinates zero. Datatype bits follow the selected type ABI.
+The flag describes the lexer's raw origin, not edit eligibility. A direct token
+under `#line` can retain its physical root SRC and raw line while displaying a
+logical filename/line. Such a point does not certify a B/E/ST edit range.
+
+Kinds are `closest`, `cast` and `cast-precision`. Passes are `screen`, `confirm`,
+`cast` and `precision`. The native closest resolver screens the real chain and
+then confirms its proposed winner. Both passes are preserved, including nested
+constructor and CAST searches; the observer does not rerun either pass. Candidate
+order is observation order, including those nested searches. Exact counts that
+the native argument-count gate did not initialize have known=false and value -1.
+Property getter/setter filtering is recorded separately from parameter mismatch.
+
+Argument reasons distinguish omitted optional/required values, descriptor
+mode/type/rank checks, BYREF rules, constant compatibility, constructor/CAST
+conversion, enum mismatch and ordinary type differences. Trailing optional or
+required parameters were inspected without a native argument score: their score
+is -1, argument mode -1 and argument root absent. Their ordinals are the native
+loop positions. After an earlier mismatch the native trailing loop can inspect
+the still-current formal; the snapshot preserves that actual formal. Precision
+CAST selection also has score -1, with an observed better/skip branch instead of
+a fabricated conversion score. Ranking distinguishes better, tied, inferior,
+rejected and binary-operator-ineligible candidates. Access checks retain the
+actual allowed result and `member` or `type-chain` route, including checks made
+after an overload resolver returned. A local returned procedure does not prove
+that later access/argument checks passed or that the call executes.
+
+Every available module has `native-resolution-policy`: native minor scale,
+type-match score, full-match score, maximum nesting depth and event limit. These
+ranking constants remain native under stable-v1 datatype encoding; expression
+models need them even though they omit the primitive Y table. Mandatory
+`native-resolution-counts` has event, scope-open, scope-close, candidate, score,
+argument, rank and access counts, followed by remaining scope depth. Accepted
+modules must close every scope and candidate. Rejected modules can retain an
+explicit unfinished stack. Reset and discarded parser attempts restart IDs.
+Publication fails rather than dropping events at the 1,024-depth or 1,000,000-event
+bounds. Lexer probes, PP expression evaluation and disabled exports add no facts.
+
+The CAST conversion-score remap now subtracts HALFMATCH from that score band
+before adding CONVMATCH. The previous TYPEMATCH subtraction turned a valid exact
+half-match conversion into NO_MATCH. Boundary checks and actual overloaded calls
+with export off/full/expression/bindings verify the corrected choice and one-time
+conversion evaluation. Variadic or AS ANY overload declarations that the native
+compiler rejects do not acquire considered candidates; ordinary variadic calls
+retain their existing call-argument semantics without invented overload scoring.
+
+Native resolution identity contexts
+
+`native-resolution-contexts` is available in full and expression models and
+unavailable in bindings models. Each `begin`, `candidate`, `argument`, `end` and
+`access` event has one `native-resolution-context:<event-ordinal>` module value:
+
+```
+subject-SID left-type-SID right-type-SID argument-E-ID left-type[8] right-type[8]
+```
+
+The two type payloads use the same copied symbol-snapshot layout as native
+resolution events. For `begin`, left describes the head procedure's return
+subtype and right describes the requested CAST subtype. For `candidate`, left
+is that procedure's return subtype. For `argument`, subject is the actual formal,
+left is its nominal subtype and right is the argument's actual subtype. For
+`access`, subject is the checked symbol and left its subtype. For `end`, subject
+is the actual returned procedure and left its return subtype; failed searches
+have no returned subject. Other right-type positions are explicitly absent.
+
+Full models use the existing S identity registry, including its nominal and
+lexical parent closure. Same-spelled nominal types and overloads therefore stay
+distinct without joining by hints. Expression models retain copied type payloads
+with all three unavailable S references zero. Argument E references copy an
+existing parser association; no new E record is forced for a synthesized,
+omitted or already-erased operand. No native pointer survives the callback.
+
+The overloaded call parser also emits `native-resolution-use:<scope-ID>` after
+its actual closest-procedure search. Its twelve fields are site presence,
+inner-escaped filename, SRC, displayed start line/column and end line/column,
+raw-origin-valid flag, and raw start line/column and end line/column. A missing
+site has no invented coordinates. A present site is a copied parser input,
+separate from edit eligibility. Rejected searches retain their source attempt.
+
+If the parser actually exports a callee B record, full models additionally have
+`native-resolution-bound-use:<scope-ID>` whose value is that existing B ordinal.
+It must name the procedure returned by the native search. This does not declare
+that later argument construction succeeded or the call executes. Expression
+models publish no unavailable callee bindings. A generated callee uses
+`native-resolution-macro-use:<scope-ID>` instead: its positive value is the
+existing macro reference ordinal, tied to the returned procedure's macro origin.
+It is never reinterpreted as a B ordinal or an editable location. The existing
+source-call macro node/count contract remains unchanged. Mandatory
+`native-resolution-context-counts` closes context, parser-use and total bound-use
+(B or macro reference) counts,
+including zero. Direct non-overloaded calls and resolver routes outside this
+parser entry point do not acquire fabricated overload-use receipts.
+
+Native intrinsic dispatch observations
+
+The `native-intrinsic-dispatch` capability is available in every model mode.
+Module metadata `native-intrinsic-dispatch:<ordinal>` records the actual switch
+arm entered by `cQuirkStmt`, `cQuirkFunction`, and their sound/graphics dispatchers.
+Ordinals count completed callbacks, so nested functions finish before an
+outer intrinsic or PRINT statement. The mandatory `native-intrinsic-dispatch-count`
+includes zero and resets with each module and discarded parser attempt.
+
+The metadata value contains 26 tab-separated fields:
+
+```
+kind route token accepted errors-before errors-after outcome ST CFG
+root-present raw-AST-class datatype
+entry-point[7] last-consumed-token-point[7]
+```
+
+`kind` is `statement` or `function`; `route` names the native grammar routine
+selected by that switch arm. `token` is the raw native token ID, including the
+ASCII question mark used for PRINT. Each point contains inner-escaped filename,
+source context, displayed line/column, physical line/column and physical flag.
+These are observed points rather than a certified expression extent. The entry
+point is copied from the already-fetched lexer token without another token query
+or identifier-hint capture. Generated and remapped points retain their native
+physical policy.
+
+`accepted` copies the native nonzero statement return or nonnull function root.
+`outcome` is `recovered` when the native error counter increased, otherwise
+`accepted` or `declined` according to that return. LINE, VIEW, GET and PUT can
+first decline a nongraphics grammar and then select their graphics grammar.
+Those are separate observations. A later enclosing expression or statement can
+still fail after an intrinsic locally returned without errors. Neither local
+acceptance nor a returned root proves runtime success or execution.
+
+Function snapshots copy only the common AST class and unsigned datatype bits;
+the datatype follows the selected native/stable-v1 ABI. Statement observations
+have no retained root. An absent root uses class zero and the invalid datatype
+sentinel. There is no retained AST pointer, invented E/N identity, implicit
+source binding, or effect inference. Folded intrinsic results therefore remain
+observable even when no runtime call survives. Preprocessor evaluation, lexer
+probes, inactive code, unselected fallthrough and ordinary identifier lookalikes
+produce no dispatch facts. The module fails publication when another observation would exceed 100,000
+rather than silently truncating coverage.
+
+This capability covers the named dispatchers. Source operations handled by
+other grammar entry points still require their own records; this is not a claim
+that the entire G12 source-operation inventory is complete.
 
 Full and expression-only models advertise `source-va-list-operations` as
 available. Bindings-only models advertise it as unavailable. After the parser
@@ -2053,7 +3016,226 @@ passed 20 cases across Win32, Win64 and Linux x64 in six encodings, including
 shared objects, record fields, array elements, macro literals and unchanged
 generated C.
 
+### Native expression recovery steps
+
+`native-expression-recovery-steps` currently advertises partial coverage in
+full and expression exports, and unavailable coverage in bindings exports.
+The parser observers cover selected replacement roots in expressions,
+declarations, initializers, argument/result handling, intrinsics and control
+statements, including cases where a missing operand returns the existing
+prefix. This does not claim complete coverage of every root, skip, type,
+symbol or statement recovery route.
+
+`K module <module-id> native-expression-recovery:<ordinal>` contains seventeen
+inner tab-separated fields: kind, native parser function, native compiler
+source file, native compiler line, owning statement, source context,
+configuration context, current native error count, root-present flag, root
+class, root datatype, observed source filename, displayed source line and
+column, physical source line and column, and physical-point flag. The parser
+function, compiler filename and source filename have inner byte escaping;
+the whole K field has its ordinary outer escaping. The datatype follows the
+selected native or stable-v1 type ABI. Compact expression output has no
+configuration records and retains zero in that context field.
+
+Kinds are `replacement-constant`, `replacement-zero`, `retained-prefix` and
+`replacement-expression`. A string-literal or dereference replacement can
+have a nonconstant root class; its actual common fields are copied without
+reading a constant-value union.
+The observer returns exactly the pointer supplied by the parser and copies
+only the root's common class/type fields. It neither constructs a replacement
+nor keeps a node pointer alive. A null root has class zero and the invalid
+datatype sentinel. A later optimizer node is not identified from this birth
+snapshot. The statement relationship identifies potentially affected source
+expressions, while the module's native outcome remains authoritative.
+
+The module also requires one `native-expression-recovery-count` K property,
+including zero when none of the observed routes ran. Events are dense and
+bounded to 100,000 per attempted module. Discarded module buffers discard their
+events, reset clears their count, and lexer probes and disabled observation
+produce none. In particular, the normal null procedure pointer produced for
+an abstract method is not a recovery event. The supplied reader checks
+counts, event kinds, root classes, source/configuration/statement ownership,
+byte fields and physical points, and marks associated expressions
+recovery-affected without claiming execution or final AST identity.
+
+### Native source validity boundaries
+
+`native-source-validity` records the parser's statement outcomes in every
+export mode. It does not change what an END or RECOVERY footer means.
+`K module <module-id> native-statement-open:<statement-id>` copies the error
+counter when the statement observer opens. The matching
+`native-statement-close:<statement-id>` contains the comparison error counter
+supplied by the grammar caller, the final error counter, parser route and
+native outcome. These two opening counters have distinct meanings and are
+not silently substituted for each other. Parsed outcomes require equal
+comparison/final counters, recovered outcomes require a change, and unmatched
+routes remain explicitly unmatched even without a new reported diagnostic.
+
+`native-source-validity-counts` contains eight inner values: `native-parser`,
+statement opens, statement closes, current statement stack depth, compound
+opens, compound closes, current compound stack depth and final native error
+count. Counts include zero and must agree exactly with ST/STE and BLK/BEND
+receipts. A retained accepted module cannot have unfinished native boundaries.
+A recovered module can describe an unfinished statement or compound without
+inventing its ending. The final error count agrees with the module's native
+diagnostic summary. Missing or recounted status rows cannot silently turn a
+failed boundary into an accepted one.
+
+The supplied reader exposes statement/construct `failure_regions` with their
+actual opening and ending location records, or an explicit absent end when
+unfinished. These are native points and boundaries, not extrapolated byte
+ranges. A diagnostic reported outside a statement has its source and displayed
+line with no asserted physical extent. Rejected modules keep surrounding
+expressions provisional, and a physical source coordinate alone is never
+proof of valid semantic state.
+
+### Type choices and transient declarations during recovery
+
+`native-type-recovery-steps` and `native-symbol-recovery-steps` currently
+advertise partial coverage in full and expression output, and unavailable
+coverage in bindings output. They record explicit fallback branches, including
+primitive replacements, pointer substitutions, discarded explicit types,
+generated recovery names and anonymous mock parameters. Ordinary inferred
+default types and legal quirk-keyword enum members are not recovery events.
+
+`K module <module-id> native-type-recovery:<ordinal>` has fifteen inner fields:
+kind, selected datatype, native parser function, native compiler filename and
+line, owning statement, configuration, current error count, then a seven-field
+source point. The point is filename, source-context ID, displayed line and
+column, physical line and column, and physical flag. Kinds are `replacement`,
+`pointer` and `discarded`; a discarded type uses the invalid sentinel. The
+selected datatype follows the requested native or stable-v1 ABI. The observer
+returns exactly its input type bits. It does not inspect subtype or length,
+which following assignments in the recovery branch can still replace.
+
+`native-symbol-recovery:<ordinal>` has twenty-three fields: kind, present flag,
+native symbol class, datatype, byte length, native attribute bits, procedure
+attribute bits, status bits, copied name and copied owner name, then the same
+thirteen-field native site/source group. `mock-parameter` snapshots the actual
+new parameter and returns its exact pointer. `generated-name` records only the
+chosen fallback spelling; its symbol-present flag is zero and its class,
+length and flags are zero with invalid datatype. A generated name does not
+create a source binding or a stable symbol identity. No native pointer is
+retained. Names and site filenames/functions have independent inner byte
+escaping before the K value receives ordinary outer escaping.
+
+Each family requires a dense module count, including zero, and is bounded to
+100,000 observations per module. The reader validates type choices, transient
+classes, payload absence, context ownership, source points and exact closure.
+Expressions owned by affected statements remain recovery-affected. Explicit
+R markers and native module outcomes remain the overall validity boundary;
+these observations do not certify symbols from a rejected module.
+
+### Shared parser token skipping
+
+`native-token-skip-steps` declares partial coverage in full and expression
+exports. Bindings output omits it. The observation covers actual calls to the
+shared `hSkipUntil` helper, including the `hSkipStmt` macro. It does not claim
+that every skip is a failed statement, or that every parser recovery route
+uses this helper. Expression validity still uses the native attempt and
+statement outcomes rather than assigning error status from a skip alone.
+
+`K module <module-id> native-token-skip:<ordinal>` contains twenty-seven
+inner fields: requested token, eat-request flag, lexer flags, stop-on-comma
+flag, native skip-call count, stopped token, consumed-stop flag, remaining
+parenthesis/brace nesting, owning statement, configuration, native error count
+before and after, two seven-field points, and stop reason. Each point is source
+filename, source-context ID, displayed line and column, raw physical line and
+column, and physical flag. Filenames have inner byte escaping and the whole
+K value has its usual outer escaping. Compact configuration IDs remain zero.
+The points are copied directly from tokens already fetched by the original
+helper. They do not call the identifier-hint-producing location accessor.
+
+Reasons are `target`, `end-of-line`, `end-of-file`, `statement-boundary` and
+`comma`. The count measures actual calls to the native token-skipping callback,
+including the stop token only when it was consumed. EOF never gets consumed,
+even when requested with the eat flag. A comma only stops at nesting zero;
+parentheses and braces follow the native helper's shared depth counter. These
+are observations of the helper's actual policy rather than reconstructed token
+lists or invented physical source ranges.
+
+A dense `native-token-skip-count` receipt, including zero, closes each module.
+The producer bounds observations to 100,000 per module and resets with the
+existing module recovery collector. The independent reader requires count,
+context, source, delimiter, nesting, consumption and terminal-state agreement.
+The production helper test compiles its exact current body with a controlled
+lexer and independently checks token consumption, fetch counts, probe/off
+omissions, nested delimiters, comma stopping and EOF handling.
+
 ### Diagnostics for rejected modules
+
+The `reported-diagnostic-contexts` capability applies to the invocation and
+adds `DC` and `DP` to `FBCDIA`. The shared semantic model capability adds
+`K diagnostic <DI-id> reported-context` and ordered `reported-parameter:<n>`
+properties in full, bindings and expression output. Diagnostic and module IDs
+have their own metadata domains; they are not symbol or expression IDs.
+
+The original reporter-policy field group contains twelve tab-separated values:
+reporter initialized, formatting option bits, source excerpt requested,
+native error count at observation, warning level, error limit, promoted
+warning flag, parameter-frame count, language ID, backend ID, target ID and
+active lexer flag. The error reporter observes the counter before increment;
+a promoted warning observes it after increment. The separate error-limit
+notice does not increment it. These fields describe native reporting policy,
+not whether console formatting found a line to print.
+
+The `reported-warning-levels` capability extends that group with a thirteenth
+integer: the selected native warning catalog level, or -1 when no warning
+level was supplied. Errors require -1. Known catalog levels are 1 through 3;
+they must satisfy the separately captured configured threshold. Native warning
+reporting copies the selected table entry after filtering, so consumers can
+compare actual policy without parsing the printed warning number. Legacy
+context artifacts without this capability retain exactly twelve fields.
+
+Parameter frames preserve the reporter's outer-to-inner list and the names
+it was actually given. Missing provided spellings remain empty; they are not
+inferred by parsing the formatted message. K parameter groups contain the
+frame ordinal, token, parameter ordinal, provided spelling, procedure name,
+owner name and kind. Their three name fields are escaped before joining the
+inner group, then the outer K value is escaped normally. DP fields have only
+their ordinary field escaping. Both transports recover identical original
+bytes, including literal percent and control bytes. Native symbol pointers
+are copied immediately and never retained by this observer.
+
+The independent `diagnostic-attempt-lifetimes` capability requires one `ME`
+for every attempted module. A language restart can print a preinclude warning
+on both attempts. `DI` preserves both actual reports; the reader's
+`current_records` excludes restarted and aborted attempts. Diagnostics after
+parser teardown use module zero, empty source and parser context, no physical
+point and no parameter frames. They do not inspect a retired lexer. Early
+command-line failures before the diagnostic writer starts do not publish an
+artifact.
+
+The semantic model's `reported-diagnostic-counts` capability requires one
+`K module <module-id> reported-diagnostic-counts` group per retained module.
+Its six values are report count, error count, warning count, promoted warning
+count, native error count and attempt outcome. This summary survives compact
+output and rejected expression recovery, while discarded attempts still roll
+back with their model buffers. The reader requires exact DI and context
+coverage, native counter progression and summary agreement even when a
+corruption repairs the transport footer totals. These counts describe
+reported checks, not semantic validity of recovered expressions. The reader
+requires a rejected retained attempt to have exactly one R marker. Accepted
+attempts cannot carry one; restarted and aborted attempts cannot be retained
+as model modules. A missing R cannot be hidden by replacing RECOVERY with a
+recounted END footer.
+
+The reader exposes `module_validity` and `expression_validity` using those
+native outcomes, OWN associations and STE results. Expressions in an accepted
+module are accepted observations. Every expression in a rejected module stays
+provisional; a recovered, unmatched or unclosed owning statement marks it
+`recovery-affected`. This includes typed constants constructed by parser
+recovery for an invalid expression such as `1 +`. A physical coordinate is a
+source observation and does not certify semantic validity. Surrounding parsed
+statements remain distinguishable without certifying their dependencies on a
+rejected module's symbols.
+
+The independent writer rejects records above one MiB after escaping as well
+as its existing total-byte bound. Copied parameter data is bounded by 4096
+frames and one MiB of unescaped names. Count, allocation or publication failure
+abandons staging and preserves the previous artifact. Older transports omit
+both optional diagnostic families; they remain readable without claiming the
+new context or attempt guarantees.
 
 `-semantic-diagnostics <file>` publishes an independent invocation artifact.
 The compiler reports its actual diagnostics through the same observer used
@@ -2070,13 +3252,17 @@ Record tags remain literal ASCII. Record layouts are:
 | --- | --- |
 | SRC | sequential source ID, source path |
 | M | sequential module ID, root source path, target ID |
-| CAP | current module ID, capability name, availability |
-| DI | sequential diagnostic ID, current module ID, severity, compiler code, parser context, source path, displayed line, message, detail, custom text, physical-point flag, physical line, zero-based physical column |
+| CAP | module ID, or zero for an invocation capability, capability name, availability |
+| DI | sequential diagnostic ID, module attempt ID or zero for an invocation diagnostic, severity, compiler code, parser context, source path, displayed line, message, detail, custom text, physical-point flag, physical line, zero-based physical column |
+| DC | diagnostic ID, escaped reporter-policy field group |
+| DP | diagnostic ID, frame ordinal, native token, parameter ordinal, provided spelling, procedure name, owner name, procedure kind |
+| ME | module attempt ID, accepted/rejected/restarted/aborted outcome, native error count or -1 for an aborted attempt |
 | END | format version, module count, source count, diagnostic count, error count, compilation-succeeded flag |
 
 Sources retain observation order and unique path spelling. Every module root
-and diagnostic source must have a source record. Diagnostics belong to the
-current module. Severity is `error` or `warning`; flags are `0` or `1`. A
+and nonempty diagnostic source must have a source record. Source diagnostics
+belong to the current attempt; invocation diagnostics use module zero.
+Severity is `error` or `warning`; flags are `0` or `1`. A
 complete artifact can end with compilation-succeeded `0`. Successful compilation
 has no error diagnostics. A reader supplied the compiler exit code checks that
 the outcome agrees. Readers reject incomplete records, invalid identities,
@@ -2331,7 +3517,7 @@ by the DIM, STATIC, COMMON and EXTERN grammar, and CONST declarations, retain a
 separate group for each accepted parser dispatch. REDIM operations, FOR counter
 syntax, auto-typed VAR and ordinary instance fields are outside this group.
 Each group uses the procedure identity, or the global namespace when there is
-no procedure. Its opening detail position supplies the group identity:
+no procedure. Its opening allocates an opaque observation identity:
 
 ```
 K symbol owner declaration-type-group:group statement-ID<TAB>kind
@@ -3146,7 +4332,482 @@ Z/W/STRING types retain their complete accepted width, not just a character's
 width. These public facts avoid requiring editor consumers to decode dtype
 bit fields. They do not change parsing, symbol selection or emitted code.
 
-<!-- end of compiler-semantic-model.md -->
+## Selected typedefs, string indices and member receivers
+
+Full models advertise `selected-type-alias-inputs` and
+`string-subscript-inputs`. These observations retain accepted parser choices
+before native lowering removes their spelling or operand shape. They do not
+classify a typedef as numeric, textual, mutable or safe for a particular API.
+
+The declaration parser snapshots the typedef selected by `cSymbolType` before
+parsing a nested initializer or default. Its result slot belongs to the existing
+single-threaded parser; consumers retain immutable symbol/expression IDs instead
+of borrowing that slot or holding AST pointers. Each selection has a
+`type-alias-input:<ordinal>` property on its symbol or explicit cast expression,
+plus an independent `H` edge named `type-alias-input` to the typedef symbol.
+Ordinals are consecutive within each module. A `type-alias-count:<module>`
+property closes the stream, including modules with no selected aliases.
+
+`type-alias-declaration-sites` additionally requires full macro provenance.
+Eligible value declarations have a `type-alias-declaration-site:<ordinal>`
+property with three tab-separated fields: source kind, occurrence identity and
+native array rank. The kind identifies a declaration binding, formal occurrence,
+formal source context or macro declaration. Bindings are cached per native
+symbol, so a repeated EXTERN declaration or nested parse cannot borrow an
+unrelated last occurrence. Unnamed formals retain their actual first token.
+
+String subscripts retain `string-index-operand` and `string-index-index`
+properties on the result expression. The `string-index-input` edge independently
+joins the original string operand and original index. `string-index-count:<module>`
+closes this stream. Dynamic strings, fixed strings, UString, ZString and WString
+use the original index before conversion, address construction or UTF lowering.
+
+`member-receiver-inputs` describes accepted field prefixes with an active source
+expression range. Its `member-receiver-input` property contains four tab-separated
+fields: receiver datatype, actual receiver type ID, selected field ID and owning
+statement ID, or zero when preprocessing has no language statement. The datatype passes through the selected native/stable semantic
+ABI, just like E/T facts. A `member-receiver-type` edge independently joins the
+expression to its receiver type and selected field. The receiver can differ from
+the field's declaring base type. Implicit member writes without an active range
+keep the ordinary expression exporter's omission behavior; adding this observer
+must not make those valid modules fail. Reduced exports withhold these families.
+
+`member-receiver-contexts` adds a `member-receiver-context` property containing
+`statement` or `preprocessor`. The latter agrees with the independently emitted
+`preprocessor-expression=1` marker on that E observation. A type query can occur
+without an ST or while another statement remains open; neither case creates a
+new statement or proves runtime execution. The reader checks the selected field,
+receiver type, module, relationship and actual optional statement ownership.
+
+`declaration_observations_probe.bas` and `declaration_observations.py` preserve
+these relationships in the normal semantic-sidecar runner. They compare enabled
+and disabled generated code on each requested backend, verify native/stable
+receiver datatype encoding, and include inherited fields, implicit writes and a
+member-valued optional default. The fixture is not executed because it includes
+an intentionally negative string index.
+
+Generic native `CONV` nodes have conceptual operation `cast` and kind `builtin`.
+Their raw AST operator remains `-1`: the CAST union contains conversion flags,
+not an operator field. A GAS64 wide conversion can already be a dereferenced
+helper result when exported; E describes that actual tree while EX retains the
+accepted source cast. Original scalar initializer inputs include `Integer<128>`
+and `UInteger<128>` in both DIM and VAR paths. These are type and operand facts;
+they do not extend the existing 64-bit semantic value carrier.
+
+## Written declaration types and native numeric bytes
+
+`written-type-shapes` is available with full models, macro provenance and an
+explicit `-semantic-extra-facts type-shapes` request. Without that request,
+written type frames and rows, including closure counts, are omitted and both
+`written-type-shapes` and `written-type-root-origins` are unavailable.
+It describes the type syntax selected by the declaration grammar, rather than
+expanding a resolved alias graph. Native callback parameters/results are children;
+named aliases and `TypeOf` remain leaves. Array wrappers follow the actual
+declarator or formal that owns them. An omitted or suffixed legacy declaration
+cannot attach its array to a preceding callback type.
+
+The serial parser tracks `cSymbolType` frames even in ignored expression and
+alias-definition contexts, preventing their nested callback types from leaking
+into declaration roots. No parser AST pointer is retained. Frames are bounded
+at 64 levels and accepted nodes at one million per module. Module reset clears
+all frame, count and last-root state.
+
+Each `K symbol` opening `type-shape-open:<id>` reserves its observation identity
+before recursively parsing children. The matching `type-shape-input:<id>` has
+twelve tab-separated fields:
+
+1. Root identity.
+2. Parent identity, or zero for a root.
+3. Statement identity.
+4. Source-context identity.
+5. Written kind: primitive, named, typeof or callback.
+6. Explicit pointer levels.
+7. Formal array flag.
+8. Explicit calling-convention flag.
+9. Foreign-language callback context flag.
+10. Direct child count.
+11. Generated-source flag.
+12. Accepted module ordinal.
+
+`LOC source-context` retains the exact written range. A separate
+`type-shape-array:<id>` links a declaration root to its actual array rank.
+`accepted-type-shape-count:<module>` and
+`accepted-type-shape-array-count:<module>` close both families, including empty
+ones. Readers reject duplicate openings, inputs and closures. Complexity weights,
+thresholds and recommendations belong to the consumer.
+
+`native-byte-conversion-inputs` is available in full models with an explicit
+`-semantic-extra-facts native-bytes` request. Without it, the operation family
+and its count are omitted and the capability is unavailable. Generic original
+operand expressions remain available to other consumers. It preserves the
+selected MKD/MKS/MKI/MKL/MKSHORT/MKLONGINT and string CV operations. Numeric CV
+reinterpretation overloads do not consume a byte sequence and are excluded.
+Integer string decoders can fold to constants, so the observer keeps a distinct
+result occurrence and its original operand before lowering.
+
+An `H expression` edge with role `native-byte-input` links the result to the
+original operand. Five result properties record `native-byte-kind` (pack or
+unpack), `native-byte-width`, `native-byte-token`, `native-byte-operand` and
+`native-byte-callee`. Folded decoders have callee zero; runtime forms retain the
+selected procedure even through an INTEGER conversion wrapper. Independent
+operator LOC/MR facts retain source attribution. `native-byte-count:<module>`
+closes the family. Byte-order intent and portable-format advice are not compiler
+facts.
+
+CVI/MKI explicit widths are restricted to 16, 32 and 64 bits, matching the
+implemented runtime helpers. The general integer type parser also supports 128
+bits; that does not provide a 128-bit byte-conversion helper. Unsupported widths
+produce an ordinary invalid-size diagnostic before runtime-call selection.
+Ordinary Integer<128>/UInteger<128> behavior and runtime libraries are unchanged.
+
+The canonical Python `Model` checker validates both native and stable-v1 models.
+The observer regression also checks the exact stable-v1 wire slots while using
+the full reader for payload, ownership, source revision and capability checks.
+GCC, Clang and gas64 controls compare emission with observations off/full and
+verify unavailable contracts in bindings mode. Neither observer changes the
+semantic schema or inserts a private capability-number reservation range.
+
+### Physical written-type roots
+
+Capability `written-type-root-origins` accompanies full written-type capture.
+The generated flag in a type-shape payload includes generated descendants. It
+does not by itself say that the root was supplied by a macro. The root role's
+own `MR` record identifies that distinction.
+
+A physical root retains its ordinary `LOC` range when both endpoints are
+physical. If a generated child supplies the final token, its root `LOC` covers
+the first physical keyword instead. That keyword is a diagnostic anchor, not
+an editable range through expanded text. A wholly generated root retains its
+own macro origin without an invented contiguous physical type range. Reduced
+exports mark this capability unavailable. The regression covers inline roots,
+generated parameters, wholly generated roots and generated result endpoints in
+native/stable models across GCC, Clang and gas64 without changing emission.
+
+## Driver module inputs
+
+Full models advertise `driver-module-inputs` when the native driver has supplied
+the module snapshot. Its properties belong to that module's global namespace.
+Bindings and expression models mark the capability unavailable and omit these
+properties. Earlier schema-27 producers can omit the whole family.
+
+`driver-module` is the committed module ordinal. `driver-role` is `main`,
+`secondary`, `resource`, or `archive-metadata`, selected from the actual driver
+call. `driver-main` preserves the main flag independently of the source name.
+`driver-ordinal` is the one-based source input ordinal, or the native driver's
+`-1` sentinel for generated resource and archive modules. `driver-source`,
+`driver-object`, `driver-entry`, and `driver-outtype` retain the selected source,
+planned object, entry override, and output policy before source parsing.
+
+`producer-version` matches the header. `producer-build-date` is the configured
+ISO build date. `producer-source-sha1` and `producer-fork-id` preserve the build's
+configured strings, including empty values when unavailable. They do not claim
+a digest of the running executable.
+
+`driver-input-count` closes a contiguous zero-based list of `driver-input-N`
+properties. Each value contains a category, one tab, and the original value;
+the ordinary wire escaping preserves both that separator and any input bytes.
+Categories distinguish source, resource, explicit object, and archive inputs
+from objects planned for source or resource compilation. Other categories
+retain predefines, preincludes, include search order, requested libraries and
+paths, exclusions, compiler paths, tool prefixes, extra tool options, source
+command-line options, and driver flags. Order is preserved within each native
+list, including repeated include paths. The order of categories does not
+reconstruct the original argument sequence.
+
+At module completion, `driver-module-library-count` and
+`driver-module-library-path-count` close their corresponding zero-based
+`driver-module-library-N` and `driver-module-library-path-N` lists. These include
+accepted source directives. Requests do not prove that a linker searched or
+selected an archive. FILE, SRC and D continue to describe consumed source;
+unopened objects, archives and headers do not become source dependencies merely
+because they occur in the input snapshot.
+
+Snapshots are bounded to 65,536 input entries, copied before parsing, replaced
+on restarts, and released at invocation shutdown. Namespace, module, count,
+ordinal and capability checks reject incomplete or foreign observations even
+with corrected transport totals. Generated resource and archive BASIC ranges
+cannot authorize edits to user input. Preincluded user headers retain their
+ordinary physical source eligibility. The original XPM input remains protected
+after conversion changes the driver's source filename.
+
+## Native parser expression observations
+
+`parser-expression-observations` identifies a common observation phase in full
+and expression-only exports. The expression grammar emits these receipts at
+its native result callbacks. Original-input and selected-operand snapshots
+remain separate E observations; their additional full-mode facts do not imply
+that another source operation was parsed or executed.
+
+`K expression <E-ID> parser-observation:<ordinal> <payload>` links one callback
+to the typed E result that accepted it. Ordinals start at one per module. A
+deduplicated E result can retain several callbacks. The payload contains twelve
+tab-separated fields, with the ordinary percent-byte encoding applied once to
+each textual subfield before the outer K value is encoded:
+
+1. Original callback source path.
+2. Start line.
+3. Start column.
+4. End line.
+5. End column.
+6. Actual AST class.
+7. Actual raw operator or -1.
+8. Actual native dtype, including qualifiers.
+9. Native type spelling.
+10. The grammar's requested operator override or -1.
+11. `sha256` when a canonical constant value is known, otherwise empty.
+12. The SHA-256 of `value-kind`, one TAB byte, and its canonical C value text,
+    or empty when the value is unavailable.
+
+These original callback coordinates can describe replacement tokens and are
+not an editing range. E and LOC retain their separately validated source
+projection. A macro endpoint maps through its written invocation; an ordinary
+endpoint beyond that invocation remains part of the complete expression span.
+Internal macro observation identities remain unique when provenance records
+are omitted.
+
+Observation identities are invocation-local allocation IDs, independent of
+record totals. They need not be contiguous or equal a record position. Discarded
+parse attempts can leave gaps. Record counts and native E checkpoints retain
+their separately documented counting semantics.
+
+`K expression <last-module-E-ID> parser-observation-count <count>` closes the
+module sequence, including zero when a module has only other E snapshots. A
+module with no E records has no callbacks and needs no expression-owned closure.
+Readers reject duplicate or missing ordinals, foreign results, inconsistent
+AST/type/value fingerprints and missing closures. Bindings-only exports mark
+the capability unavailable and omit these properties. Expression-only exports
+allow only this narrowly defined K family; full symbol, AST and constant-value
+records remain omitted. Fingerprints retain comparison evidence without
+copying literal payloads into the reduced model.
+
+The native source audit compares these ordered, validated parser sequences
+exactly across modes, in addition to unchanged emitted code and dependencies.
+For older producers without the capability it retains the earlier exact E
+comparison. It does not derive a parser trace by selecting overlapping ranges,
+discarding unmatched observations, or treating all full-mode snapshots as the
+same semantic phase.
+
+## Source DATA streams and selected READ/RESTORE targets
+
+`source-data-streams` is available for full exports. The family uses `K` rows
+owned by the module's global namespace. Bindings and expression exports mark
+it unavailable and omit its rows. Each module ends with `data-counts:<module>`:
+five tab-separated counts for source groups, source items, lowered descriptors,
+READ destinations and explicit RESTORE statements. Each count is bounded at
+one million. Zero counts close an observed empty family.
+
+Source group, READ and RESTORE identities start at one in each module. Item
+ordinals start at zero within their group. Every item has one original-value
+row and one lowered-payload row, in source order. Field lists below are the
+decoded `K` value; embedded value text is percent-escaped inside that value.
+
+| Property | Fields |
+| --- | --- |
+| `data-group:<group>` | statement, source context, descriptor symbol, source item count |
+| `data-item:<group>:<ordinal>` | kind, datatype ABI code, subtype symbol or zero, original expression or zero, value kind, escaped value text, address symbol or zero, signed byte offset |
+| `data-payload:<group>:<ordinal>` | stored unsigned 16-bit tag, escaped numeric runtime text |
+| `data-descriptor:<symbol>` | previous descriptor or zero, selected label or zero, source group or zero, total cell count |
+| `data-read:<read>` | statement, source context, destination ordinal within READ, original destination expression |
+| `data-read-runtime:<read>` | selected runtime procedure symbol |
+| `data-restore:<restore>` | statement, source context, requested label or zero, selected descriptor symbol |
+
+Item kinds are `number`, `string`, `wide-string`, `address` and `qb-raw`.
+Numeric and string values use the ordinary constant kinds. Narrow values
+preserve exact bytes, including embedded NULs; wide values preserve native
+decoded units. Address items retain the actual OFFSET symbol and byte offset.
+Numeric runtime text comes from the compiler's actual conversion during DATA
+lowering. A value wider than the constant wire kinds remains unavailable in
+the original-value fields; its datatype and actual lowered text remain.
+
+QB DATA stores uninterpreted token text after the language's trimming and
+single-token quote removal. Its expression identity is zero. Macro names and
+operator-like text in that mode do not become evaluated expressions. Empty
+fields retain their empty value without inventing a written token range.
+Ordinary DATA items link to distinct original expression snapshots. These
+snapshots are separate from the common parser observation phase and retain
+expression macro provenance. `data-item` and `data-read` LOC roles attach
+verified physical ranges to their actual source contexts; expanded items do
+not acquire editable ranges. Available endpoint macro origins use the same
+roles on the global namespace.
+
+Descriptor rows follow actual construction order. Each source group has one
+extra terminal LINK cell; that cell has no source item or original expression.
+Compiler-created empty descriptors have group zero and exactly one LINK cell.
+`H symbol <previous> symbol <next> data-next 0` records the actual forward
+runtime link. The C emitter's reverse declaration list is not source order.
+A label belongs to the descriptor selected by `astDataStmtAdd`, including an
+empty descriptor when the native compiler selects one there.
+
+READ observes each original destination before runtime lowering consumes it.
+Its runtime property has a matching namespace-to-procedure `H` relation whose
+role is `data-read-runtime:<read>`. Explicit RESTORE records the descriptor
+actually passed to the runtime, including forward-label placeholders and
+empty first descriptors. Generated cursor initialization has no source
+RESTORE identity. These facts do not predict a runtime cursor through branches,
+loops or procedure calls, and do not invent retained DATA AST nodes.
+
+The independent reader requires complete groups, dense source order, matching
+original expression types and values, same-module statements and symbols,
+native descriptor links, selected runtime relationships and count closure.
+It refuses missing or fabricated items even after transport totals are fixed.
+
+## Selected backend identifiers and object symbols
+
+`selected-emission-names` is available in full models. The compiler observes
+names already selected by its native emitter or assembler-name path; exporting
+the model never requests a name for an unused source declaration. Procedure
+pointer types have no emission-name observations. Bindings and expression
+models mark the family unavailable and omit its properties.
+
+`K symbol <symbol> emission-name:<ordinal> <value>` has four tab-separated
+fields: stage, state, escaped spelling and reason. The ordinal is dense across
+the module, starting at one. Each symbol has at most one observation per stage.
+The stage is `c`, `llvm`, `gas`, `gas64` or `object`. C and LLVM stages retain
+the exact selected backend identifier; assembler stages retain the selected
+assembler spelling. The `object` stage is separate because an encoded C token
+or quoted LLVM identifier is not an object symbol.
+
+State `selected` requires a nonempty spelling and an empty reason. State `none`
+has an empty spelling. Reason `automatic-storage` describes a local variable
+without a separate object symbol. Reason `c-constant-static-value` describes
+a C backend elimination of a local static object-pointer binding whose
+procedure-address value is constant and whose storage is unobserved. The
+source symbol retains its declared type and static/local attributes. Debug,
+opaque, mutable, escaped and public storage keep their ordinary observations.
+State `unavailable` has an empty spelling and one of these reasons:
+
+| Reason | Meaning |
+| --- | --- |
+| `c-local-static` | The C compiler selects the local static object's final name. |
+| `llvm-private` | LLVM's assembler printer selects private-label spelling. |
+| `backend-intrinsic` | An intrinsic identifier can be rewritten or inlined. |
+| `backend-tls` | TLS object adaptation remains owned by the target toolchain. |
+| `assembler-quoted` | An escaped assembler alias has no verified decoded object name. |
+
+The full model records compiler-known C aliases, platform prefixes, Windows
+stdcall/fastcall decoration, and LLVM's explicit-name escape at the actual
+selection points. Clang and LLVM libc mappings are observed after selection.
+A GCC builtin identifier alone does not prove a corresponding object symbol.
+These observations do not establish that an external tool retained a symbol,
+that a linker selected a library, or that any runtime address was resolved.
+
+`emission-name-count:<module>` on the global namespace closes the sequence,
+including zero observations. The producer and reader bound it at one million
+events and each spelling at 65,536 bytes. A missing symbol/stage observation
+means that its name was not observed; it is not a request to derive a name from
+the alias. An earlier `procedure-object-symbol-state` remains a snapshot at
+symbol export and can precede a later emission-name observation.
+
+`procedure-linkage` retains the accepted procedure mangling policy independently
+of its calling convention. `variable-linkage` now retains the same policy for
+all variable snapshots, including definitions and local storage. The `T` alias
+field remains source linkage information and is not object-name evidence.
+
+Native tests compare selected identifiers with emitted text, compare complete
+objects with export off and on while keeping intermediate filenames stable,
+and check object symbols with `nm`. Target cases cover Windows x86 decoration,
+Darwin prefixes and ELF x86 names. When LLVM tools are present, they also check
+COFF and Mach-O symbols without requiring foreign runtime libraries. The
+independent reader rejects malformed stages, false unknown states, foreign
+owners, procedure-pointer identities, duplicate observations and damaged
+closure after transport totals are corrected.
+
+## Namespace import observations and binding contexts
+
+`namespace-import-observations` is available in full models. It records accepted
+USING operands in source order and the relationships actually created by the
+native importer. It does not perform another lookup. Properties belong to the
+module's global namespace; IDs start at one independently in each module.
+
+| Property | Decoded value fields |
+| --- | --- |
+| `namespace-using:<id>` | statement, source context, construct or zero, current lexical table owner, current lookup namespace, selected namespace, first binding or zero, last binding or zero, `written` or `expanded` |
+| `namespace-using-result:<id>` | native success flag, new relationship count |
+| `namespace-import:<id>` | native import symbol, target namespace/type, destination namespace/type, lexical lifetime owner, USING ID or zero, refresh ID or zero, observation statement or zero, observation source context or zero, observation construct or zero, `created` or `preexisting` |
+| `namespace-import-remove:<id>` | observation statement, source context, construct, native hash-only flag |
+| `namespace-import-state:<id>` | `removed` or `retained` |
+| `namespace-refresh:<id>` | reopened namespace, observation statement, source context, construct |
+| `namespace-refresh-result:<id>` | new relationship count |
+| `namespace-visibility-counts:<module>` | USING count, observed relationship count, removal count, refresh count |
+
+A USING success flag is the importer's actual return value. Duplicate imports
+can succeed without creating another relationship. Parent/self imports can
+return false without a parser error. Each accepted operand retains its own
+outcome. Requests can create transitive relationships, while reopening a
+namespace can propagate newly added imports into existing importers. The
+refresh IDs distinguish those updates from new written USING operands.
+
+An import symbol's lexical table controls its removal. Its destination instead
+owns the native namespace import list. Procedure and block imports can have
+different lexical and destination owners, so a relationship does not by itself
+prove visibility outside the current scope. `retained` means that removal was
+not observed before module capture ended; it does not imply global visibility
+or an unbounded lifetime. Relationships created before capture are marked
+`preexisting` when first observed before removal, without inventing a source
+creation event.
+
+USING source ranges use `namespace-using:<id>` LOC roles on the actual source
+context. Expanded operands receive no editable physical range. Their optional
+binding interval names the original namespace/qualifier bindings emitted by
+the parser, including the existing binding macro origins. Repeated includes
+retain distinct source occurrence IDs even when they share a file revision.
+
+`binding-scope-contexts` independently closes the context of every full-model
+binding. `namespace-binding:<B ordinal>` has six fields: current statement or
+zero, source context or zero, source construct or zero, lexical table owner,
+current namespace, and current hash-table owner. These are the native parser
+context at binding capture, not the selected symbol's ownership or a claim
+about the namespace searched by qualified/member/WITH resolution. Symbol
+ownership and receiver/selection facts retain their separate contracts.
+Nested type and anonymous aggregate fields can belong to a different storage
+owner while binding capture still uses the enclosing parser table. Consumers
+must preserve that distinction rather than inventing an extra lookup scope
+from layout ownership. Unscoped enums can also create an implicit native
+import relationship with no written USING request.
+
+`namespace-binding-count:<module>` closes this complete binding set, including
+zero bindings. Source construct IDs distinguish reopened namespace occurrences,
+scoped enums, anonymous aggregates and out-of-line bodies while native symbol
+identities can remain shared. Bindings/expression-only exports mark both
+capabilities unavailable and omit these properties. Requests, relationships,
+refreshes and binding contexts are bounded independently at one million;
+the ordinary staging and record limits still apply.
+
+The independent reader checks native relationship links, lexical ownership,
+source/module identities, request/refresh nesting, exact result counts, removal
+states, binding context completeness and closure. A retained relationship is
+never promoted to an unconditional visible import by the reader.
+
+
+Full models advertise `accepted-source-declaration-order`. Namespace-owned
+`accepted-source-declaration:<ordinal>` properties retain eight fields:
+receipt kind (`binding`, `declaration`, or `macro-point`), receipt identity,
+selected symbol, native symbol class, native statement counter, source statement,
+source occurrence and configuration. Ordinals restart in each module. The
+`accepted-source-declaration-count:<module>` property closes the sequence,
+including modules with no accepted declarations.
+
+These are acceptance observations across all published B declaration and DCL
+routes. Named formals can own both receipts, and header formals can be accepted
+before the procedure declaration. This order therefore differs from lexical
+sorting. Macro names without a usable physical range retain their actual
+expansion identity as `macro-point`; no identifier range is manufactured.
+The `accepted-macro-declaration-order` capability covers that route separately.
+Compact models omit macro-point receipts and mark that coverage unavailable.
+Generated special members and temporaries gain no source declaration merely
+because they appear in the symbol table. The reader requires each published
+B declaration and DCL exactly once in encounter order, with matching symbol,
+class, module and provenance. Reduced modes advertise unavailable coverage.
+
+
+A wide literal can receive multiple ordinary T/NT snapshots while live payloads
+are loaded and final symbol tables are traversed. Its target-wide prefix,
+unit width and termination kind are immutable for the selected module/backend
+and are published once per symbol identity. Repeating those properties remains
+invalid input to the reader. The publication cache resets with module symbol
+identities; it does not suppress mutable symbol snapshots.
+
+
 
 The independent FBCDIA diagnostic transport also advertises `unclosed-procedures`.
 When the actual parser reaches EOF with a procedure on its compound stack, the
@@ -3356,5 +5017,754 @@ cover GCC/Clang/LLVM emission parity, binary/text parity, queries, inherited and
 implicit receivers, mixed-role macros, enum scopes, keyword overload selection,
 reduced modes, empty families and 42 independently damaged controls. The private
 producer is retained separately from the installed compiler.
+
+## Counted preprocessing assertion scopes
+
+Full models advertise `counted-preprocessor-assertions`. Assertion expressions
+are consumed by the actual `ppAssert()` parser, including TYPEOF strings and
+macro-expanded inputs. They do not open conditional branches. An enclosing
+language statement can remain active, so ST absence or inherited OWN does not
+establish assertion ownership.
+
+The producer writes these additive K observations in native record order:
+
+```text
+K  symbol  namespace-id  pp-assert-input:module:ordinal  preceding-E-count
+... records emitted while parsing and consuming this assertion ...
+K  symbol  namespace-id  pp-assert-end:module:ordinal    preceding-E-count
+K  symbol  namespace-id  pp-assert-count:module          assertion-count
+```
+
+Tabs separate fields. The last count is emitted once at module completion,
+including zero when no assertion was observed. The owner is the module's real
+global namespace, not a procedure, alias or invented statement. Ordinals start
+at one and are dense within each module. A checkpoint counts all preceding E
+records in the whole model; it is not an expression identity. Opaque identity
+remapping therefore does not alter a checkpoint.
+
+Readers validate canonical nonnegative checkpoint/count values, input order,
+matching LIFO endings, namespace/module ownership and complete module counts.
+Each checkpoint must equal the number of earlier E records at its actual
+position. A missing count, missing boundary, wrong owner, reordered boundary or
+unavailable advertised capability is an incomplete model. Nested scopes are
+permitted and reader storage grows only with observed nesting.
+
+The validated interval marks its E records as preprocessing inputs. Literal
+policies use that positive ownership before applying runtime literal-origin
+requirements; they continue checking every other original string expression.
+They do not identify TYPEOF by spelling, recognize generated string values, or
+exempt a root merely because it lacks statements. Older models without this
+optional capability supply no assertion mask and retain the existing origin
+checks. Reduced export modes do not emit assertion observations.
+
+The text wire format, binary row order and stable-v1 datatype ABI are unchanged.
+Focused native and independent-reader controls cover both targets and both
+transports, real runtime adjacency, callback assertions, ordinary numeric
+assertions, assertions inside conditional branches and malformed boundaries.
+This family describes parser ownership, not runtime execution or assertion
+truth after a failed compilation.
+
+
+Full models advertise `accepted-source-declaration-order`. Namespace-owned
+`accepted-source-declaration:<ordinal>` properties retain eight fields:
+receipt kind (`binding`, `declaration`, or `macro-point`), receipt identity,
+selected symbol, native symbol class, native statement counter, source statement,
+source occurrence and configuration. Ordinals restart in each module. The
+`accepted-source-declaration-count:<module>` property closes the sequence,
+including modules with no accepted declarations.
+
+These are acceptance observations across all published B declaration and DCL
+routes. Named formals can own both receipts, and header formals can be accepted
+before the procedure declaration. This order therefore differs from lexical
+sorting. Macro names without a usable physical range retain their actual
+expansion identity as `macro-point`; no identifier range is manufactured.
+The `accepted-macro-declaration-order` capability covers that route separately.
+Compact models omit macro-point receipts and mark that coverage unavailable.
+Generated special members and temporaries gain no source declaration merely
+because they appear in the symbol table. The reader requires each published
+B declaration and DCL exactly once in encounter order, with matching symbol,
+class, module and provenance. Reduced modes advertise unavailable coverage.
+
+
+A wide literal can receive multiple ordinary T/NT snapshots while live payloads
+are loaded and final symbol tables are traversed. Its target-wide prefix,
+unit width and termination kind are immutable for the selected module/backend
+and are published once per symbol identity. Repeating those properties remains
+invalid input to the reader. The publication cache resets with module symbol
+identities; it does not suppress mutable symbol snapshots.
+
+Full models advertise `native-object-operations`. Namespace-owned K records
+preserve actual native builder work. Their ordinals describe construction
+observations, including generated procedures; runtime order remains in the
+procedure AST and its evaluation/control-flow records.
+
+| Property | Value fields |
+| --- | --- |
+| `native-object-operation:<ordinal>` | enclosing construction or zero, operation kind, construction-context procedure or zero, aggregate owner, target storage/member or zero, selected special member or zero, native options, native selection error code or generated operator opcode, statement or zero, source occurrence or zero, configuration or zero |
+| `native-object-choice:<operation>:<ordinal>` | native choice category and selected value |
+| `native-object-selection:<operation>` | actual parsed constructor, native selected-call class |
+| `native-object-end:<operation>` | supplied native root flag, root class (zero when absent), outcome, native choice count |
+| `native-object-nodes:<operation>` | retained N root links, including zero |
+| `native-object-counts:<module>` | operation, return, choice, parsed-selection and retained-root counts |
+
+Kinds distinguish base/member/union/vptr initialization, complete/field/base/
+deleting destruction, function-result initialization, default/implicit/reused
+construction, source constructor chaining and BASE initializers, generated
+member declaration/body/copying, and excluded fields. Options have a meaning
+specific to the kind: field initialization selects no initializer tree (0),
+dynamic bounds (1) or an initializer tree (2); destructor calls retain their
+forced-direct flag; implicit construction retains its native argument mode;
+generated declarations retain native procedure attributes and operator code;
+generated bodies distinguish copy construction. Other kinds use zero options.
+Field exclusions distinguish non-instance members (0), the separately handled
+base field (1), and generated-assignment exclusions (2).
+
+Choices preserve the native field policy (including ANY and fake dynamic-array
+exclusions), explicit/default/plain base initialization, actual direct/virtual
+destructor dispatch, the real constructor access check, generated copy routes
+and source constness, merged union member order/byte extent, and the selected
+vtable. The observer never reruns overload resolution or constructor selection.
+Outcomes distinguish built roots, empty results, shallow copies, errors, reused
+calls, skipped members and completed groups. A shallow copy selects no invented
+constructor. An unused private procedure can contain built operations while its
+PH record correctly reports no emission.
+
+Node-owned `native-object-operation:<operation>` properties with value 1 link
+actual retained roots. Immutable private attachment chains survive cloning and
+allow one root to retain nested construction observations. A parsed CALL and
+its enclosing TYPEINI can both belong to one source base-initializer event.
+Zero retained roots does not assert that an operation was optimized away or
+that it never executes. Source construction and final N classes can differ
+after native AST updating. Generated member bodies name actual procedure
+phases; they gain no written identifier binding from these records.
+
+The separate `native-base-subobject-fields` capability closes symbol-to-symbol
+`base-field` H relationships against every U base type. U continues to name the
+declared base type; H names the actual hidden storage field used by lowering.
+The reader also follows explicit `anonymous-parent` edges when the native
+member visitor flattens anonymous aggregates but fields retain their lexical
+owners. It rejects unrelated fields, contradictory selected members, missing
+native choices, incomplete module/root counts and unavailable-mode records.
+
+
+Full models advertise `native-ir-control-flow`. This is a second graph at the
+outer IR dispatch boundary. The existing CB/CN/CE/CL records remain the
+pre-load AST-root projection; a root can contain nested labels and transfers,
+so that projection is not the complete emitted control-flow graph.
+
+`backend/ir-observe.bas` delegates each selected callback exactly once. It
+preserves null callbacks and original return values, and restores the original
+vtable at IR shutdown. Installation uses the requested sidecar state because
+IR initialization precedes the module transaction. Capture itself requires an
+active full module. Ordinary compilation uses the original vtable. Nested
+backend implementation callbacks stay inside the outer atomic IR operation;
+this graph does not claim to enumerate final machine instructions.
+
+Namespace-owned K properties carry the following copied fields:
+
+| Property | Value fields |
+| --- | --- |
+| `native-ir-procedure:<graph>` | procedure, entry label, selected backend, `outer-ir-dispatch` |
+| `native-ir-action:<graph>:<ordinal>` | action kind, block, active native load or zero, raw opcode, direct label or zero, selected call declaration/signature or zero, role or call-return policy, argument bytes or switch case count |
+| `native-ir-table:<graph>:<action>` | unsigned bias, unsigned span |
+| `native-ir-case:<graph>:<action>:<ordinal>` | unsigned value, actual label |
+| `native-ir-address:<graph>:<ordinal>` | actual address-taken label, active native load or zero |
+| `native-ir-block:<graph>:<block>` | first action, last action, conservative reachability |
+| `native-ir-edge:<graph>:<ordinal>` | source block, target block or zero, edge kind, direct label or zero, exit continuation guard |
+| `native-ir-end:<graph>` | action/block/edge/case/address counts, exit label, unknown-transfer flag |
+| `native-ir-counts:<module>` | procedure/action/block/edge/case/address counts |
+
+Kinds distinguish ordinary semantic IR operations, labels, conditional/direct/
+GOSUB/indirect transfers, switch dispatch, subroutine returns, returned values,
+assembly and calls. C/Clang/LLVM result dispatch emits a return; assembly
+backends retain a result carrier until the procedure epilogue. Direct and
+no-flush labels share actual label ownership. Runtime bounds/pointer guards and
+IIf labels introduced after the AST snapshot are therefore represented.
+
+Calls retain `may-return`, `known-no-return` or `runtime-end`. The known policy
+comes from the native procedure flag at dispatch. Runtime END uses the
+compiler-owned RTL declaration and its registered alias before mangling, not a
+classification of arbitrary user/external names. May-return calls have a
+possible continuation and an unknown exit; no-return calls have no ordinary
+continuation. GOSUB has a real target and a separate possible return
+continuation. Subroutine return addresses remain unknown. Assembly has unknown
+control effects and only a possible continuation. Indirect/error/resume
+transfers do not invent a resolved destination.
+
+Blocks split at actual labels and transfers. Every recorded action belongs to
+one dense block range; every direct target resolves to an emitted label in its
+procedure. `entry-reachable` means reachable in the conservative graph, never
+executed. A disconnected block is `unknown-entry` when opaque transfers can
+re-enter it, and `unreachable` only when no such uncertainty remains. Exit guard
+values retain a pending fallthrough (1), GOSUB return (7), call return (8), or
+assembly continuation (9). Zero denotes an ordinary procedure exit.
+
+The reader reconstructs required edges from independent action/label/table
+records, compares their multiset, checks actual load contexts and captured
+return flags, verifies reachability, and closes graph coverage against emitted
+PH procedures. Repaired transport/module totals cannot hide a missing native
+transfer. No register or callback address is exported.
+
+`preload-root-transfer-policies` additionally supplies node-owned
+`root-flow-stop` values for known nonreturning calls, RTL END and result-load
+roots. Those roots have one procedure-exit CE and no fallthrough. Nested
+execution still belongs to the complete IR graph, rather than being inferred
+from a root's serializer traversal.
+
+
+Full models advertise `native-effect-contracts`. Runtime registration copies a
+semantic domain, potential-effect mask and original native options into each
+procedure's private RTL metadata. New/preliminary procedures clear these
+fields. Function-pointer signatures and ordinary user/external declarations
+cannot acquire a runtime contract by sharing a spelling or linker alias.
+
+Domains identify compiler-owned memory, math, string, Unicode, array, file,
+print, console, graphics, sound, error, profiling, system, GOSUB, DATA, object
+and serialization registration families. The vocabulary also includes unknown.
+Explicit contracts identify allocation/release, argument reads/writes, runtime
+state, external I/O, synchronization, error handling, profiling, process exit,
+code execution, computation and control transfer. The unknown bit preserves an
+unclassified remainder. These are potential categories, not assertions that an
+action executes or every conditional effect occurs.
+
+Numeric math contracts describe BASIC-state computation for explicitly selected
+runtime registrations; RND and RANDOMIZE retain their state changes. Host
+floating-environment and errno behavior is outside that language-level scope.
+The metadata never sets CANBECLONED or changes optimizer policy. Cloneability
+and the native throwable flag are separate snapshots; a cloneable null checker
+still retains error/control effects. String helpers can consume temporary
+storage even when their BASIC value operation appears read-only, so their
+unknown remainder is preserved.
+
+| K property | Owner and value fields |
+| --- | --- |
+| `effect-declaration:<ordinal>` | procedure; provenance, domain, mask, named categories, certainty, native RTL options, `unknown-aliases`, cloneable flag, throwable flag |
+| `effect-call:<ordinal>` | module namespace; IR graph/action/load, selected declaration/signature, indirect flag, then the seven contract fields through `unknown-aliases` |
+| `effect-operation:<ordinal>` | module namespace; IR graph/action/load, kind, raw opcode, role, uncertainty, `unknown-aliases` |
+| `effect-domain:<ordinal>` | module namespace; domain name |
+| `effect-definition:<ordinal>` | module namespace; single-bit mask and category name |
+| `effect-counts:<module>` | module namespace; declaration/call/operation counts |
+
+A direct runtime call keeps its actual registered declaration contract. Other
+direct calls retain unknown effects. Indirect calls retain `indirect-target`
+and an unknown contract even when their signature was derived from a known
+runtime routine. Assembly retains unknown memory/register/control effects.
+Other IR operations keep explicit uncertainty where no operand/alias contract
+has been exported. No record assigns a precise pointee or complete alias set.
+
+The reader closes effect declarations against every procedure T snapshot and
+call/operation receipts against every actual IR action. It rejects invented
+runtime provenance, mismatched masks/names, false indirect purity, fabricated
+alias precision and repaired-count omissions. Reduced modes advertise
+unavailable effect coverage and omit these receipts.
+
+### Native name lookup
+
+Full and expression models advertise `native-name-lookups`. Binding models mark
+it unavailable. Module metadata `native-lookup:<ordinal>` copies the actual
+unqualified/qualified name search, including unsuccessful hash probes, keyword
+and macro precedence, lexical and namespace imports, type/base/enum precedence,
+and the returned native chain. A returned chain can retain several ambiguous
+symbols; it does not identify a selected call or a reference binding.
+
+The dense event stream has these tab-separated values:
+
+* `begin`: kind, search ID, parent ID, `unqualified|qualified`, original spelling,
+  preserve-case flag, import-search flag, ST, CFG, SRC, last-consumed file/line/
+  column, namespace snapshot.
+* `probe|decision`: kind, search ID, combined per-search step ordinal, native
+  phase or precedence reason, namespace snapshot, result-symbol snapshot.
+* `result`: kind, search ID, chain ordinal, native import flag, symbol snapshot.
+* `end`: kind, search ID, native token, native token class, result count, return
+  route. Qualified searches use -1 for both unavailable token outputs.
+
+A snapshot contains presence, native symbol class, dtype, attributes, procedure
+attributes, name, owner name and existing S identity. Null snapshots use class 0,
+invalid dtype 2147483648, zero attributes/identity and empty names. Expression
+models retain copied facts and use zero S identities. The snapshot reads common
+symbol fields, so it does not assume that a symbol being lexed has a finalized
+procedure or declaration payload.
+
+The begin point is the last consumed lexer position. Lookup also runs while the
+lexer fills a token or performs lookahead, so this point is not an editable range
+for the queried identifier. The collector does not request a token, repeat a
+lookup, allocate a chain-pool slot, retain a native pointer, or modify a result.
+Copied chain nodes remain valid evidence after the native pool is reused.
+
+`native-lookup-counts` closes events, begins, ends, probes, decisions, returned
+nodes and open depth. Each module resets the counters. Searches are limited to
+1,024 nested scopes and one million events, names to 65,536 bytes, and each result
+chain to the native 4,096-slot pool size. The independent reader checks ownership,
+step/chain order, route vocabulary, absent results and count closure. The
+production guard links the collector without a native lookup implementation and
+checks unchanged pointers, copied names, inactive preprocessing/probe gates,
+cycle termination and the depth/event boundaries.
+
+Name-search receipts remain separate from symbol-filter receipts and do not
+claim coverage of prototype comparison.
+
+### Native symbol filters
+
+`native-symbol-filters` is available in full and expression models and unavailable
+in bindings models. It observes the four native filters for class, class and full
+type, suffix, and default type. It consumes the existing chain and same-name hash
+order. It does not repeat name lookup or add access checks.
+
+Module metadata `native-symbol-filter:<ordinal>` has these tab-separated values:
+
+* `begin`: kind, scope ID, parent ID, filter kind, requested class, requested
+  datatype, ST, CFG, SRC, chain presence, head snapshot.
+* `candidate`: kind, scope ID, candidate ordinal, native match flag, predicate
+  reason, symbol snapshot. The combined ordinal follows the actual native
+  traversal across chain nodes and same-name hash links.
+* `access`: kind, scope ID, candidate ordinal, actual native allowed flag.
+* `end`: kind, scope ID, selected candidate ordinal or zero,
+  `selected|denied|not-found`, returned-symbol snapshot.
+
+Snapshots use the eight-field common-symbol format described for name lookup.
+The collector returns the original predicate/access integer and symbol pointer.
+An inaccessible first match ends the native search; a later accessible symbol
+does not become a fallback selection. A candidate is considered only once and a
+matched variable requires its actual access check before selection can close.
+
+The native suffix string branch accepts dynamic strings, USTRING, fixed strings
+and ZSTRING characters using the datatype-and-pointer mask. The native default
+string branch compares the full datatype for a suffixed symbol. An unsuffixed
+declaration retains its declaration type under DEF rules. These distinct paths
+are preserved in the predicate reason, rather than normalized to one string or
+default-type rule.
+
+`native-symbol-filter-policy` contains the native datatype/pointer mask,
+suffixed-attribute bit and four string datatypes under the selected type ABI.
+`native-symbol-filter-counts` closes event, begin, end, candidate, access and open
+depth counts. The collector limits nesting to 1,024 and events to one million.
+Its frames retain scalar receipts only. The reader checks actual traversal,
+copied predicate inputs, access closure, selected identities and module ownership.
+Prototype comparison and explicit name-search/filter/call causal links remain
+separate required work.
+
+### Native declaration/prototype matching
+
+`native-prototype-comparisons` observes `symbFindOverloadProc` in full and
+expression models. Binding models mark it unavailable. This native routine
+matches a declaration or definition against existing procedure signatures. Its
+selected result does not assert that a procedure was called or executed.
+
+Module metadata `native-prototype:<ordinal>` has these tab-separated values:
+
+* `begin`: kind, scope ID, parent ID, native options, ST, CFG, SRC, overload-head
+  snapshot, query-procedure snapshot, head declared parameter count, query
+  declared parameter count. Nonprocedures use -1 for unavailable counts.
+* `candidate`: kind, scope ID, candidate ordinal, query effective parameter
+  count, candidate declared count, candidate effective count, head-property
+  flag, candidate snapshot.
+* `parameter`: kind, scope ID, candidate ordinal, remaining parameter count,
+  `bydesc|type|subtype`, actual distinction flag, left mode/rank, right mode/rank,
+  left formal snapshot, right formal snapshot, left nominal subtype snapshot,
+  right nominal subtype snapshot.
+* `end`: kind, scope ID, selected candidate ordinal or zero,
+  `selected|not-found|invalid-input`, returned-symbol snapshot.
+
+All snapshots use the eight-field common-symbol format above. Canonical S
+identities close nominal comparisons in full output. Expression output preserves
+the actual nominal distinction and copied hints; equal spellings cannot prove
+that two native subtype pointers were identical.
+
+The native routine subtracts implicit method instances before comparing arity.
+It rejects the wrong property accessor by replacing the candidate effective
+count with -1. Eligible parameters are compared backwards, first for BYDESC
+mode/rank distinction, then full raw datatype, then nominal subtype identity.
+Unknown BYDESC ranks do not establish a dimensional distinction. BYVAL versus
+BYREF alone does not distinguish prototypes in this routine; a later prototype
+validator can still reject the declaration. Early exits and selected matches
+remain separate receipts.
+
+`native-prototype-policy` carries the native METHOD, PROPERTY and PROPGET bits.
+`native-prototype-counts` closes events, begins, ends, candidates, parameter
+comparisons and open depth. Scalar-only frames are bounded to 1,024 nested scopes
+and one million events. The observer returns the native predicate integer and
+result pointer unchanged and does not repeat any matching operation.
+
+### Qualified lookup to class-filter handoff
+
+`native-qualified-filter-links` observes the actual
+`symbLookupByNameAndClass` wrapper in full and expression output. Bindings output
+marks it unavailable. `native-qualified-filter:<ordinal>` contains the completed
+lookup ID, completed class-filter ID or zero, requested class and returned
+eight-field symbol snapshot. `native-qualified-filter-count` closes each module.
+
+An empty lookup skips the native class filter and has filter ID 0. A nonempty
+lookup runs the existing filter; its beginning names the exact returned chain
+head and its final result must equal the wrapper result. This includes an
+unsuccessful filter over a nonempty chain. The receipt links actual attempts and
+does not claim that every qualified lookup or filter used this wrapper.
+
+The native wrapper captures completed attempt IDs immediately after each call.
+The observer does not infer a join from names, source ranges or pointer reuse,
+and it does not attach metadata to shared chain-pool/import nodes. Counters reset
+per module; inactive/probe/preprocessor gates cannot reuse an earlier identity.
+
+### Native procedure runtime state
+
+Full models advertise `native-procedure-runtime-state`. Expression and bindings
+models mark it unavailable because these relationships require canonical hidden
+storage identities. `native-procedure-state:<ordinal>` is module-owned metadata
+with thirteen tab-separated fields:
+
+1. owner procedure S identity;
+2. actual generated-action kind;
+3. current ST, CFG and SRC identities;
+4. saved-handler, saved-module-name, saved-function-name and handler-saved-flag
+   S identities;
+5. GOSUB context S identity;
+6. `none|call-ret|setjmp` implementation;
+7. handler-save temporary VAR and generated target LABEL identities.
+
+Absent storage is zero. The collector copies initialized extension fields and
+actual selected temporaries/targets; it does not retain native pointers. The
+action kinds are `begin`, `handler-allocated`, `handler-save`, `module-name-save`,
+`function-name-save`, `before-error-exit`, `after-error-exit`, `gosub-allocated`,
+`gosub-direct`, `gosub-computed`, `gosub-return` and `gosub-exit`.
+
+Local handler storage is procedure-owned even when an ON LOCAL ERROR statement
+appears inside a lexical block. The generated save uses a previous-handler
+temporary, an already-saved flag and a target label. Pre/post epilogue snapshots
+retain the selected storage before native pointers are cleared. GOSUB receipts
+retain the actual context variable and selected implementation. A generated
+GOSUB exit does not imply that the context is deallocated during compilation.
+
+These are construction/lowering receipts, not runtime execution events. In
+particular, a conditional local-handler save may never execute. No receipt
+assigns a precise exceptional target to every runtime error. The module's
+`native-procedure-state-count` closes the dense stream, bounded to one million
+observations. The reader checks procedure/storage/target classes, module
+ownership, allocation/save transitions and before/after error cleanup.
+
+### Committed parser tokens
+
+Full models advertise `parser-consumed-tokens`. Expression and binding models
+mark it unavailable. `consumed-token:<ordinal>` copies a lexer token when the
+parser commits `lexSkipToken`, before the rotating lookahead slot is reused.
+It does not request another token. Speculative probes, preprocessor evaluation,
+preprocessor recursion and inactive scans are excluded. An EOF that the parser
+does not consume is not invented as a consumed token.
+
+The payload has 43 tab-separated fields:
+
+| Positions | Contents |
+| --- | --- |
+| 0-4 | Native token ID/class, native raw dtype, datatype-slot flag, mapped wire dtype |
+| 5-8 | Native length, `bytes|wide-units`, copied payload, preceding-space flag |
+| 9-12 | ST, CFG, SRC, logical source filename |
+| 13-17 | Logical start/end line/column and native physical flag |
+| 18-20 | Actual macro expansion, replacement-unit offset and offset availability |
+| 21-25 | Raw start/end line/column and original-input availability |
+| 26-29 | Active union kind/value, identifier suffix availability and suffix character |
+| 30-39 | Numeric availability, exact alphabetic suffix, original prefix/length/digits/dot/exponent/leading-zero observations, transported payload handle and macro units |
+| 40-42 | String availability, native truncation flag, completed lookup ID |
+
+The native dtype field is preserved separately because the lexer also stores
+token/operator values in that slot. Only identifier, keyword, quirk, numeric and
+string datatype slots receive a value under the selected semantic datatype ABI.
+Other token classes have unavailable mapped datatype 2147483648. This does not
+turn a lexer token into an AST expression or a reference binding.
+
+Only the active `prdpos|hassuffix|hasesc` union is read. Numeric tokens retain
+their initialized `numeric_suffix` and suffix-presence flag; their inactive
+identifier `suffixchar` is not read. Nonapplicable fields carry explicit zero/
+empty values and availability flags. Native wide text is eight uppercase hex
+digits per code unit. Narrow payloads preserve exactly the native byte count,
+including embedded zero bytes, without assuming a terminator.
+
+The lookup ID is attached immediately after the actual lexer lookup and follows
+normal token/lookahead copying. The collector does not modify a chain-pool node
+or repeat lookup. Macro/source coordinates retain their native availability and
+are not promoted to editable source ranges by this receipt.
+
+`consumed-token-policy` carries the native token buffer limit and native WCHAR
+dtype. `consumed-token-count` closes a module's dense stream. Payload copying
+checks native buffer bounds and a one-million-token limit; token pointers never
+survive a callback.
+
+## Native EXTERN policy transitions
+
+`extern-mangling-contexts` is available in full and expression models. Bindings
+models mark it unavailable. Full contexts additionally require the
+`language-policy parser-mangling` option, using the native `FB_MANGLING` values:
+0 BASIC, 1 C, 2 Windows, 3 Windows-MS, 4 C++, 5 Pascal, 6 runtime library.
+Pascal is an internal enumeration value; the current EXTERN grammar does not
+accept a Pascal spelling. Mangling policy is part of the configuration cache
+key, independently of the command-line and language-default structures.
+
+Module properties `extern-mangling:<ordinal>` contain these tab-separated fields:
+
+```text
+begin|end construct previous-mode committed-mode entry-CTX committed-CTX
+statement SRC spelling-present fallback-used spelling logical-file
+start-line start-column end-line end-column physical
+macro-invocation macro-start-unit macro-offset-valid
+```
+
+Columns are native zero-based lexer columns. The physical flag uses the
+existing source eligibility check, including remaps and generated driver input.
+The parser copies its selected string before consuming the literal. The
+spelling is the native zero-terminated value used by the grammar, rather than
+a reconstruction of the written token. Missing or unrecognized specifications
+retain the actual C fallback and a separate fallback flag. Restoration is
+recorded after the native assignment and before compound-stack storage is
+released. Repeated identical modes retain distinct scope receipts while their
+configuration identity can remain unchanged. A scope does not acquire an end
+receipt merely because publication or error recovery ended the module.
+
+Expression models have zero configuration IDs and retain explicit native modes.
+This permits rejected source to preserve actual decisions under its ordinary
+recovery marker. Full models retain their existing publication rule for source
+errors. Macro and remapped points do not acquire editable physical ranges.
+Policy does not imply an emitted or linker-resolved external symbol.
+
+`extern-mangling-counts` contains event, begin, end and remaining-open counts,
+including four zeros for modules without EXTERN scopes. The reader checks dense
+ordinals, every native EXTERN construct, native closure membership, source and
+configuration ownership, selected spelling/fallback agreement and restoration
+order. Scope depth is bounded at 1024 and events at one million. Observation
+does not repeat lexer queries, alter parser policy or retain native pointers.
+
+## Native default type policy
+
+`native-default-type-policy` advertises the actual DEF table in full and
+expression models. Binding models mark it unavailable. The native table spans
+ASCII 65 through 95, A through underscore, including punctuation after Z.
+Lookup uppercases ASCII lowercase initials and uses a separate dialect fallback
+outside that table. Initial table and fallback values are copied after native
+symbol initialization. No lookup or parser callback is repeated.
+
+Full contexts require `language-default def-type-65` through `def-type-95` and
+`def-type-other`. Values use the selected semantic datatype ABI. A committed
+range assignment invalidates the configuration cache only when an actual table
+entry changes. Repeated identical directives retain separate event receipts
+while their before/after context can remain the same.
+
+The module property `native-default-type-initial` has 66 tab-separated fields:
+the inclusive native first/last codes, 32 native dtype values and 32 mapped wire
+dtype values. Each table contains 31 entries followed by the outside fallback.
+`native-default-type:<ordinal>` has these 20 fields:
+
+```text
+raw-first raw-last effective-first effective-last native-dtype wire-dtype
+changed entry-CTX committed-CTX statement SRC logical-file
+start-line start-column end-line end-column physical
+macro-invocation macro-start-unit macro-offset-valid
+```
+
+Raw bounds are the setter arguments after the parser's uppercase conversion,
+before native clamping and reversal. ASC bounds are native unsigned integers;
+negative direct setter arguments consequently clamp to underscore. Ordinary
+source parsing supplies nonnegative character codes. The source point is the last token
+consumed before the actual assignment. Its native columns are zero based;
+physical eligibility uses the existing remap/generated-input check. Hidden
+macro graphs have zero unavailable expansion links. Expression output has zero
+configuration IDs but retains actual type values and range decisions, including
+updates made on a recovering parser route. Inactive or forbidden declarations
+that never invoke the setter have no range receipt. A QB DEF inside an uncalled
+procedure still changes this compiler-wide parsing policy; it is not a claim
+that the procedure executed.
+
+`native-default-type-count` closes a dense module event sequence, including
+zero. The collector bounds changes at one million and keeps no native pointers.
+The reader checks every initial value, native/wire ABI agreement, actual clamp
+and reversal rules, changed flags, before/after context values, source ownership,
+macro availability and every context's table at its construction position.
+
+## Native pragma history
+
+`native-pragma-history` is available in full and expression output. Binding
+output marks it unavailable. Dense module properties `native-pragma:<ordinal>`
+retain actual preprocessor decisions. A scope starts when the native pragma
+parser receives its initial spelling and ends on its actual return route.
+No callback or constant expression is evaluated again to obtain these facts.
+
+The first payload field is an event kind, followed by its scope ID:
+
+```text
+begin:    parent requested ST CTX SRC file SL SC EL EC physical MI unit valid
+select:   index group option-code flags set|push|pop selected-name
+unknown:  requested-option
+push/pop: index depth-before depth-after accepted saved-or-returned-value
+apply:    index requested-value setter-value effective-before effective-after entry-CTX committed-CTX
+callback: index once|reserve
+reserve:  asm|extern|symbol name accepted symbol-ID
+end:      reason errors-before errors-after CTX
+```
+
+The native option indices are msbitfields, once, constness, reserve, gui,
+private and profile. Callback options have flag 4. Scalar options have flags
+27, preserving push/pop, assignment, preprocessing output and boolean policy.
+PRIVATE is the inverse of the public-procedure default. CONSTNESS applies its
+bit while retaining unrelated pedantic-check bits. GUI records the native
+setter result, including a rejected scope change that leaves the value intact.
+
+Stack outcomes and option applications are deliberately separate. An overflowing
+push does not cancel the later assignment. An underflowing pop returns false,
+which the caller still applies. Reservation actions preserve each native call:
+an accepted ASM reservation can survive a later failed EXTERN reservation.
+Full output identifies an accepted ordinary reserved symbol; reduced output
+leaves its unavailable symbol ID zero. A callback record identifies invocation,
+while its actions and the enclosing error counters describe the result.
+
+Completion reasons are completed, unknown-option, disallowed-stack and
+disallowed-assignment. Completed means the parser reached its ordinary end;
+it does not imply that every stack or callback action succeeded. Missing closing
+parentheses can follow an already committed assignment. Source points retain
+native zero-based columns and the existing physical-source eligibility check.
+Hidden macro graphs have zero unavailable expansion links. Expression models
+retain zero configuration IDs without inventing full context snapshots.
+
+`native-pragma-counts` closes event, begin, end and remaining-open counts plus
+the native per-option stack limit, currently eight. Observation nesting is
+bounded at 1024 and events at one million. Native pragma stacks reset with each
+parser/module initialization. The reader validates nesting, vocabulary, actual
+stack contents, applied values, configuration ownership, callback/reservation
+order and mandatory action/count closure.
+
+## Transient DATA payload interpretation
+
+DATA construction uses one AST union differently for its container and leaves.
+The container initializes `data.elmts`. Each stored item initializes `data.id`;
+reading the other member would misinterpret an active payload. These temporary
+nodes are consumed while building the descriptor initializer and do not become
+new N records in the published graph.
+
+The source DATA observer copies the selected item kind before consumption. Its
+native AST tag is derivable without source-text guessing:
+
+| Captured source kind | Transient AST tag |
+| --- | ---: |
+| string or QB raw byte field | ZSTR, 1 |
+| number | CONST, 2 |
+| wide-string | WSTR, 32768 |
+| address | OFFSET, 65534 |
+| final descriptor link | LINK, 65535 |
+
+These AST tags differ from final runtime descriptor tags. Lowering replaces
+string and numeric tags with their actual stored lengths; wide tags include
+the native wide-string marker. The existing data-payload receipt preserves that
+selected runtime tag separately. NULL, 0, belongs to lowered sentinel handling
+and is not a source item category.
+
+Each descriptor receipt copies `tree->data.elmts` after the native final link is
+appended. Its cell count is therefore exactly the source group's item count
+plus one. The independent reader exposes `data_ast_payloads[(module, group)]`
+with derived item tags, the link tag and the captured container element count.
+These values have no separate AST node identity or invented source range.
+
+The nested procedure payload in `AST_NODE_BLOCK.proc` is initialized only for
+native procedure nodes. Its `ismain` flag is retained in the existing
+native-procedure-block receipt, independently of driver module roles. Ordinary
+scope-block storage does not initialize that procedure-only member and is not
+read as a procedure payload. `AST_NODE_PROC.decl_last` is the insertion cursor
+used by `astAddUnscoped`; it is private construction state. Published declaration
+order and final ordered roots describe the resulting program without exposing
+that cursor or inventing a procedure N node.
+
+## Startup list interpretation
+
+The reader exposes `startup_registration_lists[(module, kind)]` as ordered
+`(registration occurrence, procedure symbol, next occurrence)` tuples. Zero
+terminates each constructor/destructor list. Entries come from actual native
+tail-append receipts; repeated procedure symbols remain distinct occurrences.
+Source priorities and backend placement are separate facts. These links do not
+predict runtime loader ordering among equal priorities.
+
+`static_cleanup_members[(module, parent procedure)]` contains the allocated
+variable/wrapper pairs in native registration construction order. Allocation
+membership is retained even when an unused private parent never emits a body.
+The separate static-cleanup-body receipts describe bodies actually emitted.
+Neither list membership nor a guarded registration path asserts that runtime
+execution reached an atexit call.
+
+## Conditional table interpretation
+
+`conditional_states[branch]` interprets captured PPB/PPD decisions without
+evaluating the condition again. It exposes source nesting depth, the stored
+native truth and else-seen count, and explicit availability. Native `istrue`
+is not simply the current branch's selected flag: after a true earlier branch,
+an ELSEIF can evaluate true while remaining unselected and leaving the native
+chain truth set. ELSE then inverts that stored truth and increments else-seen.
+
+Parent-inactive directives are scanned by `ppSkip` without allocating native
+conditional-table entries. Their source topology is preserved, but native
+truth/count values are unavailable, not false/zero. Unfinished recovery decisions
+also retain unavailable native values. Source depth is derived from source
+parent relationships and is not claimed to be the native `PP_CTX.level` index.
+That private active-table index differs from independently scanned inactive
+nesting and does not need a public allocator identity.
+
+`conditional_skipped_regions` exposes the captured PPS intervals. Coordinate
+availability remains unchanged; generated or remapped source does not become
+editable merely because an inactive region has an owning branch.
+
+## Native evaluation contexts
+
+Capability `native-evaluation-contexts` describes temporary lexer contexts
+used by constant-expression callbacks and symbol queries. The BASIC observer
+copies each input before the callback can reset its storage and records
+the result before the context is popped. It does not call the evaluator,
+the query resolver or a callback again. The capability is available with typed
+expressions in full and expression output, and unavailable in bindings output.
+
+Module K keys `native-evaluation:N` preserve native event order. A `begin`
+contains the evaluation identity, enclosing evaluation identity, retired
+query identity when replaying, purpose, statement/configuration/source
+identities, native parent lexer kind, copied callback input, entry source
+anchor and available loader MI identity. Evaluation IDs are local to their
+module; a reused lexer slot receives a fresh identity. The parent lexer kind
+distinguishes root, include and evaluation buffers. Compact output preserves
+the evaluation receipts while keeping unavailable loader identities zero.
+
+A query retry records an `end` with reason `replay` and no returned payload,
+then a new `begin` referring to the retired context. It does not pretend that
+the failed identifier interpretation produced the later type-query result.
+An ordinary `end` records the actual result, callback error code and error
+counts. `completed` means the native context reached its pop operation; its
+error code can still be nonzero.
+
+The parser can also report an error and return a folded node while the
+callback error code remains zero. For example, `1 +` reports an expected
+expression error but can leave the callback result `1`. The reader's
+`native_error_observed` field combines a nonzero callback error with an
+increase in the captured parser error count. It preserves the native result
+and both original error channels. A false value describes those observations;
+it does not certify every fact in a recovered module.
+
+Input and result payloads distinguish byte strings from sequences of host
+wide code units. Their copied lengths and code-unit widths are explicit.
+The host width describes the callback buffer, independently of the selected
+cross target's WCHAR layout. Byte strings preserve zero bytes; wide units
+are preserved as units rather than silently normalized as Unicode text.
+The entry anchor does not make the copied evaluation input an editable
+physical source range.
+
+The mandatory `native-evaluation-counts` key closes event, begin, end and
+open-depth counts and declares the observer's bounded frame capacity. The
+reader rejects unknown event/purpose/encoding values, mismatched lengths,
+foreign owners, invented loader links, invalid nesting, orphaned replay and
+missing closure. Native behavior and source/transport tests are recorded
+separately from this contract; implementation alone is not a completion claim.
+
+The original callback argument and a transformed lexer buffer are distinct
+observations. Capability `native-evaluation-lexer-buffers` adds one `buffer`
+event per context after native conversion and LF insertion, before parsing.
+The buffer event contains the actual selected lexer union member's encoding,
+length, host code-unit width and copied text. A Z callback can therefore retain
+its byte argument and result while parsing a wide buffer. Replay copies the
+newly prepared buffer again; it does not reuse a pointer into the retired one.
+The reader requires a prepared buffer before a result or nested evaluation,
+checks its end marker and rejects omitted buffers even when event totals are
+repaired. Producers without this added capability retain the older explicit
+unavailability.
+
+These context/input/result receipts do not by themselves relate every
+compile-time AST operation to its evaluation context. Those phase relationships
+remain part of the open source/identity acceptance scope.
 
 <!-- end of compiler-semantic-model.md -->

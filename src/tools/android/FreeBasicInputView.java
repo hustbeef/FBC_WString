@@ -26,10 +26,14 @@
 package org.freebasic.android;
 
 import android.content.Context;
+import android.os.Build;
+import android.view.inputmethod.InputMethodManager;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputConnectionWrapper;
 import android.widget.EditText;
@@ -37,9 +41,40 @@ import android.widget.EditText;
 public class FreeBasicInputView extends EditText {
     private static final int MAX_DELETE_COUNT = 16;
     private boolean clearingForwardedText;
+    private boolean changingComposition;
+
+    /* InputConnection and TextWatcher callbacks belong to Android's UI thread.
+     * Preedit text stays in this helper until the IME commits it. Forwarding
+     * each composing prefix would append i, im, ime for one typed word. */
+    boolean hasComposingText() {
+        Editable text = getText();
+        return text != null && BaseInputConnection.getComposingSpanStart(text) >= 0;
+    }
+
+    private void clearForwardedText() {
+        clearingForwardedText = true;
+        try {
+            Editable text = getText();
+            if (text != null) text.clear();
+        } finally {
+            clearingForwardedText = false;
+        }
+    }
 
     public FreeBasicInputView(Context context) {
         super(context);
+        /* This invisible transport serves every BASIC editor. It is not an
+         * Android account/password field and must not summon autofill UI.
+         * Reflection retains the APK template's API-23 compile contract. */
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                // View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS, API 26.
+                View.class.getMethod("setImportantForAutofill", int.class)
+                    .invoke(this, 8);
+            } catch (ReflectiveOperationException error) {
+                // An older vendor framework can omit this optional facility.
+            }
+        }
 
         /*
             Some older Android IMEs bypass the InputConnection wrapper and
@@ -61,14 +96,13 @@ public class FreeBasicInputView extends EditText {
 
             @Override
             public void afterTextChanged(Editable text) {
-                if (clearingForwardedText || text == null || text.length() == 0) {
+                if (clearingForwardedText || changingComposition ||
+                    text == null || text.length() == 0 || hasComposingText()) {
                     return;
                 }
 
                 dispatchCommittedText(text);
-                clearingForwardedText = true;
-                text.clear();
-                clearingForwardedText = false;
+                clearForwardedText();
             }
         });
     }
@@ -135,7 +169,9 @@ public class FreeBasicInputView extends EditText {
         char ch;
         boolean handled = false;
 
-        if (text == null) {
+        // Match the browser commit bound. Decline oversized commits as a whole
+        // rather than forwarding only the suffix that fits the native queue.
+        if (text == null || text.length() > 128) {
             return false;
         }
 
@@ -161,6 +197,29 @@ public class FreeBasicInputView extends EditText {
     }
 
     @Override
+    public boolean onKeyPreIme(int keyCode, KeyEvent event) {
+        /* Before API 30, editor focus without a docked IME is ambiguous.
+         * Back release confirms dismissal: stop serving this hidden editor
+         * so layout observation can report hidden instead of unknown. Handle
+         * the release here so dismissing the IME does not close the activity.
+         * Modern releases retain their authoritative WindowInsets path. */
+        if (Build.VERSION.SDK_INT < 30 && keyCode == KeyEvent.KEYCODE_BACK &&
+            event != null && event.getAction() == KeyEvent.ACTION_UP &&
+            !event.isCanceled() && hasFocus()) {
+            InputMethodManager manager = (InputMethodManager)getContext()
+                .getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (manager != null) {
+                manager.hideSoftInputFromWindow(getWindowToken(), 0);
+            }
+            clearFocus();
+            setFocusable(false);
+            setFocusableInTouchMode(false);
+            return true;
+        }
+        return super.onKeyPreIme(keyCode, event);
+    }
+
+    @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         /*
             Gboard sends Backspace to the served view with
@@ -168,7 +227,7 @@ public class FreeBasicInputView extends EditText {
             reliably receive that event, so catch it here before EditText
             handles it internally.
         */
-        if (dispatchNativeKeyEvent(event)) {
+        if (!hasComposingText() && dispatchNativeKeyEvent(event)) {
             return true;
         }
 
@@ -187,7 +246,7 @@ public class FreeBasicInputView extends EditText {
         return new InputConnectionWrapper(base, true) {
             @Override
             public boolean sendKeyEvent(KeyEvent event) {
-                if (dispatchNativeKeyEvent(event)) {
+                if (!hasComposingText() && dispatchNativeKeyEvent(event)) {
                     return true;
                 }
 
@@ -196,6 +255,9 @@ public class FreeBasicInputView extends EditText {
 
             @Override
             public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                if (hasComposingText()) {
+                    return super.deleteSurroundingText(beforeLength, afterLength);
+                }
                 if (dispatchSyntheticBackspaces(beforeLength)) {
                     return true;
                 }
@@ -206,10 +268,31 @@ public class FreeBasicInputView extends EditText {
             @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
                 if (dispatchCommittedText(text)) {
+                    clearForwardedText();
                     return true;
                 }
 
                 return super.commitText(text, newCursorPosition);
+            }
+
+            @Override
+            public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                changingComposition = true;
+                try {
+                    return super.setComposingText(text, newCursorPosition);
+                } finally {
+                    changingComposition = false;
+                }
+            }
+
+            @Override
+            public boolean finishComposingText() {
+                String pending = hasComposingText() ? getText().toString() : "";
+                boolean result = super.finishComposingText();
+                if (pending.length() != 0 && dispatchCommittedText(pending)) {
+                    clearForwardedText();
+                }
+                return result;
             }
         };
     }

@@ -24,7 +24,7 @@
 declare sub ZstrAssign _
 	( _
 		byval dst as zstring ptr ptr, _
-		byval src as zstring ptr _
+		byval src as const zstring ptr _
 	)
 
 declare sub ZstrAssignW _
@@ -47,7 +47,7 @@ declare sub ZstrConcatAssignW _
 
 declare function ZstrDup _
 	( _
-		byval s as zstring ptr _
+		byval s as const zstring ptr _
 	) as zstring ptr
 
 declare sub WstrAssign _
@@ -115,7 +115,7 @@ declare function hUnescape _
 
 declare function hUnescapeW _
 	( _
-		byval text as wstring ptr, _
+		byval text as const wstring ptr, _
 		byref textlen as integer = 0 _
 	) as wstring ptr
 
@@ -125,7 +125,7 @@ declare function hReadWstrChar _
 
 declare function hGetTargetWstrLength _
 	( _
-		byval text as wstring ptr _
+		byval text as const wstring ptr _
 	) as integer
 
 declare function hHasEscape _
@@ -140,9 +140,9 @@ declare function hHasEscapeW _
 
 declare function hReplace _
 	( _
-		byval text as zstring ptr, _
-		byval oldtext as zstring ptr, _
-		byval newtext as zstring ptr _
+		byval text as const zstring ptr, _
+		byval oldtext as const zstring ptr, _
+		byval newtext as const zstring ptr _
 	) as string
 
 declare function hReplaceW _

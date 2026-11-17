@@ -9,7 +9,7 @@
 
 int fb_hArrayAlloc
 	(
-		FBARRAY *array,
+		FBARRAY_ACCESS *array,
 		size_t element_len,
 		int doclear,
 		FB_DEFCTOR ctor,
@@ -19,7 +19,7 @@ int fb_hArrayAlloc
 {
 	size_t i, elements, size;
 	ssize_t diff;
-	FBARRAYDIM *dim;
+	FBARRAYDIM_ACCESS *dim;
 	ssize_t lbTB[FB_MAXDIMENSIONS] = {0};
 	ssize_t ubTB[FB_MAXDIMENSIONS] = {0};
 
@@ -83,7 +83,10 @@ int fb_hArrayAlloc
 	if( (doclear == 32) && (ctor == NULL) )
 	{ 
 		array->ptr = malloc( size );
-		memset( array->ptr, 32, size );  
+		/* Fixed-length strings start as spaces. Leave allocation failures to
+		   the common error path below before touching the new storage. */
+		if( array->ptr != NULL )
+			memset( array->ptr, 32, size );
 	}
 	else if( doclear && (ctor == NULL) )
 		array->ptr = calloc( size, 1 );
@@ -109,7 +112,7 @@ int fb_hArrayAlloc
 	DBG_ASSERT( array->element_len == element_len || array->element_len == 0 );
 	DBG_ASSERT( array->dimensions == dimensions || array->dimensions == 0 );
 
-	array->data = ((unsigned char *)array->ptr) + diff;
+	array->data = (void *)((uintptr_t)array->ptr + (uintptr_t)diff);
 	array->size = size;
 	array->element_len = element_len;
 	array->dimensions = dimensions;
@@ -119,7 +122,7 @@ int fb_hArrayAlloc
 
 static int hRedim
 	(
-		FBARRAY *array,
+		FBARRAY_ACCESS *array,
 		size_t element_len,
 		int doclear,
 		int isvarlen,
@@ -139,7 +142,7 @@ static int hRedim
 
 int fb_ArrayRedimEx
 	(
-		FBARRAY *array,
+		FBARRAY_ACCESS *array,
 		size_t element_len,
 		int doclear,
 		int isvarlen,

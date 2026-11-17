@@ -62,7 +62,7 @@ function astIsConst0OrMinus1( byval n as ASTNODE ptr ) as integer
 	return FALSE
 end function
 
-function astNewCONSTstr( byval v as zstring ptr ) as ASTNODE ptr
+function astNewCONSTstr( byval v as const zstring ptr ) as ASTNODE ptr
 	dim as FBSYMBOL ptr tc = any
 
 	'' assuming no escape sequences are used
@@ -196,7 +196,9 @@ function astLoadCONST( byval n as ASTNODE ptr ) as IRVREG ptr
 	dim as integer dtype = any
 
 	if( ast.doemit ) then
-		dtype = astGetDataType( n )
+		'' Keep C builtin aliases such as CLong on immediate values. The C
+		'' backend needs that spelling when a constant crosses a variadic call.
+		dtype = astGetFullType( n )
 		if( typeGetClass( dtype ) = FB_DATACLASS_FPOINT ) then
 			function = irAllocVrImmF( dtype, n->subtype, n->val.f )
 		else

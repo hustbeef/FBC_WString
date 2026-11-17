@@ -23,6 +23,7 @@
 #define FB_RT_WINCE_PRIVATE_CONSOLE_H
 
 #include <windows.h>
+#include "../../fb_abi.h"
 
 typedef struct FB_WINCE_CONSOLE_CELL {
 	FB_WCHAR character;
@@ -46,7 +47,7 @@ typedef struct FB_CONSOLE_CTX {
 	unsigned int background;
 } FB_CONSOLE_CTX;
 
-extern FB_CONSOLE_CTX __fb_con;
+extern FB_CONSOLE_CTX fb_console_context FB_C_SYMBOL("__fb_con");
 
 int fb_hWinCEConsoleInitialize( void );
 void fb_hWinCEConsoleShutdown( void );
@@ -98,8 +99,8 @@ int fb_ConsoleHasFocus( void );
     signatures shared with the Win32 runtime while always selecting the
     process-local logical page.
 */
-#define __fb_in_handle  fb_hConsoleGetHandle( TRUE )
-#define __fb_out_handle fb_hConsoleGetHandle( FALSE )
+#define FB_CONSOLE_INPUT_HANDLE  fb_hConsoleGetHandle( TRUE )
+#define FB_CONSOLE_OUTPUT_HANDLE fb_hConsoleGetHandle( FALSE )
 
 #define FB_CON_CORRECT_POSITION() ((void)0)
 #define FB_CONSOLE_WINDOW_EMPTY() FALSE

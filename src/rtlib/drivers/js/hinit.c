@@ -8,7 +8,7 @@
 #include "../../fb.h"
 #include "fb_private_console.h"
 
-FB_CONSOLE_CTX __fb_con;
+FB_CONSOLE_CTX fb_console_context;
 
 #ifdef ENABLE_MT
 FBCALL void fb_Lock( void )      { return; }
@@ -45,9 +45,9 @@ static const char color_remap[16] =
 
 static void fb_fs_init_console(void)
 {
-	memset( &__fb_con, 0, sizeof(__fb_con) );
+	memset( &fb_console_context, 0, sizeof(fb_console_context) );
 
-	__fb_con.color_remap = color_remap;
+	fb_console_context.color_remap = color_remap;
 
 	// Install key/mouse input callbacks only when running in a web browser; under
 	// node.js using EMSCRIPTEN_EVENT_TARGET_WINDOW causes an error as window doesn't exist.
@@ -66,10 +66,13 @@ static void fb_fs_init_console(void)
 		//emscripten_set_wheel_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 1, fb_hMouseWheelEventHandler );
 
 		// touch
-		emscripten_set_touchstart_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 1, fb_hTouchEventHandler );
-		emscripten_set_touchmove_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 1, fb_hTouchEventHandler );
-		emscripten_set_touchend_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 1, fb_hTouchEventHandler );
-		emscripten_set_touchcancel_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 1, fb_hTouchEventHandler );
+		/* The graphics IME bridge focuses during trusted touch capture. Deliver
+		 * raw touch at window bubble so cancelling its default action does
+		 * not preempt that trusted editor activation on Android browsers. */
+		emscripten_set_touchstart_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 0, fb_hTouchEventHandler );
+		emscripten_set_touchmove_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 0, fb_hTouchEventHandler );
+		emscripten_set_touchend_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 0, fb_hTouchEventHandler );
+		emscripten_set_touchcancel_callback( EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 0, fb_hTouchEventHandler );
 	}
 }
 

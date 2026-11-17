@@ -16,7 +16,25 @@
 # the preceding physical call is exported separately as an editable prefix.
 SEMANTIC_MODEL_SMOKE_MIN_SCHEMA := 15
 
-.PHONY: compiler-smoke compiler-semantic-model-smoke compiler-indirect-goto-smoke compiler-riscv32-smoke compiler-riscv64-smoke compiler-s390x-smoke compiler-loongarch64-smoke compiler-mips-smoke compiler-ppc-smoke compiler-ppc64-smoke compiler-ppc64le-smoke compiler-riscos-smoke
+LLVM_SMOKE_LLC := $(strip $(or $(LLC),llc))
+LLVM_SMOKE_LLC_COMMAND := $(call tool_cmd,$(LLVM_SMOKE_LLC))
+LLVM_SMOKE_LLC_AVAILABLE := $(shell command -v "$(LLVM_SMOKE_LLC_COMMAND)" >/dev/null 2>&1 && echo yes)
+LLVM_SMOKE_LLC_FBC := $(if $(filter MSYS% MINGW% CYGWIN%,$(shell uname -s 2>/dev/null)),$(call fbc_msys_tool,$(LLVM_SMOKE_LLC)),$(LLVM_SMOKE_LLC))
+# Windows LLVM output needs a host Clang assembler. The 32-bit MinGW CI job
+# supplies x86_64 Clang, which can assemble the requested i686 target.
+LLVM_SMOKE_CLANG := $(strip $(or $(CLANG),clang))
+LLVM_SMOKE_CLANG_COMMAND := $(call tool_cmd,$(LLVM_SMOKE_CLANG))
+LLVM_SMOKE_CLANG_AVAILABLE := $(shell command -v "$(LLVM_SMOKE_CLANG_COMMAND)" >/dev/null 2>&1 && echo yes)
+LLVM_SMOKE_CLANG_FBC := $(if $(filter MSYS% MINGW% CYGWIN%,$(shell uname -s 2>/dev/null)),$(call fbc_msys_tool,$(LLVM_SMOKE_CLANG)),$(LLVM_SMOKE_CLANG))
+LLVM_SMOKE_AVAILABLE := $(LLVM_SMOKE_LLC_AVAILABLE)
+ifeq ($(TARGET_OS),win32)
+LLVM_SMOKE_AVAILABLE := $(if $(and $(filter yes,$(LLVM_SMOKE_LLC_AVAILABLE)),$(filter yes,$(LLVM_SMOKE_CLANG_AVAILABLE))),yes,no)
+endif
+# LLVM receives the target in its options, so this uses the host llc directly.
+# Native Windows fbc needs the MSYS2 path converted to a Windows executable path.
+LLVM_SMOKE_TEST_FBC_CMD = env LLC="$(LLVM_SMOKE_LLC_FBC)" CLANG="$(LLVM_SMOKE_CLANG_FBC)" "$(TEST_FBC)" $(TEST_FBC_TARGET_ARGS) $(TEST_FBC_BUILDPREFIX_ARGS)
+
+.PHONY: compiler-smoke compiler-clongdouble-abi-smoke compiler-semantic-model-smoke compiler-indirect-goto-smoke compiler-riscv32-smoke compiler-riscv64-smoke compiler-s390x-smoke compiler-loongarch64-smoke compiler-mips-smoke compiler-ppc-smoke compiler-ppc64-smoke compiler-ppc64le-smoke compiler-riscos-smoke
 compiler-smoke: libs
 	$(call _mt_echo,Compiler smoke test)
 	@mkdir -p "$(TEST_TMP)"
@@ -24,8 +42,32 @@ compiler-smoke: libs
 	$(call _mt_run,$(TEST_FBC_CMD) "$(TEST_TMP)/smoke.bas" -x "$(TEST_TMP)/smoke$(EXEEXT)")
 ifneq ($(CAN_RUN),)
 	@./"$(TEST_TMP)/smoke$(EXEEXT)" >/dev/null 2>&1 && echo "==> RUN OK"
+ifeq ($(LLVM_SMOKE_AVAILABLE),yes)
+	$(call _mt_echo,LLVM duplicate extern global smoke test)
+	$(call _mt_run,$(CC) -c "$(rootdir)/tests/llvm/llvm-duplicate-extern-global.c" -o "$(TEST_TMP)/llvm-duplicate-extern-global.o")
+	$(call _mt_run,$(LLVM_SMOKE_TEST_FBC_CMD) -i "$(rootdir)/inc" "$(rootdir)/tests/llvm/llvm-duplicate-extern-global.bas" "$(TEST_TMP)/llvm-duplicate-extern-global.o" -x "$(TEST_TMP)/llvm-duplicate-extern-global$(EXEEXT)")
+	$(call _mt_run,./"$(TEST_TMP)/llvm-duplicate-extern-global$(EXEEXT)")
+else
+	$(call _mt_echo,LLVM duplicate extern global smoke test skipped; required LLVM tools are unavailable)
+endif
 endif
 	$(call _mt_cleanup_success)
+
+ifeq ($(TARGET_OS)/$(TARGET_ARCH),linux/x86_64)
+ifneq ($(CAN_RUN),)
+compiler-clongdouble-abi-smoke: compiler
+	$(call _mt_echo,CLongDouble C ABI smoke test)
+	$(call _mt_run,$(MAKE) rtlib BUILD_FBC="$(abspath $(FBC_EXE))")
+	$(TEST_TOOLCHAIN_ENV) $(PYTHON) "$(rootdir)/build_scripts/test-clongdouble-c-abi.py" \
+		--root "$(rootdir)" --fbc "$(abspath $(FBC_EXE))" --cc "$(CC)"
+else
+compiler-clongdouble-abi-smoke:
+	$(call _mt_echo,CLongDouble C ABI test skipped; target executable cannot run)
+endif
+else
+compiler-clongdouble-abi-smoke:
+	$(call _mt_echo,CLongDouble C ABI test skipped; Linux x86-64 is required)
+endif
 
 compiler-semantic-model-smoke: compiler
 	$(call _mt_echo,Compiler semantic model smoke test)
@@ -126,7 +168,7 @@ compiler-semantic-model-smoke: compiler
 		$$1 == "P" { if (NF != 9) exit 1; symbol_refs[++symbol_ref_count] = $$2; procedures++; next } \
 		$$1 == "V" { if (NF != 5 || $$2 == 0 || $$4 == "" || ($$5 != "pointer" && $$5 != "numeric" && $$5 != "dynamic-string" && $$5 != "fixed-string" && $$5 != "aggregate" && $$5 != "procedure" && $$5 != "other")) exit 1; symbol_refs[++symbol_ref_count] = $$2; typefacts++; next } \
 		$$1 == "N" { if (NF != 13 || node_ids[$$2]++ || ($$8 == "none" && $$7 != "") || ($$8 != "none" && $$8 != "builtin" && $$8 != "overloaded")) exit 1; if ($$10 != 0) symbol_refs[++symbol_ref_count] = $$10; if ($$11 != 0) symbol_refs[++symbol_ref_count] = $$11; nodes++; next } \
-		$$1 == "E" { if (NF != 16 || expression_ids[$$2]++ || ($$3 != "0" && $$3 != "1") || $$4 == "" || $$5 < 1 || $$6 < 0 || $$7 < $$5 || ($$7 == $$5 && $$8 <= $$6) || $$8 < 0 || $$16 == "" || ($$12 == "none" && $$11 != "") || ($$12 != "none" && $$12 != "builtin" && $$12 != "overloaded")) exit 1; if ($$3 == "1" && $$5 == 9 && $$6 == 13 && $$7 == 9 && $$8 == 34) direct_range = 1; if ($$3 == "0" && $$5 == 10 && $$6 == 33 && $$7 == 10 && $$8 == 51 && $$11 == "add" && $$12 == "builtin") expanded_range = 1; if ($$3 == "0" && $$5 == 24 && $$6 == 41 && $$7 == 24 && $$8 == 42) macro_range_withheld = 1; if ($$5 >= 2 && $$5 <= 4) directive_expressions++; if ($$16 == "double") nested_operands[$$5] = 1; if ($$16 == "integer") nested_comparisons[$$5] = 1; if ($$11 == "add" && $$12 == "builtin") builtin_add = 1; if ($$11 == "subtract" && $$12 == "builtin") builtin_subtract = 1; if ($$11 == "power" && $$12 == "builtin") builtin_power = 1; if ($$11 == "concatenate" && $$12 == "builtin") builtin_concatenate = 1; if ($$11 == "unary-plus" && $$12 == "builtin") builtin_unary_plus = 1; if ($$11 == "identity-test" && $$12 == "builtin") identity_test = 1; if ($$14 != 0) symbol_refs[++symbol_ref_count] = $$14; if ($$15 != 0) symbol_refs[++symbol_ref_count] = $$15; expressions++; next } \
+		$$1 == "E" { if (NF != 16 || expression_ids[$$2]++ || ($$3 != "0" && $$3 != "1") || $$4 == "" || $$5 < 1 || $$6 < 0 || $$7 < $$5 || ($$7 == $$5 && $$8 <= $$6) || $$8 < 0 || $$16 == "" || ($$12 == "none" && $$11 != "") || ($$12 != "none" && $$12 != "builtin" && $$12 != "overloaded")) exit 1; if ($$3 == "1" && $$5 == 9 && $$6 == 13 && $$7 == 9 && $$8 == 34) direct_range = 1; if ($$3 == "0" && $$5 == 10 && $$6 == 13 && $$7 == 10 && $$8 == 51 && $$11 == "add" && $$12 == "builtin") expanded_range = 1; if ($$3 == "0" && $$5 == 24 && $$6 == 41 && $$7 == 24 && $$8 == 42) macro_range_withheld = 1; if ($$5 >= 2 && $$5 <= 4) directive_expressions++; if ($$16 == "double") nested_operands[$$5] = 1; if ($$16 == "integer") nested_comparisons[$$5] = 1; if ($$11 == "add" && $$12 == "builtin") builtin_add = 1; if ($$11 == "subtract" && $$12 == "builtin") builtin_subtract = 1; if ($$11 == "power" && $$12 == "builtin") builtin_power = 1; if ($$11 == "concatenate" && $$12 == "builtin") builtin_concatenate = 1; if ($$11 == "unary-plus" && $$12 == "builtin") builtin_unary_plus = 1; if ($$11 == "identity-test" && $$12 == "builtin") identity_test = 1; if ($$14 != 0) symbol_refs[++symbol_ref_count] = $$14; if ($$15 != 0) symbol_refs[++symbol_ref_count] = $$15; expressions++; next } \
 		$$1 == "B" { if (NF != 9 || $$2 == 0 || ($$3 != "declaration" && $$3 != "reference") || ($$4 != "0" && $$4 != "1") || $$5 == "" || $$6 < 1 || $$7 < 0 || $$8 < $$6 || ($$8 == $$6 && $$9 <= $$7)) exit 1; symbol_refs[++symbol_ref_count] = $$2; if ($$3 == "declaration") { binding_declarations++; declaration_ranges[$$2 ":" $$6 ":" $$7 ":" $$8 ":" $$9] = 1 } else binding_references++; bindings++; next } \
 		$$1 == "I" { if (NF != 12 || $$2 == 0 || $$3 == 0 || $$4 == 0 || ($$5 != "default-constructor" && $$5 != "initializer-constructor" && $$5 != "new-constructor" && $$5 != "destructor-call" && $$5 != "argument-constructor" && $$5 != "temporary-destructor" && $$5 != "scope-exit-destructor" && $$5 != "delete-destructor" && $$5 != "return-constructor") || ($$6 != "0" && $$6 != "1") || $$7 == "" || $$8 < 1 || $$9 < 0 || $$10 < $$8 || ($$10 == $$8 && $$11 <= $$9) || $$12 == "") exit 1; if ($$5 == "default-constructor") default_constructors++; else if ($$5 == "initializer-constructor") initializer_constructors++; else if ($$5 == "new-constructor") new_constructors++; else if ($$5 == "destructor-call") destructor_calls++; else if ($$5 == "temporary-destructor") temporary_destructors++; else if ($$5 == "scope-exit-destructor") scope_exit_destructors++; owner_range = $$2 ":" $$8 ":" $$9 ":" $$10 ":" $$11; if (symbol_names[$$2] == "default_value" && $$5 == "default-constructor" && owner_range in declaration_ranges) field_default_constructor = 1; if (symbol_names[$$2] == "converted_value" && $$5 == "initializer-constructor" && owner_range in declaration_ranges) field_initializer_constructor = 1; if (symbol_names[$$2] == "optional_value" && $$5 == "initializer-constructor" && owner_range in declaration_ranges) optional_parameter_constructor = 1; if (symbol_names[$$2] == "default_value" && $$5 == "destructor-call" && owner_range in declaration_ranges) field_destructor = 1; if (symbol_names[$$2] == "constructed_value" && $$5 == "destructor-call" && owner_range in declaration_ranges) local_destructor = 1; if (symbol_names[$$2] == "scope_exit_value" && $$5 == "scope-exit-destructor") scope_exit_destructor = 1; symbol_refs[++symbol_ref_count] = $$2; symbol_refs[++symbol_ref_count] = $$3; symbol_refs[++symbol_ref_count] = $$4; implicit_calls++; next } \
 		$$1 == "T" { if (schema < 19 || NF != 19) exit 1; details++; next } \
@@ -347,47 +389,7 @@ compiler-semantic-model-smoke: compiler
 		END { if (!field || !clear_proc || !implicit_method || !implicit_lvalue || !implicit_read || !explicit_this || !implicit_rhs || !implicit_clear_lvalue) exit 1 }' \
 		"$(TEST_TMP)/semantic-this-bindings.tsv" || { echo "ERROR: member binding inventory omitted a compiler-resolved This reference or implicit method call"; exit 1; }
 	$(call _mt_run,$(TEST_FBC_CMD) -semantic-model-text -semantic-model-expressions "$(TEST_TMP)/semantic-expressions.tsv" -r "$(TEST_TMP)/semantic-model.bas" "$(TEST_TMP)/semantic-model-helper.bas")
-	@awk -F '\t' -v minimum_schema="$(SEMANTIC_MODEL_SMOKE_MIN_SCHEMA)" '\
-		footer { exit 1 } \
-		NR == 1 { if (NF != 3 || $$1 != "FBCSEM" || $$2 !~ /^[1-9][0-9]*$$/ || ($$2 + 0) < minimum_schema) exit 1; schema = $$2; header = 1; next } \
-		$$1 == "M" { if (NF != 2) exit 1; modules++; next } \
-		$$1 == "D" { if (NF != 2 || $$2 == "" || dependencies[$$2]++) exit 1; if ($$2 ~ /semantic-model-header\.bi$$/) header_dependency = 1; dependency_count++; next } \
-		$$1 == "E" { if (NF != 16 || $$2 != expressions + 1 || $$4 == "" || $$5 < 1 || $$6 < 0 || $$7 < $$5 || ($$7 == $$5 && $$8 <= $$6) || $$8 < 0 || $$14 != 0 || $$15 != 0 || $$16 == "") exit 1; if ($$11 == "subtract" && $$12 == "builtin") builtin_subtract = 1; if ($$11 == "power" && $$12 == "builtin") builtin_power = 1; if ($$11 == "concatenate" && $$12 == "builtin") builtin_concatenate = 1; if ($$11 == "unary-plus" && $$12 == "builtin") builtin_unary_plus = 1; if ($$11 == "identity-test" && $$12 == "builtin") identity_test = 1; expressions++; next } \
-		$$1 == "FILE" { if (schema < 20 || NF != 7) exit 1; details++; next } \
-		$$1 == "SRC" { if (schema < 20 || NF != 14) exit 1; details++; next } \
-		$$1 == "SRE" { if (schema < 20 || NF != 3) exit 1; details++; next } \
-		$$1 == "INC" { if (schema < 20 || NF != 12) exit 1; details++; next } \
-		$$1 == "MAP" { if (schema < 20 || NF != (schema >= 23 ? 11 : 10)) exit 1; details++; next } \
-		$$1 == "ORIG" { if (schema < 20 || NF != 4 || $$2 != "expression") exit 1; details++; next } \
-		$$1 == "PPB" { if (schema < 21 || NF != 14) exit 1; details++; next } \
-		$$1 == "PPD" { if (schema < 21 || NF != 11) exit 1; details++; next } \
-		$$1 == "PPE" { if (schema < 21 || NF != 9) exit 1; details++; next } \
-		$$1 == "PPT" { if (schema < 21 || NF != 13) exit 1; details++; next } \
-		$$1 == "PPS" { if (schema < 21 || NF != 10) exit 1; details++; next } \
-		$$1 == "MD" { if (schema < 22 || NF != 10) exit 1; details++; next } \
-		$$1 == "MT" { if (schema < 22 || NF != 6) exit 1; details++; next } \
-		$$1 == "MI" { if (schema < 22 || NF != 15) exit 1; details++; next } \
-		$$1 == "MA" { if (schema < 22 || NF != 12) exit 1; details++; next } \
-		$$1 == "MS" { if (schema < 22 || NF != 8) exit 1; details++; next } \
-		$$1 == "MC" { if (schema < 22 || NF != 5) exit 1; details++; next } \
-		$$1 == "ME" { if (schema < 22 || NF != 13) exit 1; details++; next } \
-		$$1 == "ML" { if (schema < 22 || NF != 13) exit 1; details++; next } \
-		$$1 == "MR" { if (schema < 22 || NF != 5) exit 1; details++; next } \
-		$$1 == "LOC" { if (schema < 23 || NF != 12) exit 1; details++; next } \
-		$$1 == "ST" { if (schema < 24 || NF != 17) exit 1; details++; next } \
-		$$1 == "STE" { if (schema < 24 || NF != 10) exit 1; details++; next } \
-		$$1 == "BLK" { if (schema < 24 || NF != 14) exit 1; details++; next } \
-		$$1 == "BEND" { if (schema < 24 || NF != 9) exit 1; details++; next } \
-		$$1 == "OWN" { if (schema < 24 || NF != 4) exit 1; details++; next } \
-		$$1 == "CAP" { if (schema < 25 || NF != 4) exit 1; details++; next } \
-		$$1 == "ACC" { if (schema < 25 || NF != 3) exit 1; details++; next } \
-		$$1 == "SOP" { if (schema < 25 || NF != 3) exit 1; details++; next } \
-		$$1 == "EX" { if (schema < 26 || NF != 13) exit 1; details++; next } \
-		$$1 == "DI" { if (schema < 27 || NF != 12) exit 1; details++; next } \
-		$$1 == "END" { if (NF != (schema >= 19 ? 13 : 12) || $$2 != schema || $$3 != modules || $$4 != 0 || $$5 != 0 || $$6 != 0 || $$7 != 0 || $$8 != expressions || $$9 != 0 || $$10 != 0 || $$11 != dependency_count || $$12 != "1" || (schema >= 19 && $$13 != details)) exit 1; footer = 1; next } \
-		{ exit 1 } \
-		END { if (!header || !footer || modules != 2 || dependency_count != 3 || !header_dependency || expressions < 2 || !builtin_subtract || !builtin_power || !builtin_concatenate || !builtin_unary_plus || !identity_test) exit 1 }' \
-		"$(TEST_TMP)/semantic-expressions.tsv" || { echo "ERROR: expression-only semantic model contains unrelated or invalid records"; exit 1; }
+	$(PYTHON) "$(rootdir)/build_scripts/check-semantic-smoke-expressions.py" --root "$(rootdir)" "$(TEST_TMP)/semantic-expressions.tsv"
 	@printf "%s\n" \
 		'dim as double semantic_factor' \
 		'dim as integer semantic_result' \
@@ -444,64 +446,17 @@ compiler-semantic-model-smoke: compiler
 		> "$(TEST_TMP)/semantic-recovery.bas"
 	@set +e; $(TEST_FBC_CMD) -semantic-model-text -semantic-model-expressions "$(TEST_TMP)/semantic-recovery.tsv" -c "$(TEST_TMP)/semantic-recovery.bas" -o "$(TEST_TMP)/semantic-recovery.o" >/dev/null 2>&1; status=$$?; set -e; \
 		test $$status -eq 1 || { echo "ERROR: malformed semantic-recovery fixture did not fail compilation"; exit 1; }
-	@awk -F '\t' -v minimum_schema="$(SEMANTIC_MODEL_SMOKE_MIN_SCHEMA)" '\
-		footer { exit 1 } \
-		NR == 1 { if (NF != 3 || $$1 != "FBCSEM" || $$2 !~ /^[1-9][0-9]*$$/ || ($$2 + 0) < minimum_schema) exit 1; schema = $$2; header = 1; next } \
-		$$1 == "M" { if (NF != 2) exit 1; modules++; next } \
-		$$1 == "D" { if (NF != 2 || $$2 == "" || dependencies[$$2]++) exit 1; dependency_count++; next } \
-		$$1 == "E" { if (NF != 16) exit 1; expressions++; if ($$3 == "1" && $$5 == 3 && tolower($$16) == "double") later_expression = 1; next } \
-		$$1 == "R" { if (NF != 3 || $$2 != schema || $$3 != expressions) exit 1; recovered_modules++; next } \
-		$$1 == "FILE" { if (schema < 20 || NF != 7) exit 1; next } \
-		$$1 == "SRC" { if (schema < 20 || NF != 14) exit 1; next } \
-		$$1 == "SRE" { if (schema < 20 || NF != 3) exit 1; next } \
-		$$1 == "INC" { if (schema < 20 || NF != 12) exit 1; next } \
-		$$1 == "MAP" { if (schema < 20 || NF != (schema >= 23 ? 11 : 10)) exit 1; next } \
-		$$1 == "ORIG" { if (schema < 20 || NF != 4 || $$2 != "expression") exit 1; next } \
-		$$1 == "PPB" { if (schema < 21 || NF != 14) exit 1; next } \
-		$$1 == "PPD" { if (schema < 21 || NF != 11) exit 1; next } \
-		$$1 == "PPE" { if (schema < 21 || NF != 9) exit 1; next } \
-		$$1 == "PPT" { if (schema < 21 || NF != 13) exit 1; next } \
-		$$1 == "PPS" { if (schema < 21 || NF != 10) exit 1; next } \
-		$$1 == "MD" { if (schema < 22 || NF != 10) exit 1; next } \
-		$$1 == "MT" { if (schema < 22 || NF != 6) exit 1; next } \
-		$$1 == "MI" { if (schema < 22 || NF != 15) exit 1; next } \
-		$$1 == "MA" { if (schema < 22 || NF != 12) exit 1; next } \
-		$$1 == "MS" { if (schema < 22 || NF != 8) exit 1; next } \
-		$$1 == "MC" { if (schema < 22 || NF != 5) exit 1; next } \
-		$$1 == "ME" { if (schema < 22 || NF != 13) exit 1; next } \
-		$$1 == "ML" { if (schema < 22 || NF != 13) exit 1; next } \
-		$$1 == "MR" { if (schema < 22 || NF != 5) exit 1; next } \
-		$$1 == "LOC" { if (schema < 23 || NF != 12) exit 1; next } \
-		$$1 == "ST" { if (schema < 24 || NF != 17) exit 1; next } \
-		$$1 == "STE" { if (schema < 24 || NF != 10) exit 1; next } \
-		$$1 == "BLK" { if (schema < 24 || NF != 14) exit 1; next } \
-		$$1 == "BEND" { if (schema < 24 || NF != 9) exit 1; next } \
-		$$1 == "OWN" { if (schema < 24 || NF != 4) exit 1; next } \
-		$$1 == "CAP" { if (schema < 25 || NF != 4) exit 1; next } \
-		$$1 == "ACC" { if (schema < 25 || NF != 3) exit 1; next } \
-		$$1 == "SOP" { if (schema < 25 || NF != 3) exit 1; next } \
-		$$1 == "EX" { if (schema < 26 || NF != 13) exit 1; next } \
-		$$1 == "DI" { if (schema < 27 || NF != 12) exit 1; next } \
-		$$1 == "RECOVERY" { if (NF != 8 || $$2 != schema || $$3 != modules || $$4 != expressions || $$5 != recovered_modules || $$6 != 0 || $$7 != dependency_count || $$8 != "1") exit 1; footer = 1; next } \
-		{ exit 1 } \
-		END { if (!header || !footer || modules != 1 || dependency_count != 1 || expressions < 1 || recovered_modules != 1 || !later_expression) exit 1 }' \
-		"$(TEST_TMP)/semantic-recovery.tsv" || { echo "ERROR: expression-only recovery snapshot is incomplete or mistyped"; exit 1; }
+	$(PYTHON) "$(rootdir)/build_scripts/check-semantic-smoke-expressions.py" --root "$(rootdir)" --recovery "$(TEST_TMP)/semantic-recovery.tsv"
 	$(call _mt_cleanup_success)
 
 compiler-indirect-goto-smoke:
 	@test -n "$(TEST_FBC)" || { echo "ERROR: no usable fbc found"; exit 1; }
 	$(call _mt_echo,Indirect goto C backend smoke test)
 	@mkdir -p "$(TEST_TMP)"
-	@printf "%s\n" \
-		'sub probe()' \
-		'    dim a() as integer' \
-		'    redim a(0 to 15)' \
-		'end sub' \
-		'probe()' \
-		> "$(TEST_TMP)/indirect-goto.bas"
-	$(call _mt_run,$(TEST_FBC_CMD) -gen gcc -e -r "$(TEST_TMP)/indirect-goto.bas" -x "$(TEST_TMP)/indirect-goto")
-	@grep -Fq 'goto *' "$(TEST_TMP)/indirect-goto.c" || { echo "ERROR: indirect goto C output was not produced"; exit 1; }
-	@grep -Fq '_llvmbug18658' "$(TEST_TMP)/indirect-goto.c" || { echo "ERROR: clang indirect goto workaround missing"; exit 1; }
+	$(call _mt_run,$(TEST_FBC_CMD) -gen gcc -ex -r -m c-dispatch-values -i "$(rootdir)/tests/compiler-support" "$(rootdir)/tests/compiler-support/c-dispatch-values.bas" -o "$(TEST_TMP)/indirect-goto.c")
+	@test -f "$(TEST_TMP)/indirect-goto.c" || { echo "ERROR: indirect goto C output was not produced"; exit 1; }
+	@grep -Fq 'goto *' "$(TEST_TMP)/indirect-goto.c" || { echo "ERROR: indirect goto C dispatch was not emitted"; exit 1; }
+	@grep -Fq '(void)&&' "$(TEST_TMP)/indirect-goto.c" || { echo "ERROR: clang indirect goto workaround missing"; exit 1; }
 	$(call _mt_run,$(CC) -x c -c "$(TEST_TMP)/indirect-goto.c" -o "$(TEST_TMP)/indirect-goto.o")
 	@rm -rf "$(TEST_TMP)" "$(LOG_DIR)"
 

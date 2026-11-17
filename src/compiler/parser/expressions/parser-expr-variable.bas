@@ -26,14 +26,23 @@
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
 #include once "parser/parser.bi"
+
+declare sub fbSemanticModelStringIndex(byval result as ASTNODE ptr, _
+	byval operand_id as longint, byval index_id as longint, byval selected_id as longint, _
+	byref source_start as LEX_LOCATION, byval nonphysical_start as longint)
+
 #include once "ast/ast.bi"
 #include once "tooling/semantic-hooks.bi"
 declare function fbSemanticModelMacroAccessBinding( ) as longint
 #include once "tooling/semantic-expressions.bi"
 #include once "tooling/semantic-diagnostics.bi"
 #include once "tooling/semantic-variable-names.bi"
+#include once "tooling/semantic-recovery.bi"
 
 declare sub fbSemanticModelExportCurrentExpressionPrefix(byval expr as ASTNODE ptr)
+declare sub fbSemanticModelExportCurrentMemberPrefix _
+    (byval expr as ASTNODE ptr, byval fld as FBSYMBOL ptr, _
+     byval receiver_dtype as integer, byval receiver_subtype as FBSYMBOL ptr)
 declare sub fbSemanticModelExportMemberBinding _
 	( byval sym as FBSYMBOL ptr, byval receiver as FBSYMBOL ptr, _
 	  byref source as LEX_LOCATION, byval is_type as integer )
@@ -58,7 +67,9 @@ private function hIndexExpr( ) as ASTNODE ptr
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 		'' error recovery: faken an expr
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-variable.bas", __LINE__)
 	end if
 
 	function = expr
@@ -75,14 +86,18 @@ private function hCheckIntegerIndex( byval expr as ASTNODE ptr ) as ASTNODE ptr
 		'' to integer fine, but we don't want to allow pointers as indices.
 		errReport( FB_ERRMSG_INVALIDARRAYINDEX, TRUE )
 		'' error recovery: fake an expr
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-variable.bas", __LINE__)
 
 	case else
 		expr = astNewCONV( FB_DATATYPE_INTEGER, NULL, expr )
 		if( expr = NULL ) then
 			errReport( FB_ERRMSG_INVALIDARRAYINDEX, TRUE )
 			'' error recovery: fake an expr
-			expr = astNewCONSTi( 0 )
+			expr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-variable.bas", __LINE__)
 		end if
 	end select
 
@@ -112,7 +127,9 @@ private function cFixedSizeArrayIndex _
 		if( dimension >= symbGetArrayDimensions( sym ) ) then
 			errReport( FB_ERRMSG_WRONGDIMENSIONS )
 			'' error recovery: fake an expr
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-variable.bas", __LINE__)
 		end if
 
 		lower = symbArrayLbound( sym, dimension )
@@ -142,7 +159,9 @@ private function cFixedSizeArrayIndex _
 			if( dimexpr = NULL ) then
 				errReport( FB_ERRMSG_ARRAYOUTOFBOUNDS )
 				'' error recovery: fake an expr
-				dimexpr = astNewCONSTi( lower )
+				dimexpr = fbSemanticModelRecoveryNode( _
+					astNewCONSTi( lower ), "replacement-constant", __FUNCTION__, _
+					"parser/expressions/parser-expr-variable.bas", __LINE__)
 			end if
 		end if
 
@@ -403,6 +422,10 @@ function cUdtMember _
 		dim as longint semantic_member_nonphysical = lexGetNonphysicalTokenCount( )
 		dim as longint semantic_binding_before = fbSemanticModelBindingCount( )
 	dim as longint semantic_macro_before = fbSemanticModelMacroAccessBinding( )
+        '' Field lookup can select an inherited declaration. Keep the
+        '' actual record type before dtype/subtype become the selected field.
+        dim as integer semantic_receiver_dtype = dtype
+        dim as FBSYMBOL ptr semantic_receiver_subtype = subtype
 		dim as FBSYMBOL ptr fld = hMemberId( subtype, FALSE )
 		dim as longint semantic_binding = fbSemanticModelBindingCount( )
 		if( semantic_binding = semantic_binding_before ) then semantic_binding = 0
@@ -451,7 +474,7 @@ function cUdtMember _
 			varexpr = hFieldAccess( varexpr, fld, dtype, subtype, check_array )
 			if( varexpr <> NULL ) then varexpr->semantic_binding = semantic_binding
 			if( export_semantics ) then
-				fbSemanticModelExportCurrentExpressionPrefix(varexpr)
+				fbSemanticModelExportCurrentMemberPrefix(varexpr, fld, semantic_receiver_dtype, semantic_receiver_subtype)
 			end if
 
 			'' Only continue if the field was an UDT and there's a '.' following
@@ -681,6 +704,7 @@ function cMemberDeref _
 		dim as LEX_LOCATION semantic_index_value_start, semantic_index_value_end
 		dim as longint semantic_index_value_nonphysical_start = 0
 		dim as longint semantic_index_value_nonphysical_end = 0
+		dim as longint semantic_selected_index = 0
 
 		select case( lexGetToken( ) )
 		'' ('->' DREF* UdtMember)*
@@ -779,7 +803,12 @@ function cMemberDeref _
 
 		'' '['
 		case CHAR_LBRACKET
-			if( export_semantics and typeIsPtr( dtype ) ) then
+			if( export_semantics and ((typeGetDtAndPtrOnly(dtype) = FB_DATATYPE_STRUCT) or typeIsPtr( dtype ) or _
+				(typeGetDtAndPtrOnly(dtype) = FB_DATATYPE_STRING) or _
+				(typeGetDtAndPtrOnly(dtype) = FB_DATATYPE_USTRING) or _
+				(typeGetDtAndPtrOnly(dtype) = FB_DATATYPE_FIXSTR) or _
+				(typeGetDtAndPtrOnly(dtype) = FB_DATATYPE_CHAR) or _
+				(typeGetDtAndPtrOnly(dtype) = FB_DATATYPE_WCHAR)) ) then
 				semantic_pointer = fbSemanticModelPointerIndexPrefix(varexpr, _
 					semantic_index_start, semantic_index_nonphysical)
 			end if
@@ -805,7 +834,28 @@ function cMemberDeref _
 			'' string, fixstr, w|zstring? In that case '[]' means string indexing, not MemberDeref.
 			case FB_DATATYPE_STRING, FB_DATATYPE_USTRING, FB_DATATYPE_FIXSTR, _
 			     FB_DATATYPE_CHAR, FB_DATATYPE_WCHAR
-				varexpr = hStrIndexing( dtype, varexpr, hCheckIntegerIndex( idxexpr ) )
+				'' Capture the typed written index before hCheckIntegerIndex
+				'' and hStrIndexing consume it. String indexing is a separate
+				'' family from pointer arithmetic, despite its lowered address.
+				if( export_semantics ) then
+					semantic_index = fbSemanticModelOriginalExpression _
+						(idxexpr, semantic_index_value_start, semantic_index_value_nonphysical_start, _
+						 semantic_index_value_end, semantic_index_value_nonphysical_end)
+				end if
+				idxexpr = hCheckIntegerIndex( idxexpr )
+				if( export_semantics ) then
+					semantic_selected_index = fbSemanticModelSelectedArrayIndex(idxexpr, _
+						semantic_index_value_start, semantic_index_value_end, _
+						semantic_index_value_nonphysical_start, semantic_index_value_nonphysical_end)
+				end if
+				varexpr = hStrIndexing( dtype, varexpr, idxexpr )
+				if( export_semantics ) then
+					fbSemanticModelPointerIndexPrefix(varexpr, semantic_index_start, semantic_index_nonphysical)
+					fbSemanticModelStringIndex(varexpr, semantic_pointer, semantic_index, semantic_selected_index, _
+						semantic_index_start, semantic_index_nonphysical)
+					fbSemanticModelIndexConversion(varexpr, "string", semantic_index, semantic_selected_index, 0, 1)
+				end if
+				semantic_pointer = 0: semantic_index = 0
 				idxexpr = NULL
 
 				dtype = astGetFullType( varexpr )
@@ -813,12 +863,27 @@ function cMemberDeref _
 
 			'' [] overloaded for UDT?
 			case FB_DATATYPE_STRUCT
+				dim as longint semantic_container_receiver = semantic_pointer
+				'' A UDT operator is not built-in pointer arithmetic. Its native
+				'' receiver identity belongs only to the accessor observation.
+				semantic_pointer = 0
 				dim as FB_ERRMSG err_num = FB_ERRMSG_OK
 				var proc = symbFindSelfBopOvlProc( AST_OP_PTRINDEX, varexpr, idxexpr, @err_num )
 				if( proc ) then
+					dim as string semantic_data_pointer
+					if( export_semantics ) then
+						semantic_index = fbSemanticModelOriginalExpression _
+							(idxexpr, semantic_index_value_start, semantic_index_value_nonphysical_start, _
+							 semantic_index_value_end, semantic_index_value_nonphysical_end)
+						semantic_data_pointer = fbSemanticModelContainerDataPointerCandidate(varexpr, proc, semantic_container_receiver, semantic_index)
+					end if
 					varexpr = astBuildCall( proc, varexpr, idxexpr )
 					if( varexpr = NULL ) then
 						exit function
+					end if
+					if( export_semantics ) then
+						fbSemanticModelPointerIndexPrefix(varexpr, semantic_index_start, semantic_index_nonphysical)
+						fbSemanticModelContainerDataPointerResult(varexpr, semantic_data_pointer, semantic_container_receiver, semantic_index)
 					end if
 				else
 					if( err_num = FB_ERRMSG_OK ) then
@@ -882,8 +947,14 @@ function cMemberDeref _
 					semantic_index = fbSemanticModelOriginalExpression _
 						(idxexpr, semantic_index_value_start, semantic_index_value_nonphysical_start, _
 						 semantic_index_value_end, semantic_index_value_nonphysical_end)
+					fbSemanticModelSubscriptReplacement(varexpr, idxexpr, semantic_pointer, semantic_index)
 				end if
 				idxexpr = hCheckIntegerIndex( idxexpr )
+				if( export_semantics ) then
+					semantic_selected_index = fbSemanticModelSelectedArrayIndex(idxexpr, _
+						semantic_index_value_start, semantic_index_value_end, _
+						semantic_index_value_nonphysical_start, semantic_index_value_nonphysical_end)
+				end if
 
 				'' null pointer checking
 				if( env.clopt.nullptrchk ) then
@@ -939,6 +1010,7 @@ function cMemberDeref _
 			if( (semantic_pointer > 0) and (semantic_index > 0) ) then
 				fbSemanticModelPointerIndexPrefix(varexpr, semantic_index_start, semantic_index_nonphysical)
 				fbSemanticModelPointerIndex(varexpr, semantic_pointer, semantic_index)
+				fbSemanticModelIndexConversion(varexpr, "pointer", semantic_index, semantic_selected_index, 0, 1)
 			else
 				fbSemanticModelExportCurrentExpressionPrefix(varexpr)
 			end if
@@ -1007,7 +1079,9 @@ function cFuncPtrOrMemberDeref _
 		else
 			errReport( FB_ERRMSG_SYNTAXERROR )
 			'' error recovery: fake an expr
-			expr = astNewCONSTi( 0 )
+			expr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-variable.bas", __LINE__)
 		end if
 	end if
 
@@ -1375,6 +1449,12 @@ function cVariableEx overload _
 		'' byref or imports are already pointers
 		if( is_byref ) then
 			varexpr = astNewBOP( AST_OP_ADD, varexpr, idxexpr )
+		elseif( astIsVAR( varexpr ) = FALSE ) then
+			'' Runtime TLS supplies a computed address, not the plain VAR
+			'' required by IDX. Apply the fixed array's byte bias to that
+			'' storage once, retaining the normal index and bounds checks.
+			idxexpr = astNewBOP( AST_OP_ADD, idxexpr, astNewCONSTi( symbGetArrayDiff( sym ) ) )
+			varexpr = astBuildDerefAddrOf( varexpr, idxexpr, sym->typ, sym->subtype )
 		else
 			varexpr = astNewIDX( varexpr, idxexpr )
 		end if
@@ -1688,8 +1768,9 @@ function cVarOrDeref _
 
 	dim as integer last_isexpr = any, previous_check_array = any
 
+	'' Capture parser state before entering nested expression parsing.
+	last_isexpr = fbGetIsExpression( )
 	if( options and FB_VAREXPROPT_ISEXPR ) then
-		last_isexpr = fbGetIsExpression( )
 		fbSetIsExpression( TRUE )
 	end if
 	previous_check_array = fbGetCheckArray( )

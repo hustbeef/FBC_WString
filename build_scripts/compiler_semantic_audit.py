@@ -8,6 +8,7 @@ This file intentionally does NOT contain: source selection or BASIC name resolut
 from __future__ import annotations
 
 from collections import Counter
+import ast
 import codecs
 import hashlib
 import os
@@ -27,6 +28,31 @@ SEMANTIC_READER_FILES = (
     "semantic_macro_calls.py",
     "semantic_source_memory.py",
     "semantic_flow.py",
+    "semantic_driver.py",
+    "semantic_parser_observations.py",
+    "semantic_receiver_context.py",
+    "semantic_data.py",
+    "semantic_emission_names.py",
+    "semantic_namespace_visibility.py",
+    "semantic_flags.py",
+    "semantic_normalized_types.py",
+    "semantic_layout.py",
+    "semantic_frontend_abi.py",
+    "semantic_backend_abi.py",
+    "semantic_call_abi.py",
+    "semantic_datatypes.py",
+    "semantic_object_model.py",
+    "semantic_object_operations.py",
+    "semantic_startup.py",
+    "semantic_accepted_declarations.py",
+    "semantic_blocks.py",
+    "semantic_lifetimes.py",
+    "semantic_temporaries.py",
+    "semantic_loads.py",
+    "semantic_ir_flow.py",
+    "semantic_effects.py",
+    "diagnostic_context.py", "semantic_recovery.py", "semantic_skips.py", "semantic_declaration_recovery.py", "semantic_validity.py", "semantic_intrinsics.py", "semantic_resolution.py", "semantic_resolution_contexts.py", "semantic_lookup.py", "semantic_filters.py", "semantic_prototypes.py", "semantic_qualified_filters.py", "semantic_contexts.py", "semantic_procedure_state.py", "semantic_tokens.py",
+    "semantic_load_payloads.py",
     "semantic_literals.py",
     "semantic_queries.py",
     "semantic_selects.py",
@@ -63,14 +89,39 @@ SEMANTIC_READER_FILES = (
 )
 
 
-def freeze_semantic_reader(root: Path, destination: Path) -> None:
-    """Copy the independent reader and every module needed to import it."""
+def freeze_semantic_reader(root: Path, destination: Path) -> tuple[str, ...]:
+    """Copy the reader roots and their complete local Python import closure."""
     source = root / "tests" / "semantic-sidecar"
-    for name in SEMANTIC_READER_FILES:
+    pending = list(SEMANTIC_READER_FILES)
+    copied = set()
+    # Reader modules are siblings. Inspect imports without executing the
+    # source, including imports inside validation functions. A visited set
+    # handles intentional cycles through sidecar's shared wire helpers.
+    while pending:
+        name = pending.pop()
+        if name in copied:
+            continue
         path = source / name
         if not path.is_file():
             raise FileNotFoundError("Semantic reader dependency is missing: " + str(path))
-        shutil.copy2(path, destination / name)
+        data = path.read_bytes()
+        imports = ast.parse(data, filename=str(path))
+        for node in ast.walk(imports):
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                modules = [node.module]
+            else:
+                continue
+            for module in modules:
+                local = module.split(".", 1)[0] + ".py"
+                if (source / local).is_file() and local not in copied:
+                    pending.append(local)
+        # Copy the exact bytes inspected above, so a concurrent source edit
+        # cannot change an import after its dependency list was captured.
+        (destination / name).write_bytes(data)
+        copied.add(name)
+    return tuple(sorted(copied))
 
 
 def digest(path: Path) -> str:
@@ -214,7 +265,22 @@ def audit_exports(common: list[str], modules: list[Path], work: Path,
                 record["modes"][mode]["node_kinds"] = dict(Counter(
                     model.properties["node", identity]["kind"] for identity in model.nodes))
             elif full is not None:
-                if expression_facts(model) != expression_facts(full):
+                # Full exports also contain pre-conversion inputs and selected
+                # operand snapshots. Compare the native parser phase directly
+                # when its independent sequence/closure contract is available.
+                # Older producers retain the original exact E comparison.
+                full_parser = all(full.capabilities[module].get("parser-expression-observations") == "available"
+                                  for module in range(1, len(full.contexts) + 1))
+                compact_parser = all(model.capabilities[module].get("parser-expression-observations") == "available"
+                                     for module in range(1, len(model.contexts) + 1))
+                if full_parser != compact_parser:
+                    raise ValueError("Full and compact parser observation coverage differs")
+                if full_parser:
+                    if model.parser_observations != full.parser_observations:
+                        raise ValueError("Full and compact native parser observations differ")
+                    record["parser_observation_counts"] = {str(module): len(events)
+                                                           for module, events in model.parser_observations.items()}
+                elif expression_facts(model) != expression_facts(full):
                     raise ValueError("Full and compact expression facts differ")
                 if model.records["D"] != full.records["D"]:
                     raise ValueError("Full and compact dependency closures differ")

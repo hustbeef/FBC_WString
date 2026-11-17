@@ -30,6 +30,8 @@
 #include once "ast/ast.bi"
 #include once "tooling/semantic-hooks.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-array-mutations.bi"
+#include once "tooling/semantic-recovery.bi"
 
 '' EraseStmt = ERASE ID (',' ID)*
 function cEraseStmt() as integer
@@ -38,7 +40,10 @@ function cEraseStmt() as integer
 	lexSkipToken( LEXCHECK_POST_SUFFIX )
 
 	do
+		dim as LEX_LOCATION semantic_first = lexGetCurrentLocation( )
+		dim as longint semantic_nonphysical = lexGetNonphysicalTokenCount( )
 		var expr = cVarOrDeref( FB_VAREXPROPT_NOARRAYCHECK )
+		dim as LEX_LOCATION semantic_last = lexGetLastLocation( )
 		if( expr = NULL ) then
 			errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
 			hSkipUntil( CHAR_COMMA )
@@ -58,6 +63,9 @@ function cEraseStmt() as integer
 				if( typeIsConst( astGetFullType( expr ) ) ) then
 					errReport( FB_ERRMSG_CONSTANTCANTBECHANGED )
 				end if
+
+				fbSemanticModelArrayMutations(expr, s, "erase", semantic_first, semantic_last, _
+					lexGetNonphysicalTokenCount( ) <> semantic_nonphysical)
 
 				'' ERASE frees dynamic arrays (destruct only),
 				'' but re-initializes static arrays (destruct and construct).
@@ -300,7 +308,9 @@ function cArrayFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 			errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
 			'' error recovery: skip until next ')' and fake an expr
 			hSkipUntil( CHAR_RPRNT, TRUE )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/intrinsics/parser-quirk-array.bas", __LINE__)
 		end if
 
 		'' array?
@@ -315,7 +325,9 @@ function cArrayFunct(byval tk as FB_TOKEN) as ASTNODE ptr
 			errReport( FB_ERRMSG_EXPECTEDARRAY, TRUE )
 			'' error recovery: skip until next ')' and fake an expr
 			hSkipUntil( CHAR_RPRNT, TRUE )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/intrinsics/parser-quirk-array.bas", __LINE__)
 		end if
 
 		'' astBuildArrayBound consumes the unindexed storage and can fold fixed

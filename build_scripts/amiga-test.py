@@ -328,10 +328,13 @@ def compile_probes(args, prefix, env):
     if code != 0:
         raise SystemExit('Amiga object metadata check failed; see logs/objinfo-library.log')
     records = []
-    for name in ('native-io', 'file-info', 'allocator', 'thread-io', 'thread-exit', 'standard-input',
-                 'graphics', 'image-colours', 'objinfo-reader', 'sound',
+    names = ['native-io', 'file-info', 'file-size', 'allocator', 'thread-io', 'thread-exit', 'standard-input',
+                 'graphics', 'console-colours', 'image-colours', 'objinfo-reader', 'sound',
                  'sound-exit', 'softfloat-convert', 'softfloat-multiply',
-                 'softfloat-arithmetic'):
+                 'softfloat-arithmetic']
+    if args.bsdsocket:
+        names.append('tcp')
+    for name in names:
         binary = binaries / name
         if name in ('softfloat-convert', 'softfloat-multiply', 'softfloat-arithmetic'):
             oracle = binaries / ('host-' + name + '-oracle')
@@ -361,13 +364,20 @@ def compile_probes(args, prefix, env):
             if name == 'objinfo-reader':
                 objects += [str(hunk_source / 'objinfo-hunk.bas'), '-m', 'objinfo-reader',
                             '-i', str(hunk_source.parent)]
-            if name in ('thread-io', 'thread-exit'):
+            if name in ('thread-io', 'thread-exit', 'tcp'):
                 objects.append('-mt')
-            if name in ('graphics', 'sound', 'thread-io', 'file-info', 'allocator'):
+            if name == 'tcp':
+                objects += ['-g', '-exx']
+            if name in ('graphics', 'sound', 'thread-io', 'file-info', 'file-size', 'allocator', 'console-colours'):
                 bridge = binaries / (name + '-bridge.o')
                 code = run_command([cc, *cflags, '-c', str(resources / (name + '-bridge.c')),
                                     '-o', str(bridge)], args.output / 'logs' / (name + '-bridge.log'), env=env)
                 objects.append(str(bridge))
+            if name == 'file-size':
+                objects += ['-Wl', '-Xlinker --wrap=fb_DevFileSeek']
+            if name == 'console-colours':
+                objects += ['-Wl', '-Xlinker --wrap=fb_hInit',
+                            '-Wl', '-Xlinker --wrap=fb_hEnd']
             if name == 'allocator' and code == 0:
                 # Qualify failure fallback without exhausting guest memory.
                 # This explicit object also exercises allocator.c directly;
@@ -503,6 +513,13 @@ def stage_batch(args, controller, records, batch):
                       f'kickstart_file = {args.kickstart}\n'
                       f'hard_drive_0 = {boot}\nhard_drive_0_label = FBCTest\n'
                       'hard_drive_0_priority = 10\n')
+    if getattr(args, 'mouse_integration', False):
+        # Relative pointer grabbing does not reliably deliver motion through
+        # Xvfb or VNC. Native Intuition windows support UAE's absolute pointer.
+        with config.open('a') as settings:
+            settings.write('joystick_port_0 = mouse\njoystick_port_0_mode = mouse\n'
+                           'mouse_integration = 1\ninitial_input_grab = 0\n'
+                           'automatic_input_grab = 0\n')
     return boot, config
 
 
@@ -667,6 +684,10 @@ def main():
     parser.add_argument('--accuracy', type=int, choices=(-1, 0, 1), default=0,
                         help='FS-UAE accuracy; 0 permits accelerated CPU execution')
     parser.add_argument('--jit', action='store_true', help='Enable FS-UAE integer CPU JIT')
+    parser.add_argument('--bsdsocket', action='store_true',
+                        help='Enable native BSD sockets and include the TCP probe')
+    parser.add_argument('--mouse-integration', action='store_true',
+                        help='Use absolute pointer input for Xvfb or VNC sessions')
     args = parser.parse_args()
     if min(args.jobs, args.batch_size, args.timeout, args.compile_timeout) <= 0:
         parser.error('Counts and timeouts must be positive')

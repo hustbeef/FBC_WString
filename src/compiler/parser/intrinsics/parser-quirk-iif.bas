@@ -26,6 +26,11 @@
 #include once "core/fbint.bi"
 #include once "parser/parser.bi"
 #include once "ast/ast.bi"
+#include once "tooling/semantic-iif-compare.bi"
+declare function fbSemanticModelNumber(byval value as longint) as string
+declare function fbSemanticModelEscape(byref value as const string) as string
+declare sub fbSemanticModelAppendDetail(byref value as string)
+#include once "tooling/semantic-recovery.bi"
 
 declare function fbSemanticModelEnabled( ) as integer
 declare function fbSemanticModelExpressionsOnlyEnabled( ) as integer
@@ -46,6 +51,7 @@ function cIIFFunct() as ASTNODE ptr
 	dim as AST_SEMANTIC_SOURCE_RANGE semantic_range = any
 	dim as AST_SEMANTIC_SOURCE_RANGE ptr semantic_range_ptr = NULL
 	dim as longint semantic_condition = 0, semantic_true = 0, semantic_false = 0
+	dim as integer semantic_comparison = FB_SEMANTIC_ARMS_UNKNOWN, semantic_work = FB_SEMANTIC_ARM_WORK_LIMIT
 
 	function = NULL
 
@@ -106,15 +112,28 @@ function cIIFFunct() as ASTNODE ptr
 		if( expr <> NULL ) then semantic_condition = expr->semantic_expression
 		if( truexpr <> NULL ) then semantic_true = truexpr->semantic_expression
 		if( falsexpr <> NULL ) then semantic_false = falsexpr->semantic_expression
+		semantic_comparison = hSemanticIifArmCompare(truexpr, falsexpr, semantic_work)
 	end if
 	expr = astNewIIF( expr, truexpr, truecookie, falsexpr, falsecookie, semantic_range_ptr )
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_INVALIDDATATYPES, TRUE )
 		'' error recovery: fake an expr
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/intrinsics/parser-quirk-iif.bas", __LINE__)
 	else
 		fbSemanticModelIifInputs(expr, semantic_condition, semantic_true, semantic_false, _
 			source_start, source_end, nonphysical_tokens_at_start, nonphysical_tokens_at_end)
+        if( fbSemanticModelFullEnabled() andalso (lex.ctx->semantic_probe = FALSE) ) then
+            dim as string comparison_text = "unavailable"
+            if( semantic_comparison = FB_SEMANTIC_ARMS_SAME ) then comparison_text = "same"
+            if( semantic_comparison = FB_SEMANTIC_ARMS_DIFFERENT ) then comparison_text = "different"
+            dim as string payload = fbSemanticModelNumber(semantic_true) + TABCHAR + _
+                fbSemanticModelNumber(semantic_false) + TABCHAR + comparison_text
+            fbSemanticModelAppendDetail("K" + TABCHAR + "expression" + TABCHAR + _
+                fbSemanticModelNumber(expr->semantic_expression) + TABCHAR + _
+                "original-iif-arm-structure" + TABCHAR + fbSemanticModelEscape(payload))
+        end if
 	end if
 
 	function = expr

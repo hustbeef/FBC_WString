@@ -383,6 +383,7 @@ INTERACTIVE_RE = re.compile(
 
 NETWORK_RE = re.compile(r"\b(open\s+tcp|http-get|http_get|ftp|gethostbyname)\b", re.IGNORECASE)
 THREADCALL_RE = re.compile(r"\bthreadcall\b", re.IGNORECASE)
+DOS_THREAD_RE = re.compile(r"\b(threadcreate|threadwait|threaddetach|threadself|mutexcreate|condcreate)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -555,6 +556,16 @@ def command_environment(args: argparse.Namespace, env: dict[str, str] | None = N
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def example_fbc_arguments(path: Path, root: Path, target_os: str) -> list[str]:
+    arguments = list(EXAMPLE_FBC_ARGUMENTS.get(relpath(path, root), ()))
+    if target_os == "dos" and DOS_THREAD_RE.search(read_text(path)):
+        # DOS keeps ordinary programs independent of its optional scheduler.
+        # Thread primitives require the provider option, not -mt alone; the
+        # distribution must supply its matching MT and scheduler archives.
+        arguments.extend(["-dos-threads", "pdmlwp"])
+    return arguments
 
 
 def classify(path: Path, root: Path, target_os: str, supports_gas64: bool) -> Classification:
@@ -994,34 +1005,12 @@ def run_command(
     return f"fail({returncode})", elapsed
 
 
-def compile_one(path: Path, root: Path, args: argparse.Namespace) -> Result:
-    rel = relpath(path, root)
-    classification = classify(path, root, args.target_os, compiler_supports_gas64(args))
-    if rel in INCLUDED_SOURCE_OWNERS:
-        path = root / INCLUDED_SOURCE_OWNERS[rel]
-    stem = safe_name(rel[:-4])
-    binary = args.outdir / "bin" / executable_name(stem, args.target_os)
-    if rel in LIBRARY_MODULES:
-        mode, _ = LIBRARY_MODULES[rel]
-        if mode == "-lib":
-            binary = binary.with_name("lib" + stem + ".a")
-        elif args.target_os in ("windows", "wince"):
-            binary = binary.with_suffix(".dll")
-        else:
-            binary = binary.with_name("lib" + stem + ".so")
-    if not args.remote_shell:
-        # A failed linker can leave an older successful output in place. This
-        # directory holds only this sweep's products, so require a fresh one.
-        binary.unlink(missing_ok=True)
-    compile_log = args.outdir / "logs" / (stem + ".compile.log")
-    run_log = args.outdir / "logs" / (stem + ".run.log")
-    # GCC adds process-specific suffixes to intermediate filenames. Keep the
-    # isolated directories short enough for Windows tools which still enforce
-    # MAX_PATH; the readable example path remains in logs and reports.
-    work_name = hashlib.sha256(rel.encode("utf-8")).hexdigest()[:12]
-    work_root = args.outdir / "work" / work_name
-    if work_root.resolve().parent != (args.outdir / "work").resolve():
-        raise ValueError(f"isolated example directory escapes work root: {work_root}")
+def stage_example(path: Path, root: Path, rel: str, work_root: Path) -> tuple[Path, Path, Path | None, bool]:
+    """Copy compile inputs using the same relative-layout rules for every host.
+
+    The caller resolves included-source ownership and prepares run resources
+    only when needed. Native and DOS runners share these compiler inputs.
+    """
     compile_cwd = work_root / "c"
     run_cwd = work_root / "r"
     sdl_generation = Path(rel).parts[:3] in (
@@ -1077,6 +1066,39 @@ def compile_one(path: Path, root: Path, args: argparse.Namespace) -> Result:
         for helper in (root / "examples/graphics/SDL3").glob("*.bi"):
             shutil.copy2(helper, compile_cwd / helper.name)
 
+    return compile_cwd, run_cwd, remote_sync_directory, copy_directories
+
+
+def compile_one(path: Path, root: Path, args: argparse.Namespace) -> Result:
+    rel = relpath(path, root)
+    classification = classify(path, root, args.target_os, compiler_supports_gas64(args))
+    if rel in INCLUDED_SOURCE_OWNERS:
+        path = root / INCLUDED_SOURCE_OWNERS[rel]
+    stem = safe_name(rel[:-4])
+    binary = args.outdir / "bin" / executable_name(stem, args.target_os)
+    if rel in LIBRARY_MODULES:
+        mode, _ = LIBRARY_MODULES[rel]
+        if mode == "-lib":
+            binary = binary.with_name("lib" + stem + ".a")
+        elif args.target_os in ("windows", "wince"):
+            binary = binary.with_suffix(".dll")
+        else:
+            binary = binary.with_name("lib" + stem + ".so")
+    if not args.remote_shell:
+        # A failed linker can leave an older successful output in place. This
+        # directory holds only this sweep's products, so require a fresh one.
+        binary.unlink(missing_ok=True)
+    compile_log = args.outdir / "logs" / (stem + ".compile.log")
+    run_log = args.outdir / "logs" / (stem + ".run.log")
+    # GCC adds process-specific suffixes to intermediate filenames. Keep the
+    # isolated directories short enough for Windows tools which still enforce
+    # MAX_PATH; the readable example path remains in logs and reports.
+    work_name = hashlib.sha256(rel.encode("utf-8")).hexdigest()[:12]
+    work_root = args.outdir / "work" / work_name
+    if work_root.resolve().parent != (args.outdir / "work").resolve():
+        raise ValueError(f"isolated example directory escapes work root: {work_root}")
+    compile_cwd, run_cwd, remote_sync_directory, copy_directories = stage_example(path, root, rel, work_root)
+
     cmd = list(args.fbc)
     if args.prefix is not None:
         cmd.extend(["-prefix", str(args.prefix)])
@@ -1106,7 +1128,7 @@ def compile_one(path: Path, root: Path, args: argparse.Namespace) -> Result:
     if rel in LIBRARY_MODULES:
         mode, flags = LIBRARY_MODULES[rel]
         cmd.extend([mode, *flags])
-    cmd.extend(EXAMPLE_FBC_ARGUMENTS.get(rel, ()))
+    cmd.extend(example_fbc_arguments(path, root, args.target_os))
     if rel == "examples/graphics/SDL3/ttf/showfont.bas":
         cmd.extend(["-m", "showfont"])
     if rel in GAS64_VARIADIC_SOURCES and compiler_supports_gas64(args):

@@ -5,6 +5,7 @@
  * Responsibilities: Target-specific runtime support for unix.
  * This file intentionally does NOT contain: Compiler parsing or portable runtime policy.
  */
+#include <sys/types.h>
 #include <unistd.h>
 #include <termios.h>
 
@@ -12,11 +13,11 @@
 
 /* newline for console/file I/O */
 #define FB_NEWLINE "\n"
-#define FB_NEWLINE_WSTR _LC("\n")
+#define FB_NEWLINE_WSTR FB_WCHAR_LITERAL("\n")
 
 /* newline for printer I/O */
 #define FB_BINARY_NEWLINE "\r\n"
-#define FB_BINARY_NEWLINE_WSTR _LC("\r\n")
+#define FB_BINARY_NEWLINE_WSTR FB_WCHAR_LITERAL("\r\n")
 
 #define FB_LL_FMTMOD "ll"
 

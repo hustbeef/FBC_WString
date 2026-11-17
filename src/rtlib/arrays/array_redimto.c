@@ -9,8 +9,8 @@
 
 FBCALL int fb_ArrayRedimTo
 	(
-		FBARRAY *dest,
-		const FBARRAY *source,
+		FBARRAY_ACCESS *dest,
+		const FBARRAY_ACCESS *source,
 		int isvarlen,
 		FB_DEFCTOR ctor,
 		FB_DEFCTOR dtor
@@ -28,13 +28,11 @@ FBCALL int fb_ArrayRedimTo
 	if( (source->dimensions != dest->dimensions) && (dest->dimensions != 0) )
 		return fb_ErrorSetNum( FB_RTERROR_ILLEGALFUNCTIONCALL );
 
-	/* Retrieve diff value so we don't have to re-calculate it */
-	if( source->ptr > source->data ) {
-		diff = ((size_t)source->ptr) - ((size_t)source->data);
-		diff = -diff;
-	} else {
-		/* both may be NULL too */
-		diff = ((size_t)source->data) - ((size_t)source->ptr);
+	/* Empty arrays have no storage bias. Retrieve nonempty bias before
+	   destructors run, preserving the original callback ordering. */
+	diff = 0;
+	if( source->size != 0 ) {
+		diff = (ssize_t)((uintptr_t)source->data - (uintptr_t)source->ptr);
 	}
 
 	/* free old */
@@ -72,9 +70,11 @@ FBCALL int fb_ArrayRedimTo
 		dest->ptr = malloc( dest->size );
 	}
 	if( dest->ptr == NULL ) {
+		/* Keep the failed descriptor empty if it is copied again. */
+		fb_ArrayResetDesc( dest );
 		return fb_ErrorSetNum( FB_RTERROR_OUTOFMEM );
 	}
-	dest->data = ((unsigned char *)dest->ptr) + diff;
+	dest->data = (void *)((uintptr_t)dest->ptr + (uintptr_t)diff);
 
 	/* Call ctor for each element */
 	if( ctor ) {

@@ -260,15 +260,15 @@ declare function fbcUseLldLinker( ) as integer
 
 declare function fbcQueryCC( byref options as string ) as string
 
-declare function fbcBuildPathToLibFile( byval file as zstring ptr ) as string
+declare function fbcBuildPathToLibFile( byval file as const zstring ptr ) as string
 
 declare function fbcFindSysroot( ) as string
 
-declare function fbcFindLibFile( byval file as zstring ptr ) as string
+declare function fbcFindLibFile( byval file as const zstring ptr ) as string
 
 declare sub fbcAddDefLibPath(byref path as string)
 
-declare sub fbcAddLibPathFor( byval libname as zstring ptr )
+declare sub fbcAddLibPathFor( byval libname as const zstring ptr )
 
 declare sub fbcFindBin _
 	( _
@@ -278,7 +278,7 @@ declare sub fbcFindBin _
 
 declare function fbcRunBin _
 	( _
-		byval action as zstring ptr, _
+		byval action as const zstring ptr, _
 		byval tool as integer, _
 		byref ln as string _
 	) as integer
@@ -293,7 +293,7 @@ declare sub fbcDriverCollectObjinfo( )
 
 declare sub fbcDriverSetDefaultLibPaths( )
 
-declare sub fbcAddDefLib(byval libname as zstring ptr)
+declare sub fbcAddDefLib(byval libname as const zstring ptr)
 
 declare sub fbcDriverAddDefaultLibs( )
 
@@ -312,6 +312,10 @@ declare sub fbcDriverCheckArgs()
 '' -------------------------------------------------------------------------
 
 declare sub fbcDriverCompileModules( )
+
+declare sub fbcDriverSemanticModule( byval module as FBCIOFILE ptr, byval is_main as integer, _
+	byval is_fbctinf as integer, byval module_count as integer )
+declare sub fbcDriverSemanticResource( byref filename as string )
 
 declare function fbcDriverCompileXpm( ) as integer
 
@@ -337,7 +341,9 @@ declare sub fbcDriverPrintVersion( byval verbose as integer )
 '' fbc-platform.bas
 '' -------------------------------------------------------------------------
 
-declare sub fbcPlatformAdjustPrefix( byref prefix as string )
+#ifdef __FB_AROS__
+	declare sub fbcPlatformAdjustPrefix( byref prefix as string )
+#endif
 
 declare function fbcPlatformGetLinkerTool( ) as integer
 

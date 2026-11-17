@@ -44,6 +44,15 @@ private function hCompileStage2DirectlyToObj( ) as integer
 			'' Keep Win64 object emission with the Clang/LLVM toolchain. GNU as
 			'' may reject its Windows unwind directives or assembly syntax.
 			function = TRUE
+		elseif( (fbGetOption( FB_COMPOPT_BACKEND ) = FB_BACKEND_CLANG) and _
+		        (fbGetCpuFamily( ) = FB_CPUFAMILY_X86) and _
+		        (fbGetOption( FB_COMPOPT_ASMSYNTAX ) = FB_ASMSYNTAX_INTEL) and _
+		        (fbc.emitfinalasmonly = FALSE) and (fbc.keepfinalasm = FALSE) ) then
+			'' Clang's Win32 Intel assembly can contain symbol-immediate pushes
+			'' rejected by its own assembler. Normal object builds keep code
+			'' generation in one invocation; explicit assembly requests retain
+			'' the assembly-output path.
+			function = TRUE
 		elseif( ((fbGetOption( FB_COMPOPT_BACKEND ) = FB_BACKEND_CLANG) or _
 		         (fbGetOption( FB_COMPOPT_BACKEND ) = FB_BACKEND_GCC)) and _
 		        (fbGetCpuFamily( ) = FB_CPUFAMILY_AARCH64) ) then
@@ -66,7 +75,7 @@ private function hGetAsmName _
 		byval stage as integer _
 	) as string
 
-	dim as zstring ptr ext = any
+	dim as const zstring ptr ext = any
 	dim as string asmfile
 
 	'' Based on the objfile name so it's also affected by -o
@@ -209,21 +218,25 @@ private sub hCompileBas _
 			fbSetLibs( @fbc.libs, @fbc.libpaths )
 		end if
 
+		fbcDriverSemanticModule(module, is_main, is_fbctinf, module_count)
 		fbCompile( module->srcfile, asmfile, pponlyfile, is_main )
 
 		'' If there were any errors during parsing, just exit without
 		'' doing anything else.
 		if( errGetCount( ) > 0 ) then
+			fbSemanticDiagnosticsFinishModule("rejected", errGetCount( ))
 			fbSemanticModelFinishRecoveryModule( )
 			fbcEnd( 1 )
 		end if
 
 		'' Don't restart unless asked for
 		if( fbShouldRestart( ) = FALSE ) then
+			fbSemanticDiagnosticsFinishModule("accepted", 0)
 			fbSemanticModelFinishModule( TRUE )
 			exit do
 		end if
 
+		fbSemanticDiagnosticsFinishModule("restarted", 0)
 		fbSemanticModelFinishModule( FALSE )
 
 		'' Close the request to restart the parser
@@ -426,6 +439,7 @@ function fbcDriverCompileXpm( ) as integer
 
 	'' Remember *.xpm file name
 	xpmfile = fbc.xpm.srcfile
+	fbcDriverSemanticResource(xpmfile)
 
 	'' Set *.bas name based on input file name or -o <file>:
 	if( len( *fbc.xpm.objfile ) > 0 ) then
@@ -587,28 +601,14 @@ private function hCompileStage2Module( byval module as FBCIOFILE ptr ) as intege
 			'' enable all warnings
 			ln += "-Wall "
 
-			'' -Wno-unused-but-set-variable and the warning it suppresses were introduced
-			'' in GCC 4.6. Don't pass that flag to avoid an error on earlier GCC. As a
-			'' result, to disable the warning on 4.6+ need to disable all unused warnings...
-			'' ln += "-Wno-unused-label -Wno-unused-function -Wno-unused-variable "
-			'' ln += "-Wno-unused-but-set-variable "
-			ln += "-Wno-unused "
-
 		else
 			'' Some target/backend combinations require the C compiler to use
 			'' its integrated assembler. Compile generated C directly to object
 			'' code and skip hAssembleModule() for them.
-			ln += "-c -nostdlib -nostdinc -Wall -Wno-unused-label " + _
-				"-Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable "
-			if( fbGetOption( FB_COMPOPT_TARGET ) = FB_COMPTARGET_JS ) then
-				ln += "-Wno-warn-absolute-paths "
-			end if
-
+			ln += "-c -nostdlib -nostdinc -Wall "
 		end if
 
-		'' Don't warn about non-standard main() signature
-		'' (we emit "ubyte **argv" instead of "char **argv")
-		ln += "-Wno-main "
+		'' Keep C compiler diagnostics available to -Wall and user-supplied -Wc options.
 
 		'' helps finding ir-hlc bugs
 		ln += "-Werror-implicit-function-declaration "
@@ -658,27 +658,9 @@ private function hCompileStage2Module( byval module as FBCIOFILE ptr ) as intege
 			ln += "-fno-unwind-tables "
 		end if
 
-		'' Newer GCC versions diagnose some const-qualified pointer helper calls
-		'' more strictly.  The generated C is an intermediate representation owned
-		'' by fbc, so keep that compatibility detail out of user programs.
-		ln += "-Wno-incompatible-pointer-types "
-
-		if( fbGetOption( FB_COMPOPT_BACKEND ) = FB_BACKEND_GCC ) then
-			'' GCC 6 added -Wmisleading-indentation to -Wall.  The check is not
-			'' useful for machine-generated C and has severe scaling costs in GCC 9
-			'' and older when the generated translation unit is large.
-			ln += "-Wno-misleading-indentation "
-		end if
-
-		if( fbGetOption( FB_COMPOPT_BACKEND ) = FB_BACKEND_CLANG ) then
-			ln += "-Wno-builtin-requires-header "
-			'' Clang's uninitialized-variable analysis follows computed error
-			'' jumps through generated temporaries. Large BASIC procedures can
-			'' spend minutes in this C warning pass. BASIC initialization and ANY
-			'' storage are handled before C emission; disable this costly pass.
-			'' An explicit -Wc -Wuninitialized can enable it for emitter debugging.
-			ln += "-Wno-uninitialized "
-		end if
+		'' Keep pointer compatibility diagnostics enabled. Call lowering must
+		'' preserve declared qualifiers and runtime ABI types; these diagnostics
+		'' catch regressions in the generated C.
 
 		if( fbGetOption( FB_COMPOPT_DEBUGINFO ) ) then
 			ln += "-g "

@@ -24,9 +24,15 @@
 
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
+#include once "tooling/semantic-type-shapes.bi"
 #include once "parser/parser.bi"
+
+declare function parserGetLastTypeAlias( ) as FBSYMBOL ptr
+declare sub fbSemanticModelTypeAliasDeclaration(byval subject as FBSYMBOL ptr, byval alias_symbol as FBSYMBOL ptr)
+
 #include once "ast/ast.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-recovery.bi"
 
 declare function fbSemanticModelDeclarationGroup(byval token as integer, byref owner as longint) as longint
 declare sub fbSemanticModelDeclarationType(byval groupid as longint, byval owner as longint, _
@@ -49,9 +55,11 @@ private sub hGetType( byref dtype as integer, byref subtype as FBSYMBOL ptr )
 	if( lexGetToken( ) = FB_TK_AS ) then
 		lexSkipToken( LEXCHECK_POST_SUFFIX )
 
+		fbSemanticModelTypeShapeDeclaration()
 		if( cSymbolType( dtype, subtype ) = FALSE ) then
 			errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
-			dtype = FB_DATATYPE_INTEGER
+			dtype = fbSemanticModelRecoveryType(FB_DATATYPE_INTEGER, "replacement", __FUNCTION__, _
+				"parser/declarations/parser-decl-const.bas", __LINE__)
 			subtype = NULL
 		end if
 
@@ -63,7 +71,9 @@ private sub hGetType( byref dtype as integer, byref subtype as FBSYMBOL ptr )
 		     FB_DATATYPE_STRUCT, FB_DATATYPE_FWDREF
 			errReport( FB_ERRMSG_INVALIDDATATYPES, TRUE )
 			'' error recovery: discard type
-			dtype = FB_DATATYPE_INVALID
+			dtype = fbSemanticModelRecoveryType( _
+				FB_DATATYPE_INVALID, "discarded", __FUNCTION__, _
+				"parser/declarations/parser-decl-const.bas", __LINE__)
 			subtype = NULL
 		end select
 	else
@@ -78,7 +88,8 @@ private sub cConstAssign _
 		byval dtype as integer, _
 		byval subtype as FBSYMBOL ptr, _
 		byval attrib as FB_SYMBATTRIB, _
-		byval semantic_group as longint, byval semantic_owner as longint, byval semantic_ordinal as integer _
+		byval semantic_group as longint, byval semantic_owner as longint, byval semantic_ordinal as integer, _
+		byval semantic_type_alias as FBSYMBOL ptr _
 	)
 
 	static as zstring * FB_MAXNAMELEN+1 id
@@ -138,7 +149,8 @@ private sub cConstAssign _
 	'' compiler-registered intrinsics that are not keyword tokens.
 	dim as FB_TOKEN lookup_tk = any
 	dim as FB_TKCLASS lookup_class = any
-	dim as FBSYMCHAIN ptr chain_ = symbLookup( @id, lookup_tk, lookup_class )
+	dim as FBSYMCHAIN ptr chain_ = fbSemanticModelNamespaceLookupApplied( _
+		symbLookup( @id, lookup_tk, lookup_class ), "constant-name" )
 	if( chain_ <> NULL ) then
 		redefinition = chain_->sym
 	end if
@@ -152,6 +164,7 @@ private sub cConstAssign _
 	if( dtype = FB_DATATYPE_INVALID ) then
 		'' (AS SymbolType)?
 		hGetType( dtype, subtype )
+		if( dtype <> FB_DATATYPE_INVALID ) then semantic_type_alias = parserGetLastTypeAlias( )
 	end if
 
 	'' Save the grammar choice before expression typing overwrites dtype.
@@ -190,8 +203,13 @@ private sub cConstAssign _
 			dtype = FB_DATATYPE_INTEGER
 		end if
 		'' 2. Create a fake expression
-		expr = astNewCONSTz( dtype, subtype )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTz( dtype, subtype ), "replacement-zero", __FUNCTION__, _
+			"parser/declarations/parser-decl-const.bas", __LINE__)
 	end if
+
+	'' Keep the observation identity, not an AST pointer that conversion can free.
+	dim as longint semantic_initializer = expr->semantic_expression
 
 	'' check if it's an string
 	dim as integer exprdtype = astGetDataType( expr )
@@ -219,6 +237,7 @@ private sub cConstAssign _
 			errReportEx( symbGetIllegalRedefErr( redefinition ), id )
 		else
 			fbSemanticModelExportBinding(symbol, semantic_site, TRUE)
+			fbSemanticModelTypeAliasDeclaration(symbol, semantic_type_alias)
 			fbSemanticModelMemberDeclarationSpelling(symbol, @id, semantic_site)
 			fbSemanticModelDeclarationType(semantic_group, semantic_owner, semantic_ordinal, symbol, _
 				semantic_written_type, 2, semantic_site)
@@ -230,7 +249,9 @@ private sub cConstAssign _
 			errReportEx( FB_ERRMSG_EXPECTEDCONST, id )
 			'' error recovery: create a fake node
 			astDelTree( expr )
-			expr = astNewCONSTi( 0 )
+			expr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/declarations/parser-decl-const.bas", __LINE__)
 			exprdtype = FB_DATATYPE_INTEGER
 		end if
 
@@ -243,7 +264,9 @@ private sub cConstAssign _
 				astDelTree( expr )
 				exprdtype = dtype
 				subtype = NULL
-				expr = astNewCONSTstr( NULL )
+				expr = fbSemanticModelRecoveryNode( _
+					astNewCONSTstr( NULL ), "replacement-expression", __FUNCTION__, _
+					"parser/declarations/parser-decl-const.bas", __LINE__)
 			end if
 
 			'' Convert expression to given type if needed
@@ -253,7 +276,20 @@ private sub cConstAssign _
 				if( expr = NULL ) then
 					errReportEx( FB_ERRMSG_INVALIDDATATYPES, id )
 					'' error recovery: create a fake node
-					expr = astNewCONSTi( 0 )
+					expr = fbSemanticModelRecoveryNode( _
+						astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+						"parser/declarations/parser-decl-const.bas", __LINE__)
+					dtype = FB_DATATYPE_INTEGER
+					subtype = NULL
+				elseif( astIsCONST( expr ) = FALSE ) then
+					'' Some native conversions lower to a runtime call or CONV
+					'' node. Such a node has no compile-time FBVALUE payload.
+					'' Reading its union as a constant can silently invent a value.
+					errReportEx( FB_ERRMSG_EXPECTEDCONST, id )
+					astDelTree( expr )
+					expr = fbSemanticModelRecoveryNode( _
+						astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+						"parser/declarations/parser-decl-const.bas", __LINE__)
 					dtype = FB_DATATYPE_INTEGER
 					subtype = NULL
 				end if
@@ -271,10 +307,18 @@ private sub cConstAssign _
 			errReportEx( symbGetIllegalRedefErr( redefinition ), id )
 		else
 			fbSemanticModelExportBinding(symbol, semantic_site, TRUE)
+			fbSemanticModelTypeAliasDeclaration(symbol, semantic_type_alias)
 			fbSemanticModelMemberDeclarationSpelling(symbol, @id, semantic_site)
 			fbSemanticModelDeclarationType(semantic_group, semantic_owner, semantic_ordinal, symbol, _
 				semantic_written_type, 2, semantic_site)
 		end if
+	end if
+
+	'' A constant's selected destination is just as important as a variable's.
+	'' Publish only after successful symbol creation, using the original RHS.
+	if( (symbol <> NULL) and (doskip = FALSE) ) then
+		fbSemanticModelAssignmentTarget(semantic_initializer, symbol, symbGetFullType(symbol), _
+			symbGetSubtype(symbol), "initializer")
 	end if
 
 	fbSemanticModelEndLiteralInitializer(semantic_literal_scope, symbol)
@@ -305,11 +349,13 @@ sub cConstDecl( byval attrib as FB_SYMBATTRIB )
 
 	'' (AS SymbolType)?
 	hGetType( dtype, subtype )
+	dim as FBSYMBOL ptr semantic_type_alias = NULL
+	if( dtype <> FB_DATATYPE_INVALID ) then semantic_type_alias = parserGetLastTypeAlias( )
 
 	do
 		'' ConstAssign
 		semantic_ordinal += 1
-		cConstAssign( dtype, subtype, attrib, semantic_group, semantic_owner, semantic_ordinal )
+		cConstAssign( dtype, subtype, attrib, semantic_group, semantic_owner, semantic_ordinal, semantic_type_alias )
 
 		'' ','?
 		if( lexGetToken( ) <> FB_TK_DECLSEPCHAR ) then

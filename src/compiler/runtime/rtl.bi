@@ -462,6 +462,22 @@
 #define FB_RTL_ERRORTHROW               "fb_ErrorThrowAt"
 #define FB_RTL_ERRORTHROWEX             "fb_ErrorThrowEx"
 #define FB_RTL_ERRORSETHANDLER          "fb_ErrorSetHandler"
+#define FB_RTL_ERRORFRAMEENTER          "fb_ErrorFrameEnter"
+#define FB_RTL_ERRORFRAMEBUFFER         "fb_ErrorFrameBuffer"
+#define FB_RTL_ERRORFRAMEREADY          "fb_ErrorFrameReady"
+#define FB_RTL_ERRORFRAMESETHANDLER     "fb_ErrorFrameSetHandler"
+#define FB_RTL_ERRORFRAMERESTORE        "fb_ErrorFrameRestore"
+#define FB_RTL_ERRORFRAMESETTARGET      "fb_ErrorFrameSetTarget"
+#define FB_RTL_ERRORFRAMEGETTARGET      "fb_ErrorFrameGetTarget"
+#define FB_RTL_ERRORFRAMELEAVE          "fb_ErrorFrameLeave"
+#define FB_RTL_ERRORNATIVEOWNERCLEANUP "fb_ErrorNativeOwnerCleanupCurrent"
+#define FB_RTL_ERRORNATIVEOWNERLEAVE    "fb_ErrorNativeOwnerLeaveCurrent"
+#define FB_RTL_ERRORCRESUMEENTER "fb_ErrorCResumeEnter"
+#define FB_RTL_ERRORCRESUMETARGET "fb_ErrorCResumeTarget"
+#define FB_RTL_ERRORCRESUMEPOP "fb_ErrorCResumePop"
+#define FB_RTL_ERRORCRESUMECHECKPOINT "fb_ErrorCResumeCheckpoint"
+#define FB_RTL_ERRORNATIVEHANDLERFRAME "fb_ErrorNativeHandlerFrame"
+#define FB_RTL_ERRORNATIVEDISPATCH "fb_ErrorNativeDispatch"
 #define FB_RTL_ERRORGETNUM              "fb_ErrorGetNum"
 #define FB_RTL_ERRORSETNUM              "fb_ErrorSetNum"
 #define FB_RTL_ERRORRESUME              "fb_ErrorResume"
@@ -519,6 +535,8 @@
 #define FB_RTL_GOSUBPOP                 "fb_GosubPop"
 #define FB_RTL_GOSUBRETURN              "fb_GosubReturn"
 #define FB_RTL_GOSUBEXIT                "fb_GosubExit"
+#define FB_RTL_GOSUBPUSHTARGET          "fb_GosubPushTarget"
+#define FB_RTL_GOSUBRETURNTARGET        "fb_GosubReturnTarget"
 #define FB_RTL_SETJMP                   "fb_SetJmp"
 #define FB_RTL_FRAMEADDRESS             "fb_FrameAddress"
 
@@ -551,6 +569,7 @@
 
 #define FB_RTL_THREADCALL               "fb_ThreadCall"
 #define FB_RTL_TLSGETVAR                "fb_TlsGetVar"
+#define FB_RTL_TLSGETVARKEY             "fb_TlsGetVarKey"
 #define FB_RTL_INT128BOP                "fb_Int128Bop"
 #define FB_RTL_INT128UOP                "fb_Int128Uop"
 #define FB_RTL_INT128COPY               "fb_Int128Copy"
@@ -1147,6 +1166,25 @@ enum FB_RTL_IDX
 	'' Native LLVM memory layout for 32-bit floating conversions.
 	FB_RTL_IDX_INT128FROMDOUBLENATIVE
 	FB_RTL_IDX_INT128TODOUBLENATIVE
+	'' Append entries so existing intrinsic indices keep their identities.
+	FB_RTL_IDX_ERRORFRAMEENTER
+	FB_RTL_IDX_ERRORFRAMEBUFFER
+	FB_RTL_IDX_ERRORFRAMEREADY
+	FB_RTL_IDX_ERRORFRAMESETHANDLER
+	FB_RTL_IDX_ERRORFRAMERESTORE
+	FB_RTL_IDX_ERRORFRAMESETTARGET
+	FB_RTL_IDX_ERRORFRAMEGETTARGET
+	FB_RTL_IDX_ERRORFRAMELEAVE
+	FB_RTL_IDX_GOSUBPUSHTARGET
+	FB_RTL_IDX_GOSUBRETURNTARGET
+	FB_RTL_IDX_ERRORNATIVEOWNERLEAVE
+	FB_RTL_IDX_ERRORCRESUMEENTER
+	FB_RTL_IDX_ERRORCRESUMETARGET
+	FB_RTL_IDX_ERRORCRESUMEPOP
+	FB_RTL_IDX_ERRORCRESUMECHECKPOINT
+	FB_RTL_IDX_ERRORNATIVEHANDLERFRAME
+	FB_RTL_IDX_ERRORNATIVEDISPATCH
+	FB_RTL_IDX_TLSGETVARKEY
 	FB_RTL_INDEXES
 end enum
 
@@ -1170,6 +1208,7 @@ enum FB_RTL_OPT
 	FB_RTL_OPT_32BIT          = &h00008000  '' 32bit only
 	FB_RTL_OPT_64BIT          = &h00010000  '' 64bit only
 	FB_RTL_OPT_UTF8ARGS       = &h00020000  '' text arguments use a UTF-8 descriptor bridge
+	FB_RTL_OPT_CDECLCALLBACK  = &h00040000  '' nested function-pointer signatures use CDECL
 end enum
 
 '' Intrinsic registration metadata
@@ -1190,6 +1229,48 @@ enum
 	FB_THREADCALL_FLOAT64
 	FB_THREADCALL_STRUCT
 	FB_THREADCALL_PTR
+end enum
+
+'' Semantic contracts describe the selected runtime declaration only. The
+'' optimizer does not consult these fields; CANBECLONED retains its independent
+'' native meaning and is not a general purity guarantee.
+enum FB_RTL_SEMANTIC_DOMAIN
+	FB_RTL_DOMAIN_UNKNOWN = 0
+	FB_RTL_DOMAIN_MEMORY
+	FB_RTL_DOMAIN_MATH
+	FB_RTL_DOMAIN_STRING
+	FB_RTL_DOMAIN_UNICODE
+	FB_RTL_DOMAIN_ARRAY
+	FB_RTL_DOMAIN_FILE
+	FB_RTL_DOMAIN_PRINT
+	FB_RTL_DOMAIN_CONSOLE
+	FB_RTL_DOMAIN_GRAPHICS
+	FB_RTL_DOMAIN_SOUND
+	FB_RTL_DOMAIN_ERROR
+	FB_RTL_DOMAIN_PROFILE
+	FB_RTL_DOMAIN_SYSTEM
+	FB_RTL_DOMAIN_GOSUB
+	FB_RTL_DOMAIN_DATA
+	FB_RTL_DOMAIN_OBJECT
+	FB_RTL_DOMAIN_SERIALIZATION
+end enum
+
+enum FB_RTL_SEMANTIC_EFFECT
+	FB_RTL_EFFECT_UNKNOWN = &h00000001
+	FB_RTL_EFFECT_ALLOCATE = &h00000002
+	FB_RTL_EFFECT_RELEASE = &h00000004
+	FB_RTL_EFFECT_ARGUMENT_READ = &h00000008
+	FB_RTL_EFFECT_ARGUMENT_WRITE = &h00000010
+	FB_RTL_EFFECT_RUNTIME_READ = &h00000020
+	FB_RTL_EFFECT_RUNTIME_WRITE = &h00000040
+	FB_RTL_EFFECT_EXTERNAL_IO = &h00000080
+	FB_RTL_EFFECT_SYNCHRONIZATION = &h00000100
+	FB_RTL_EFFECT_ERROR_HANDLING = &h00000200
+	FB_RTL_EFFECT_PROFILING = &h00000400
+	FB_RTL_EFFECT_PROCESS_EXIT = &h00000800
+	FB_RTL_EFFECT_CODE_EXECUTION = &h00001000
+	FB_RTL_EFFECT_COMPUTATION = &h00002000
+	FB_RTL_EFFECT_CONTROL_TRANSFER = &h00004000
 end enum
 
 type FB_RTL_PARAMDEF
@@ -1231,8 +1312,12 @@ declare sub rtlAddIntrinsicProcs _
 	( _
 		byval procdef as const FB_RTL_PROCDEF ptr, _
 		byval is_sfxlib as integer = FALSE, _
-		byval is_gfxlib as integer = FALSE _
+		byval is_gfxlib as integer = FALSE, _
+		byval semantic_domain as FB_RTL_SEMANTIC_DOMAIN = FB_RTL_DOMAIN_UNKNOWN _
 	)
+
+declare function rtlSemanticEffects( byval domain as FB_RTL_SEMANTIC_DOMAIN, _
+	byval procdef as const FB_RTL_PROCDEF ptr ) as ulongint
 
 declare function rtlProcLookup _
 	( _
@@ -1506,12 +1591,14 @@ declare function rtlDataRestore _
 	( _
 		byval label as FBSYMBOL ptr, _
 		byval afternode as ASTNODE ptr = NULL, _
-		byval canprofile as integer = TRUE _
+		byval canprofile as integer = TRUE, _
+		byval semantic_statement as longint = 0 _
 	) as integer
 
 declare function rtlDataRead _
 	( _
-		byval varexpr as ASTNODE ptr _
+		byval varexpr as ASTNODE ptr, _
+		byval semantic_read as longint = 0 _
 	) as integer
 
 declare function rtlMathPow _
@@ -1869,6 +1956,9 @@ declare sub rtlErrorSetHandler _
 		byval newhandler as ASTNODE ptr, _
 		byval savecurrent as integer _
 	)
+
+declare function rtlErrorNativeOwnerCleanup( ) as ASTNODE ptr
+declare sub rtlErrorNativeOwnerLeave( )
 
 declare function rtlErrorGetNum _
 	( _

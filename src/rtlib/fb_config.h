@@ -5,8 +5,8 @@
  * Responsibilities: Shared runtime types, ABI declarations and internal contracts.
  * This file intentionally does NOT contain: Platform implementations or compiler parsing.
  */
-#ifndef __FB_CONFIG_H__
-#define __FB_CONFIG_H__
+#ifndef FB_RTLIB_CONFIG_H
+#define FB_RTLIB_CONFIG_H
 
 #if defined HOST_XBOX
 #elif defined HOST_NUTTX || defined __NuttX__
@@ -34,7 +34,9 @@
 	#define HOST_WIN32
 	/* We prefer using non-oldnames functions, see also win32/fb_win32.h */
 	#define NO_OLDNAMES
-	#define _NO_OLDNAMES
+	#ifndef __MINGW64__
+		#define _NO_OLDNAMES
+	#endif
 	/* Tell windows.h to omit many headers we don't need */
 	#define WIN32_LEAN_AND_MEAN
 #elif defined __CYGWIN__

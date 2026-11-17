@@ -24,6 +24,8 @@
 
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
+#include once "tooling/semantic-type-shapes.bi"
+#include once "tooling/semantic-layout.bi"
 #include once "parser/parser.bi"
 declare sub fbSemanticModelAggregateDeclarationToken(byval token as integer)
 
@@ -34,9 +36,13 @@ declare sub fbSemanticModelNativeListInput(byval identity as longint, byval owne
     byval is_declaration as integer, byref source as LEX_LOCATION)
 declare sub fbSemanticModelNativeListEnd(byval identity as longint, byval owner as FBSYMBOL ptr, byval count as integer)
 
+declare function parserGetLastTypeAlias( ) as FBSYMBOL ptr
+declare sub fbSemanticModelTypeAliasDeclaration(byval subject as FBSYMBOL ptr, byval alias_symbol as FBSYMBOL ptr)
+
 #include once "tooling/semantic-constructs.bi"
 #include once "tooling/semantic-hooks.bi"
 #include once "ast/ast.bi"
+#include once "tooling/semantic-recovery.bi"
 
 declare sub fbSemanticModelExportBinding _
 	( _
@@ -327,13 +333,16 @@ private sub hFieldType _
 	)
 
 	'' SymbolType
+	fbSemanticModelTypeShapeDeclaration()
 	hSymbolType( dtype, subtype, lgt )
 
 	'' check that field type is not a parent struct namespace
 	if( symbIsParentNamespace( dtype, subtype ) ) then
 		errReport( FB_ERRMSG_INVALIDDATATYPES )
 		'' error recovery: fake a type
-		dtype = FB_DATATYPE_INTEGER
+		dtype = fbSemanticModelRecoveryType( _
+			FB_DATATYPE_INTEGER, "replacement", __FUNCTION__, _
+			"parser/declarations/parser-decl-struct.bas", __LINE__)
 		subtype = NULL
 		lgt = typeGetSize( dtype )
 	end if
@@ -475,10 +484,14 @@ private function hAddAndInitField _
 		byval attrib as FB_SYMBATTRIB, _
 		byref semantic_site as LEX_LOCATION, _
 		byval semantic_group as longint = 0, _
-		byval semantic_ordinal as integer = 0 _
+		byval semantic_ordinal as integer = 0, _
+		byval semantic_type_alias as FBSYMBOL ptr _
 	) as integer
 
 	dim as FBSYMBOL ptr sym = any, dtor = any
+	dim as integer typealign = 0
+
+	fbSemanticModelTypeShapeArray(dims)
 
 	function = FALSE
 
@@ -507,18 +520,25 @@ private function hAddAndInitField _
 		if( subtype = parent ) then
 			errReport( FB_ERRMSG_RECURSIVEUDT )
 			'' error recovery: fake type
-			dtype = FB_DATATYPE_INTEGER
+			dtype = fbSemanticModelRecoveryType( _
+				FB_DATATYPE_INTEGER, "replacement", __FUNCTION__, _
+				"parser/declarations/parser-decl-struct.bas", __LINE__)
 			subtype = NULL
 			lgt = 0
 		end if
 	end if
 
-	sym = symbAddField( parent, id, dims, dTB(), dtype, subtype, lgt, bits, attrib )
+	if( semantic_type_alias <> NULL andalso _
+	    typeGetPtrCnt(semantic_type_alias->typ) = typeGetPtrCnt(dtype) ) then _
+		typealign = semantic_type_alias->typealign
+	sym = symbAddField( _
+		parent, id, dims, dTB(), dtype, subtype, lgt, bits, attrib, typealign)
 	if( sym = NULL ) then
 		errReportEx( FB_ERRMSG_DUPDEFINITION, id )
 		exit function
 	end if
 	fbSemanticModelExportBinding(sym, semantic_site, TRUE)
+	fbSemanticModelTypeAliasDeclaration(sym, semantic_type_alias)
 	fbSemanticModelMemberDeclarationSpelling(sym, id, semantic_site)
 	fbSemanticModelNativeListInput(semantic_group, parent, semantic_ordinal, sym, "as", TRUE, semantic_site)
 	if( symbGetType(sym) = FB_DATATYPE_STRUCT ) then
@@ -577,6 +597,8 @@ private function hFieldId _
 		errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
 		'' error recovery: fake an id
 		id = *symbUniqueLabel( )
+		fbSemanticModelRecoveryName(id, __FUNCTION__, _
+			"parser/declarations/parser-decl-struct.bas", __LINE__)
 	end select
 
 	function = @id
@@ -612,6 +634,7 @@ private sub hTypeMultElementDecl _
 	'' AS SymbolType
 	lexSkipToken( LEXCHECK_POST_SUFFIX )
 	hFieldType( dtype, subtype, lgt )
+	dim as FBSYMBOL ptr semantic_type_alias = parserGetLastTypeAlias( )
 
 	do
 		fieldattrib = attrib
@@ -625,7 +648,7 @@ private sub hTypeMultElementDecl _
 		'' symbAddField()
 		'' ['=' InitializerExpression]
 		semantic_ordinal += 1
-		hAddAndInitField( parent, id, dims, dTB(), boundstypeini, dtype, subtype, lgt, bits, fieldattrib, semantic_site, semantic_group, semantic_ordinal )
+		hAddAndInitField( parent, id, dims, dTB(), boundstypeini, dtype, subtype, lgt, bits, fieldattrib, semantic_site, semantic_group, semantic_ordinal, semantic_type_alias )
 
 		'' ','?
 	loop while( hMatch( CHAR_COMMA ) )
@@ -671,11 +694,12 @@ private sub hTypeElementDecl _
 		lexSkipToken( LEXCHECK_POST_SUFFIX )
 	end if
 	hFieldType( dtype, subtype, lgt )
+	dim as FBSYMBOL ptr semantic_type_alias = parserGetLastTypeAlias( )
 
 	'' symbAddField()
 	'' ['=' InitializerExpression]
 	semantic_ordinal += 1
-	hAddAndInitField( parent, id, dims, dTB(), boundstypeini, dtype, subtype, lgt, bits, attrib, semantic_site, semantic_group, semantic_ordinal )
+	hAddAndInitField( parent, id, dims, dTB(), boundstypeini, dtype, subtype, lgt, bits, attrib, semantic_site, semantic_group, semantic_ordinal, semantic_type_alias )
 	fbSemanticModelNativeListEnd(semantic_group, parent, semantic_ordinal)
 
 end sub
@@ -744,7 +768,7 @@ private function hTypeAdd _
 		byval id_alias as zstring ptr, _
 		byval isunion as integer, _
 		byval align as integer, _
-		byval baseDType as integer = 0, _
+		byref semantic_packing as FB_SEMANTIC_PACKING_INPUT, _
 		byval baseSubtype as FBSYMBOL ptr = NULL, _
 		byval baseStringType as integer = 0 _
 	) as FBSYMBOL ptr
@@ -757,6 +781,7 @@ private function hTypeAdd _
 		'' error recovery: create a fake symbol
 		s = symbStructBegin( NULL, NULL, parent, symbUniqueLabel( ), NULL, isunion, align, (baseSubtype <> NULL), 0, 0 )
 	end if
+	fbSemanticModelPackingInput(s, parent, semantic_packing, align)
 
 	select case baseStringType
 	case FB_DATATYPE_CHAR
@@ -808,7 +833,8 @@ private function hTypeAdd _
 end function
 
 '' [FIELD '=' ConstExpression]
-private function cFieldAlignmentAttribute( ) as integer
+private function cFieldAlignmentAttribute( byref semantic_packing as FB_SEMANTIC_PACKING_INPUT ) as integer
+	fbSemanticModelCapturePacking(semantic_packing, lexGetToken( ) = FB_TK_FIELD)
 	'' FIELD
 	if( lexGetToken( ) <> FB_TK_FIELD ) then
 		return 0
@@ -826,20 +852,26 @@ private function cFieldAlignmentAttribute( ) as integer
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 		'' error recovery: fake an expr
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/declarations/parser-decl-struct.bas", __LINE__)
 	end if
 
 	if( astIsCONST( expr ) = FALSE ) then
 		errReport( FB_ERRMSG_EXPECTEDCONST )
 		'' error recovery: fake an expr
 		astDelTree( expr )
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/declarations/parser-decl-struct.bas", __LINE__)
 	end if
 
 	'' follow the GCC 3.x ABI
 	const GCC3_ALIGN_FIXUP_FROM = 3
 	const GCC3_ALIGN_FIXUP_TO = 2
+	if( semantic_packing.sourceid > 0 ) then semantic_packing.expressionid = expr->semantic_expression
 	var align = astConstFlushToInt( expr )
+	semantic_packing.requested = align
 	if( align < 0 ) then
 		align = 0
 	elseif( align > env.pointersize ) then
@@ -847,6 +879,7 @@ private function cFieldAlignmentAttribute( ) as integer
 	elseif( align = GCC3_ALIGN_FIXUP_FROM ) then
 		align = GCC3_ALIGN_FIXUP_TO
 	end if
+	semantic_packing.selected = align
 
 	function = align
 end function
@@ -988,14 +1021,15 @@ private sub hTypeBody( byval s as FBSYMBOL ptr )
 				lexSkipToken( LEXCHECK_POST_SUFFIX )
 
 				'' [FIELD '=' ConstExpression]
-				dim as integer align = cFieldAlignmentAttribute( )
+				dim as FB_SEMANTIC_PACKING_INPUT semantic_packing
+				dim as integer align = cFieldAlignmentAttribute( semantic_packing )
 				if( align = 0 ) then
 					align = symbGetUDTAlign( s )
 				end if
 
 				'' create a "temp" one
 				dim as longint anonymous_construct = fbSemanticModelConstructBegin(iif(isunion, FB_TK_UNION, FB_TK_TYPE))
-				inner = hTypeAdd( s, symbUniqueId( ), NULL, isunion, align )
+				inner = hTypeAdd( s, symbUniqueId( ), NULL, isunion, align, semantic_packing )
 				dim as LEX_LOCATION anonymous_ending = lexGetLastLocation( )
 				fbSemanticModelConstructEnd(anonymous_construct, anonymous_ending)
 
@@ -1257,7 +1291,8 @@ sub cTypeDecl( byval attrib as FB_SYMBATTRIB )
 	hParseTypeExtends( baseDType, baseSubtype, stringType )
 
 	'' [FIELD '=' ConstExpression]
-	dim as integer align = cFieldAlignmentAttribute( )
+	dim as FB_SEMANTIC_PACKING_INPUT semantic_packing
+	dim as integer align = cFieldAlignmentAttribute( semantic_packing )
 
 	'' Parser stack IDs deliberately use TYPE for both aggregate kinds. The
 	'' observer must retain the actual declaration token independently of a
@@ -1279,7 +1314,7 @@ sub cTypeDecl( byval attrib as FB_SYMBATTRIB )
 	dim as FBSYMBOL ptr currblocksym = parser.currblock
 	dim as integer scope_depth = parser.scope
 
-	sym = hTypeAdd( NULL, id, palias, isunion, align, baseDType, baseSubtype, stringType )
+	sym = hTypeAdd( NULL, id, palias, isunion, align, semantic_packing, baseSubtype, stringType )
 	if( checkid ) then
 		fbSemanticModelExportBinding(sym, semantic_site, TRUE)
 		fbSemanticModelTypeDeclarationSpelling(sym, @id, iif(isunion, "union", "type"), semantic_site)

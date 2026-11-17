@@ -107,6 +107,8 @@ enum EMIT_NODEOP
 	EMIT_OP_POPI, EMIT_OP_POPF, EMIT_OP_POPL
 	EMIT_OP_PUSHUDT
 	EMIT_OP_POPST0
+	EMIT_OP_LOADCLONGDOUBLEST0
+	EMIT_OP_STORECLONGDOUBLEST0
 
 	'' branch
 	EMIT_OP_CALL
@@ -436,6 +438,24 @@ type EMIT_VTBL
 	) as const zstring ptr
 end type
 
+'' EMIT_NODECLASS selects the active callback member. Store and call that
+'' exact signature; the opcode table still occupies one pointer per slot.
+union EMIT_OPCB
+	nop as EMIT_NOPCB
+	bop as EMIT_BOPCB
+	uop as EMIT_UOPCB
+	rel as EMIT_RELCB
+	stk as EMIT_STKCB
+	brc as EMIT_BRCCB
+	sop as EMIT_SOPCB
+	lit as EMIT_LITCB
+	jtb as EMIT_JTBCB
+	mem as EMIT_MEMCB
+	dbg as EMIT_DBGCB
+end union
+
+#assert( sizeof( EMIT_OPCB ) = sizeof( EMIT_NOPCB ) )
+
 type EMITCTX
 	inited                              as integer
 	output_error                        as integer          '' write or close failed for the current ASM file
@@ -457,7 +477,7 @@ type EMITCTX
 
 	''
 	vtbl                                as EMIT_VTBL
-	opFnTb                              as any ptr ptr
+	opFnTb                              as EMIT_OPCB ptr
 end type
 
 ''
@@ -500,6 +520,8 @@ declare function emitCALLPTR _
 		byval svreg as IRVREG ptr, _
 		byval bytestopop as integer _
 	) as EMIT_NODE ptr
+declare function emitStoreCLongDoubleST0( byval resultptr as IRVREG ptr ) as EMIT_NODE ptr
+declare function emitLoadCLongDoubleST0( byval source as IRVREG ptr ) as EMIT_NODE ptr
 
 declare function emitJUMP _
 	( _

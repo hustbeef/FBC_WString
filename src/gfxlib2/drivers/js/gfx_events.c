@@ -1,3 +1,10 @@
+/*
+ * Project: FreeBASIC browser graphics
+ * File: gfx_events.c
+ * Purpose: Translate SDL events into the shared FreeBASIC event queue.
+ * Responsibilities: Pointer ordering and graphics input hooks.
+ * This file does not own DOM text editors or application input policy.
+ */
 #include "../../fb_gfx.h"
 #include "fb_gfx_js.h"
 
@@ -27,9 +34,9 @@ void fb_js_events_check(void)
                     .dx = event.motion.xrel,
                     .dy = event.motion.yrel,
                 };
-                if( __fb_gfx->scanline_size != 1 ) {
-                    e.y /= __fb_gfx->scanline_size;
-                    e.dy /= __fb_gfx->scanline_size;
+                if( fb_gfx->scanline_size != 1 ) {
+                    e.y /= fb_gfx->scanline_size;
+                    e.dy /= fb_gfx->scanline_size;
                 } 
 
                 fb_hPostEvent(&e);
@@ -37,22 +44,24 @@ void fb_js_events_check(void)
             }
 
             case SDL_MOUSEBUTTONDOWN:
-            {
-                EVENT e =
-                {
-                    .type = EVENT_MOUSE_BUTTON_PRESS,
-                    .button = fb_js_sdl_button_to_fb_button(event.button.button),
-                };
-
-                fb_hPostEvent(&e);
-                break;
-            }
-
             case SDL_MOUSEBUTTONUP:
             {
+                /* SDL can synthesize a touch button without mouse motion.
+                 * EVENT's button and position share a union, so consumers
+                 * need a separate position before the button transition. */
+                EVENT position =
+                {
+                    .type = EVENT_MOUSE_MOVE,
+                    .x = event.button.x,
+                    .y = event.button.y,
+                };
+                if( fb_gfx->scanline_size != 1 )
+                    position.y /= fb_gfx->scanline_size;
+                fb_hPostEvent(&position);
                 EVENT e =
                 {
-                    .type = EVENT_MOUSE_BUTTON_RELEASE,
+                    .type = event.type == SDL_MOUSEBUTTONDOWN ?
+                        EVENT_MOUSE_BUTTON_PRESS : EVENT_MOUSE_BUTTON_RELEASE,
                     .button = fb_js_sdl_button_to_fb_button(event.button.button),
                 };
 
@@ -77,11 +86,11 @@ void fb_js_events_init(void)
 	//__fb_ctx.hooks.sleepproc = fb_js_sleep;
 
 	// we can't use SDL's key events because CAPSLOCK isn't handled by emscripten and the printable chars are always lowercase in SDL
-	__fb_ctx.hooks.inkeyproc  = NULL;
-	__fb_ctx.hooks.getkeyproc = NULL;
-	__fb_ctx.hooks.keyhitproc = NULL;
-	__fb_ctx.hooks.multikeyproc = NULL;
-	__fb_ctx.hooks.posteventproc = fb_hPostEvent;
+	fb_ctx.hooks.inkeyproc  = NULL;
+	fb_ctx.hooks.getkeyproc = NULL;
+	fb_ctx.hooks.keyhitproc = NULL;
+	fb_ctx.hooks.multikeyproc = NULL;
+	fb_ctx.hooks.posteventproc = fb_hPostEvent;
 
     // don't let SDL capture the keyboard
     __fb_js_ctx.doNotCaptureKeyboard = emscripten_run_script_int("Module['doNotCaptureKeyboard']? 1: 0;");
@@ -97,3 +106,4 @@ void fb_js_events_exit(void)
     if(!__fb_js_ctx.doNotCaptureKeyboard)
         emscripten_run_script("Module['doNotCaptureKeyboard']=null;");
 }
+/* end of gfx_events.c */

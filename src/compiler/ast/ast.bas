@@ -33,6 +33,7 @@
 #include once "support/containers/list.bi"
 #include once "backend/ir.bi"
 #include once "ast/ast.bi"
+#include once "tooling/semantic-loads.bi"
 #include once "tooling/semantic-hooks.bi"
 #include once "tooling/semantic-source.bi"
 #include once "tooling/semantic-constructs.bi"
@@ -215,7 +216,10 @@ dim shared ast_opTB( 0 to AST_OPCODES-1 ) as AST_OPINFO => _
 	(AST_NODECLASS_DBG   , AST_OPFLAGS_NONE, @"sini"    ), _ '' AST_OP_DBG_SCOPEINI
 	(AST_NODECLASS_DBG   , AST_OPFLAGS_NONE, @"send"    ), _ '' AST_OP_DBG_SCOPEEND
 	(AST_NODECLASS_LIT   , AST_OPFLAGS_NONE, @"rem"     ), _ '' AST_OP_LIT_COMMENT
-	(AST_NODECLASS_LIT   , AST_OPFLAGS_NONE, @"asm"     )  _ '' AST_OP_ASM
+	(AST_NODECLASS_LIT   , AST_OPFLAGS_NONE, @"asm"     ), _ '' AST_OP_ASM
+	(0                  , AST_OPFLAGS_NONE, NULL       ), _ '' AST_OP_TOSIGNED (parser-only)
+	(0                  , AST_OPFLAGS_NONE, NULL       ), _ '' AST_OP_TOUNSIGNED (parser-only)
+	(AST_NODECLASS_MACRO , AST_OPFLAGS_NONE, @"c_eval"  )  _ '' AST_OP_C_EVAL
 }
 
 sub astInit( )
@@ -320,6 +324,7 @@ end function
 '' just the toplevel node, except if there are LINKs involved which return
 '' either their lhs or rhs.
 function astGetEffectiveNode( byval n as ASTNODE ptr ) as ASTNODE ptr
+	if( n = NULL ) then return NULL
 	if( n->class = AST_NODECLASS_LINK ) then
 		select case n->link.ret
 		case AST_LINK_RETURN_LEFT
@@ -337,7 +342,10 @@ end function
 '' Determine the AST_NODECLASS_* of the given expression, while transparently
 '' handling LINKs.
 function astGetEffectiveClass( byval n as ASTNODE ptr ) as integer
-	function = astGetEffectiveNode( n )->class
+	'' A side-effect-only LINK has no effective value, just like an empty tree.
+	var effective = astGetEffectiveNode( n )
+	if( effective = NULL ) then return AST_NODECLASS_NOP
+	return effective->class
 end function
 
 ''
@@ -641,7 +649,15 @@ function astLoad( byval n as ASTNODE ptr ) as IRVREG ptr
 		errReportEx( FB_ERRMSG_INTERNAL, __FUNCTION__ )
 		return NULL
 	end if
-	return ast_loadcallbacks(n->class)( n )
+	dim as longint semantic_load = fbSemanticModelLoadBegin(n)
+	dim as integer semantic_emitted = ast.doemit
+	dim as IRVREG ptr semantic_result = ast_loadcallbacks(n->class)( n )
+	'' Some loaders leave their unused return value unspecified when the
+	'' procedure is not emitted. Do not inspect that carrier as an IR value.
+	dim as integer semantic_has_result = FALSE
+	if( semantic_emitted ) then semantic_has_result = (semantic_result <> NULL)
+	fbSemanticModelLoadEnd(semantic_load, semantic_has_result)
+	return semantic_result
 end function
 
 '' end of ast/ast.bas

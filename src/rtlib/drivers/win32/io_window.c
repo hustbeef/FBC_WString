@@ -14,7 +14,7 @@ static __inline__ void hReadConsoleRect( SMALL_RECT *pRect, int GetRealWindow )
 {
     CONSOLE_SCREEN_BUFFER_INFO info;
 
-    if( GetConsoleScreenBufferInfo( __fb_out_handle, &info )==0 ) {
+    if( GetConsoleScreenBufferInfo( FB_CONSOLE_OUTPUT_HANDLE, &info )==0 ) {
         memset( pRect, 0, sizeof(SMALL_RECT) );
     } else {
         if( GetRealWindow ) {
@@ -51,10 +51,10 @@ FBCALL void fb_hUpdateConsoleWindow( void )
     /* Whenever the console was set by the user, we MUST NOT query this
      * information again because this would cause a mess with SAA
      * applications otherwise. */
-    if (__fb_con.setByUser)
+    if (fb_console_context.setByUser)
         return;
 
-    hReadConsoleRect( &__fb_con.window, FALSE );
+    hReadConsoleRect( &fb_console_context.window, FALSE );
     hReadConsoleRect( &srRealConsoleWindow, TRUE );
 }
 
@@ -76,7 +76,7 @@ FBCALL void fb_hRestoreConsoleWindow( void )
     /* Whenever the console was set by the user, there's no need to
      * restore the original window console because we don't have to
      * mess around with scrollable windows */
-    if (__fb_con.setByUser)
+    if (fb_console_context.setByUser)
         return;
 
     fb_InitConsoleWindow( );
@@ -92,15 +92,15 @@ FBCALL void fb_hRestoreConsoleWindow( void )
     	int i;
     	for( i = 0; i < FB_CONSOLE_MAXPAGES; i++ )
     	{
-       		if( __fb_con.pgHandleTb[i] != NULL )
-        		SetConsoleWindowInfo( __fb_con.pgHandleTb[i], TRUE, &srRealConsoleWindow );
+		if( fb_console_context.pgHandleTb[i] != NULL )
+			SetConsoleWindowInfo( fb_console_context.pgHandleTb[i], TRUE, &srRealConsoleWindow );
         }
     }
 }
 
 void fb_ConsoleGetMaxWindowSize( int *cols, int *rows )
 {
-    COORD max = GetLargestConsoleWindowSize( __fb_out_handle );
+    COORD max = GetLargestConsoleWindowSize( FB_CONSOLE_OUTPUT_HANDLE );
     if( cols != NULL )
         *cols = (max.X==0 ? FB_SCRN_DEFAULT_WIDTH : max.X);
     if( rows != NULL )
@@ -165,13 +165,13 @@ void fb_hConsoleGetWindow( int *left, int *top, int *cols, int *rows )
     else
     {
         if( left != NULL )
-            *left = __fb_con.window.Left;
+            *left = fb_console_context.window.Left;
         if( top != NULL )
-            *top = __fb_con.window.Top;
+            *top = fb_console_context.window.Top;
         if( cols != NULL )
-            *cols = __fb_con.window.Right - __fb_con.window.Left + 1;
+            *cols = fb_console_context.window.Right - fb_console_context.window.Left + 1;
         if( rows != NULL )
-            *rows = __fb_con.window.Bottom - __fb_con.window.Top + 1;
+            *rows = fb_console_context.window.Bottom - fb_console_context.window.Top + 1;
     }
 }
 

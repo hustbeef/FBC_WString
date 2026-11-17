@@ -5,7 +5,8 @@
  * Responsibilities: Shared runtime types, ABI declarations and internal contracts.
  * This file intentionally does NOT contain: Platform implementations or compiler parsing.
  */
-typedef enum _FB_RTERROR {
+#include "fb_abi.h"
+typedef enum FB_RTERROR_ {
 	FB_RTERROR_OK = 0,
 	FB_RTERROR_ILLEGALFUNCTIONCALL,
 	FB_RTERROR_FILENOTFOUND,
@@ -31,7 +32,7 @@ typedef enum _FB_RTERROR {
 
 typedef void (*FB_ERRHANDLER) (void);
 
-typedef struct _FB_ERRORCTX {
+typedef struct FB_ERRORCTX_ {
 	FB_ERRHANDLER handler;
 	int           err_num;
 	int           line_num;
@@ -44,7 +45,7 @@ typedef struct _FB_ERRORCTX {
 #define fb_ERRORCTX_Destructor NULL
 
 #define FB_ERRMSG_SIZE 1024
-extern char __fb_errmsg[FB_ERRMSG_SIZE];
+extern char fb_errmsg[FB_ERRMSG_SIZE] FB_RTLIB_SYMBOL("__fb_errmsg");
 
 #ifdef __cplusplus
 extern "C" {
@@ -63,6 +64,7 @@ FBCALL void          fb_AssertWarnW     ( char *filename, int linenum, char *fun
 FBCALL FB_ERRHANDLER fb_ErrorSetHandler ( FB_ERRHANDLER newhandler );
 FBCALL int           fb_ErrorGetNum     ( void );
 FBCALL int           fb_ErrorSetNum     ( int errnum );
+FBCALL void         *fb_NullPtrChk      ( void *ptr, int linenum, const char *fname );
        void         *fb_ErrorResume     ( void );
        void         *fb_ErrorResumeNext ( void );
 FBCALL int           fb_ErrorGetLineNum ( void );

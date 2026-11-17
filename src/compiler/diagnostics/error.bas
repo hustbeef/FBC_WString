@@ -23,6 +23,7 @@
 
 #include once "core/fb.bi"
 #include once "tooling/semantic-hooks.bi"
+#include once "tooling/semantic-diagnostics.bi"
 #include once "core/fbint.bi"
 #include once "backend/ir.bi"
 #include once "lexer/lex.bi"
@@ -35,7 +36,7 @@ type ERRPARAMLOCATION
 	proc            as FBSYMBOL ptr
 	tk              as integer
 	paramnum        as integer
-	paramid         as zstring ptr
+	paramid         as const zstring ptr '' Borrowed until pop; diagnostics only read it.
 end type
 
 type FB_ERRCTX
@@ -116,6 +117,11 @@ declare function hMakeParamDesc _
 		( /'FB_WARNINGMSG_MISSINGANDROIDSYSROOT     '/ 1, @"GCC/Clang didn't provide a proper sysroot. You probably have to pass fbc an argument of the form '-sysroot $NDK/platforms/android-$API/arch-$ARCH'" ), _
 		( /'FB_WARNINGMSG_INVALIDUNICODESEQUENCE    '/ 2, @"Invalid or truncated unicode escape sequence" ), _
 		( /'FB_WARNINGMSG_SURROGATEPAIR             '/ 1, @"Surrogate or surrogate pair in unicode literal" ), _
+		( /'FB_WARNINGMSG_UNUSEDPARAMETER           '/ 0, @"Parameter is not read" ), _
+		( /'FB_WARNINGMSG_UNUSEDVARIABLE            '/ 0, @"Variable is not read" ), _
+		( /'FB_WARNINGMSG_COMPARISONRANGE           '/ 1, @"Comparison result is fixed by the operand range" ), _
+		( /'FB_WARNINGMSG_NULLACCESS                '/ 1, @"Memory access through a provably null pointer" ), _
+		( /'FB_WARNINGMSG_UNSAFECONSTADDITION       '/ 1, @"Unsafe nested CONST qualification" ), _
 		( /'FB_WARNINGMSGS                          '/ 0, @"FB_WARNINGMSGS" ) _
 	}
 
@@ -508,7 +514,7 @@ sub errPushParamLocation _
 		byval proc as FBSYMBOL ptr, _
 		byval tk as integer, _
 		byval paramnum as integer, _
-		byval paramid as zstring ptr _
+		byval paramid as const zstring ptr _
 	)
 
 	dim as ERRPARAMLOCATION ptr l = any
@@ -532,6 +538,19 @@ end sub
 sub errPopParamLocation( )
 	assert( listGetTail( @errctx.paramlocations ) )
 	listDelNode( @errctx.paramlocations, listGetTail( @errctx.paramlocations ) )
+end sub
+
+private sub hObserveDiagnosticContext( byval options as integer, byval show_source as integer, _
+	byval promoted as integer, byval warning_level as integer = -1 )
+	fbSemanticDiagnosticsPolicy(errctx.inited > 0, options, show_source, errctx.cnt, promoted, warning_level)
+	if( errctx.inited <= 0 ) then exit sub
+	'' The reporter's list is already ordered from the outer argument context
+	'' to the innermost one printed by hMakeParamDesc. Copy it before popping.
+	dim as ERRPARAMLOCATION ptr location = listGetHead(@errctx.paramlocations)
+	while( location <> NULL )
+		fbSemanticDiagnosticsParameter(location->proc, location->tk, location->paramnum, location->paramid)
+		location = listGetNext(location)
+	wend
 end sub
 
 private function errHaveParamLocation( ) as integer
@@ -561,6 +580,7 @@ private sub hPrintErrMsg _
 	if( msgex = NULL ) then
 		msgex = @""
 	end if
+	hObserveDiagnosticContext(options, showerror, FALSE)
 	fbSemanticModelDiagnostic("error", errnum, linenum, msg, msgex, customText)
 
 	if( len( env.inf.name ) > 0 ) then
@@ -762,8 +782,9 @@ sub errReportWarnEx _
 		msgex = hMakeParamDesc( msgex )
 	end if
 
+	hObserveDiagnosticContext(options, FALSE, fbPdCheckIsSet(FB_PDCHECK_ERROR), warningMsgs(msgnum).level)
+	fbSemanticModelDiagnostic("warning", msgnum, linenum, warningMsgs(msgnum).text, msgex, customText)
 	if( len( env.inf.name ) > 0 ) then
-		fbSemanticModelDiagnostic("warning", msgnum, linenum, warningMsgs(msgnum).text, msgex, customText)
 		print env.inf.name;
 	else
 		if( msgex <> NULL ) then
@@ -813,6 +834,16 @@ sub errReportWarnEx _
 end sub
 
 '':::::
+sub errReportWarnAt(byval msgnum as integer, byval msgex as const zstring ptr, _
+	byval filename as const zstring ptr, byval linenum as integer)
+	'' The existing text and structured reporters share this display context.
+	'' Only its name is borrowed; no input stream or lexer position changes.
+	var saved_filename = env.inf.name
+	env.inf.name = *filename
+	errReportWarnEx(msgnum, msgex, linenum)
+	env.inf.name = saved_filename
+end sub
+
 sub errReportWarn _
 	( _
 		byval msgnum as integer, _
@@ -873,7 +904,7 @@ private function hMakeParamDesc _
 	static as string desc
 	dim as ERRPARAMLOCATION ptr paramloc = any
 	dim as FBSYMBOL ptr proc = any
-	dim as zstring ptr pname = any, pid = any
+	dim as const zstring ptr pname = any, pid = any
 	dim as integer pnum = any, addprnts = any
 
 	paramloc = listGetTail( @errctx.paramlocations )
@@ -987,7 +1018,7 @@ sub errReportParam _
 	( _
 		byval proc as FBSYMBOL ptr, _
 		byval paramnum as integer, _
-		byval paramid as zstring ptr, _
+		byval paramid as const zstring ptr, _
 		byval msgnum as integer _
 	)
 
@@ -1001,7 +1032,7 @@ sub errReportParamWarn _
 	( _
 		byval proc as FBSYMBOL ptr, _
 		byval paramnum as integer, _
-		byval paramid as zstring ptr, _
+		byval paramid as const zstring ptr, _
 		byval msgnum as integer _
 	)
 

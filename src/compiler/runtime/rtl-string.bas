@@ -2208,7 +2208,7 @@
 '':::::
 sub rtlStringModInit( )
 
-	rtlAddIntrinsicProcs( @funcdata(0) )
+	rtlAddIntrinsicProcs( @funcdata(0), FALSE, FALSE, FB_RTL_DOMAIN_STRING )
 
 end sub
 
@@ -2602,6 +2602,9 @@ function rtlWstrAssignWA _
 		exit function
 	end if
 
+	'' The runtime returns DST, but an assignment has no BASIC result value.
+	astSetType( proc, FB_DATATYPE_VOID, NULL )
+
 	function = proc
 
 end function
@@ -2646,6 +2649,9 @@ function rtlWstrAssignAW _
 	if( astNewARG( proc, astNewCONSTi( ddtype = FB_DATATYPE_FIXSTR ) ) = NULL ) then
 		exit function
 	end if
+
+	'' The runtime returns DST, but an assignment has no BASIC result value.
+	astSetType( proc, FB_DATATYPE_VOID, NULL )
 
 	function = proc
 
@@ -2811,6 +2817,9 @@ function rtlWstrAssign _
 		exit function
 	end if
 
+	'' The runtime returns DST, but an assignment has no BASIC result value.
+	astSetType( proc, FB_DATATYPE_VOID, NULL )
+
 	function = proc
 
 end function
@@ -2931,6 +2940,9 @@ function rtlStrAllocTempDesc _
 			exit function
 		end if
 
+	case else
+		 '' This helper only constructs descriptors for raw string storage.
+		exit function
 	end select
 
 	''
@@ -3453,6 +3465,9 @@ function rtlStrToVal _
 			f = PROCLOOKUP( STR2INT )
 		case FB_SIZETYPE_UINT8, FB_SIZETYPE_UINT16, FB_SIZETYPE_UINT32
 			f = PROCLOOKUP( STR2UINT )
+		case else
+			'' Unsupported integer widths have no string-conversion overload.
+			exit function
 		end select
 
 	'' UDT's, classes: try cast(to_dtype) op overloading

@@ -24,6 +24,8 @@
 
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
+#include once "tooling/semantic-type-shapes.bi"
+#include once "tooling/semantic-startup.bi"
 #include once "parser/parser.bi"
 
 declare function fbSemanticModelNativeListBegin(byval owner as FBSYMBOL ptr, _
@@ -32,12 +34,16 @@ declare sub fbSemanticModelNativeListInput(byval identity as longint, byval owne
     byval ordinal as integer, byval sym as FBSYMBOL ptr, byref written_type as const string, _
     byval is_declaration as integer, byref source as LEX_LOCATION)
 declare sub fbSemanticModelNativeListEnd(byval identity as longint, byval owner as FBSYMBOL ptr, byval count as integer)
+declare function parserGetLastTypeAlias( ) as FBSYMBOL ptr
+declare sub fbSemanticModelTypeAliasDeclaration(byval subject as FBSYMBOL ptr, byval alias_symbol as FBSYMBOL ptr)
 
 #include once "runtime/rtl.bi"
 #include once "ast/ast.bi"
 #include once "tooling/semantic-diagnostics.bi"
 #include once "tooling/semantic-expressions.bi"
 #include once "tooling/semantic-variable-names.bi"
+#include once "tooling/semantic-array-mutations.bi"
+#include once "tooling/semantic-recovery.bi"
 
 declare function fbSemanticModelFullEnabled( ) as integer
 
@@ -157,7 +163,8 @@ function cVariableDecl( byval attrib as FB_SYMBATTRIB ) as integer
 		if( ((attrib and FB_SYMBATTRIB_THREADLOCAL) <> 0) andalso _
 		    (parser.mangling = FB_MANGLING_CDECL) andalso _
 		    ((env.clopt.backend = FB_BACKEND_GAS) or _
-		     (env.clopt.backend = FB_BACKEND_GAS64)) andalso _
+		     (env.clopt.backend = FB_BACKEND_GAS64) or _
+		     (env.clopt.target = FB_COMPTARGET_DOS)) andalso _
 		    ((env.clopt.target <> FB_COMPTARGET_LINUX) or _
 		     (fbGetOption( FB_COMPOPT_OUTTYPE ) = FB_OUTTYPE_DYNAMICLIB)) ) then
 			errReport( FB_ERRMSG_THREADLOCALUNSUPPORTED )
@@ -610,6 +617,8 @@ private function hGetId _
 		errReport( errmsg )
 		'' error recovery: fake an id
 		*id = *symbUniqueLabel( )
+		fbSemanticModelRecoveryName(*id, __FUNCTION__, _
+			"parser/declarations/parser-decl-var.bas", __LINE__)
 		suffix = FB_DATATYPE_INVALID
 		function = NULL
 		'' don't report on suffix, already have an error
@@ -852,7 +861,9 @@ end sub
 private function hBuildFakeByrefInitExpr( byval dtype as integer, byval subtype as FBSYMBOL ptr ) as ASTNODE ptr
 	var expr = astNewCONSTi( 0 )
 	expr = astNewCONV( typeAddrOf( dtype ), subtype, expr, AST_CONVOPT_DONTCHKPTR )
-	function = astNewDEREF( expr )
+	function = fbSemanticModelRecoveryNode( _
+		astNewDEREF( expr ), "replacement-expression", __FUNCTION__, _
+		"parser/declarations/parser-decl-var.bas", __LINE__)
 end function
 
 '' resolve reference to a reference
@@ -914,6 +925,12 @@ private function hCheckAndBuildByrefInitializer( byval sym as FBSYMBOL ptr, byre
 		astDelTree( expr )
 		expr = hBuildFakeByrefInitExpr( sym->typ, sym->subtype )
 	else
+		'' A reference declaration aliases the original pointer slot, just as
+		'' a BYREF argument does. Check before resolving reference chains.
+		if( sym->subtype = astGetSubtype(expr) andalso _
+		    symbHasUnsafeConstAddition(sym->typ, astGetFullType(expr), FB_PARAMMODE_BYREF) ) then
+			errReportWarn( FB_WARNINGMSG_UNSAFECONSTADDITION )
+		end if
 		expr = hResolveRefToRefInitializer( sym->typ, expr )
 	end if
 
@@ -1050,7 +1067,7 @@ private function hFlushDecl _
 
 end function
 
-private function hWrapInStaticFlag( byval code as ASTNODE ptr ) as ASTNODE ptr
+private function hWrapInStaticFlag( byval code as ASTNODE ptr, byval semantic_instance as longint ) as ASTNODE ptr
 	dim as ASTNODE ptr t = any
 	dim as FBARRAYDIM dTB(0) = any
 	dim as FBSYMBOL ptr flag = any, label = any
@@ -1087,6 +1104,7 @@ private function hWrapInStaticFlag( byval code as ASTNODE ptr ) as ASTNODE ptr
 	'' belong to the <code>, not to this branch condition. Luckily this
 	'' condition expression is trivial and won't have temp vars itself.
 	label = symbAddLabel( NULL )
+	fbSemanticModelStaticGuard(semantic_instance, flag, label)
 	t = astNewLINK( t, _
 	        astBuildBranch( _
 	        astNewBOP( AST_OP_EQ, astNewVAR( flag ), astNewCONSTi( 0 ) ), _
@@ -1115,7 +1133,8 @@ private function hCallStaticCtor _
 	) as ASTNODE ptr
 
 	dim as ASTNODE ptr t = any, initcode = any
-	dim as FBSYMBOL ptr proc = any
+	dim as FBSYMBOL ptr proc = NULL
+	dim as integer semantic_initialized = (initree <> NULL), semantic_registered = FALSE
 
 	assert( symbIsRef( sym ) = FALSE )
 
@@ -1132,14 +1151,18 @@ private function hCallStaticCtor _
 		'' at program exit.
 		'' atexit( @static_proc )
 		proc = astProcAddStaticInstance( sym )
-		initcode = astNewLINK( initcode, rtlAtExit( astBuildProcAddrof( proc ) ), AST_LINK_RETURN_NONE )
+		dim as ASTNODE ptr cleanup_registration = rtlAtExit( astBuildProcAddrof( proc ) )
+		semantic_registered = (cleanup_registration <> NULL)
+		initcode = astNewLINK( initcode, cleanup_registration, AST_LINK_RETURN_NONE )
 	end if
 
 	'' Any initialization code for a static var must be wrapped with a
 	'' static flag, to ensure it'll be only executed once, not everytime the
 	'' parent procedure is called.
+	dim as longint semantic_instance = fbSemanticModelStaticInstance(sym, parser.currproc, proc, _
+		semantic_initialized, has_dtor, semantic_registered, "initialization")
 	if( initcode ) then
-		t = astNewLINK( t, hWrapInStaticFlag( initcode ), AST_LINK_RETURN_NONE )
+		t = astNewLINK( t, hWrapInStaticFlag( initcode, semantic_instance ), AST_LINK_RETURN_NONE )
 	end if
 
 	function = t
@@ -1329,7 +1352,9 @@ private sub hErrorDefTypeNotAllowed _
 	errReportNotAllowed( FB_LANG_OPT_DEFTYPE, FB_ERRMSG_DEFTYPEONLYVALIDINLANG )
 
 	'' error recovery: fake a type
-	dtype = FB_DATATYPE_INTEGER
+	dtype = fbSemanticModelRecoveryType( _
+		FB_DATATYPE_INTEGER, "replacement", __FUNCTION__, _
+		"parser/declarations/parser-decl-var.bas", __LINE__)
 	subtype = NULL
 	lgt = symbCalcLen( dtype, subtype )
 
@@ -1548,6 +1573,11 @@ private function hEmitVarDecl _
 			varexpr = astNewNIDXARRAY( astNewVAR( sym ) )
 		end if
 
+		if( token = FB_TK_REDIM ) then
+			fbSemanticModelArrayMutations(varexpr, sym, iif(dopreserve, "redim-preserve", "redim"), _
+				semantic_site, semantic_site, semantic_site.macro_identity <> 0)
+		end if
+
 		dim as FBSYMBOL ptr selected_ctor = NULL
 		redimcall = rtlArrayRedim( varexpr, dimensions, exprTB(), _
 		                           dopreserve, (not symbGetDontInit( sym )), @selected_ctor )
@@ -1561,7 +1591,9 @@ private function hEmitVarDecl _
 		    ((symbGetAttrib( sym ) and _
 		    (FB_SYMBATTRIB_SHARED or FB_SYMBATTRIB_COMMON)) = 0) and _
 		    (not is_declared) ) then
-			redimcall = hWrapInStaticFlag( redimcall )
+			dim as longint semantic_instance = fbSemanticModelStaticInstance(sym, parser.currproc, NULL, _
+				redimcall <> NULL, FALSE, FALSE, "array-allocation")
+			redimcall = hWrapInStaticFlag( redimcall, semantic_instance )
 		end if
 
 		'' The runtime receives this exact callback even when bounds are empty
@@ -1658,6 +1690,7 @@ private sub hParseLeadingVarType _
 	end if
 
 	lexSkipToken( LEXCHECK_POST_SUFFIX )
+	fbSemanticModelTypeShapeDeclaration( )
 	hSymbolType( dtype, subtype, lgt, has_byref, FALSE, _
 	             (baseattrib and FB_SYMBATTRIB_EXTERN) <> 0 )
 
@@ -1733,8 +1766,11 @@ function cVarDecl _
 
 	hParseLeadingVarType( baseattrib, has_byref_at_start, is_multdecl, _
 		dtype, subtype, lgt, addsuffix )
+	dim as FBSYMBOL ptr semantic_leading_alias = NULL
+	if( is_multdecl ) then semantic_leading_alias = parserGetLastTypeAlias( )
 
 	do
+		dim as FBSYMBOL ptr semantic_type_alias = semantic_leading_alias
 		dim as integer attrib = baseattrib
 		dim as string semantic_written_type = iif(is_multdecl, "as", "implicit")
 
@@ -1888,8 +1924,10 @@ function cVarDecl _
 				var is_ref = ((attrib and FB_SYMBATTRIB_REF) <> 0)
 
 				'' parse the symbol type (INTEGER, STRING, etc...)
+				fbSemanticModelTypeShapeDeclaration( )
 				hSymbolType( dtype, subtype, lgt, is_ref, FALSE, _
 				             (attrib and FB_SYMBATTRIB_EXTERN) <> 0 )
+				semantic_type_alias = parserGetLastTypeAlias( )
 
 				if( is_ref = FALSE ) then
 					'' Disallow creating objects of abstract classes
@@ -1926,6 +1964,8 @@ function cVarDecl _
 				end if
 			end if
 		end if
+
+		if( semantic_written_type = "as" ) then fbSemanticModelTypeShapeArray(dimensions)
 
 		if( varexpr ) then
 			sym = varexpr->sym
@@ -2076,6 +2116,9 @@ function cVarDecl _
 		end if
 		sym = hAddVar( sym, parent, id, palias, dtype, subtype, lgt, addsuffix, _
 		               attrib, dimensions, have_bounds, dTB(), chain_, token, diagnostic_site )
+		if( sym <> NULL andalso semantic_type_alias <> NULL andalso _
+		    typeGetPtrCnt(semantic_type_alias->typ) = typeGetPtrCnt(dtype) ) then _
+			sym->var_.align = semantic_type_alias->typealign
 		if( token = FB_TK_EXTERN ) then
 			fbSemanticModelDeclarationRepeat(sym, "extern", semantic_repeated_extern, semantic_site)
 		end if
@@ -2088,6 +2131,8 @@ function cVarDecl _
 				fbSemanticModelVariableDeclarationSpelling(sym, @id, "declared", semantic_site)
 			end if
 		end if
+
+		fbSemanticModelTypeAliasDeclaration(sym, semantic_type_alias)
 
 		dim as integer semantic_initializer
 		if( hEmitVarDecl( sym, token, is_fordecl, attrib, dimensions, _
@@ -2204,7 +2249,9 @@ private sub cArrayDimension( byref dimensions as integer, exprTB() as ASTNODE pt
 		'' lbound can't be unknown
 		if( exprTB(dimensions,0) = NULL ) then
 			errReport( FB_ERRMSG_CANTUSEELLIPSISASLOWERBOUND )
-			exprTB(dimensions,0) = astNewCONSTi( 0 )
+			exprTB(dimensions,0) = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/declarations/parser-decl-var.bas", __LINE__)
 		end if
 
 		'' ubound
@@ -2295,9 +2342,13 @@ private function hBuildAutoVarInitializer _
 			case FB_DATATYPE_BOOLEAN, FB_DATATYPE_BYTE, FB_DATATYPE_UBYTE, _
 				FB_DATATYPE_SHORT, FB_DATATYPE_USHORT, FB_DATATYPE_INTEGER, FB_DATATYPE_UINT, _
 				FB_DATATYPE_LONG, FB_DATATYPE_ULONG, FB_DATATYPE_LONGINT, FB_DATATYPE_ULONGINT, _
-				FB_DATATYPE_SINGLE, FB_DATATYPE_DOUBLE, FB_DATATYPE_STRING
+				FB_DATATYPE_INTEGER128, FB_DATATYPE_UINTEGER128, _
+				FB_DATATYPE_SINGLE, FB_DATATYPE_DOUBLE, FB_DATATYPE_STRING, FB_DATATYPE_FIXSTR, _
+				FB_DATATYPE_ENUM, FB_DATATYPE_STRUCT
 				scalar_copy = TRUE
 			end select
+			'' This branch has already excluded constructors. Enum and plain
+			'' record values are accepted builtin copies too, not field-list guesses.
 			if( scalar_copy ) then
 				dim as ASTNODE ptr semantic_left = astNewVAR(sym)
 				semantic_inputs = fbSemanticModelCaptureAssignmentInputs(semantic_left, expr, semantic_destination)
@@ -2461,7 +2512,9 @@ private sub cAutoVarDecl( byval baseattrib as FB_SYMBATTRIB )
 			if( is_byref ) then
 				expr = hBuildFakeByrefInitExpr( FB_DATATYPE_INTEGER, NULL )
 			else
-				expr = astNewCONSTi( 0 )
+				expr = fbSemanticModelRecoveryNode( _
+					astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+					"parser/declarations/parser-decl-var.bas", __LINE__)
 			end if
 		end if
 
@@ -2483,7 +2536,9 @@ private sub cAutoVarDecl( byval baseattrib as FB_SYMBATTRIB )
 					errReport( FB_ERRMSG_INVALIDDATATYPES, TRUE )
 					'' error recovery: create a fake expression
 					astDelTree( expr )
-					expr = astNewCONSTi( 0 )
+					expr = fbSemanticModelRecoveryNode( _
+						astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+						"parser/declarations/parser-decl-var.bas", __LINE__)
 					dtype = FB_DATATYPE_INTEGER
 					subtype = NULL
 				end if

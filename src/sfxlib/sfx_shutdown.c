@@ -103,22 +103,22 @@ void fb_sfxExit(void)
 
     fb_sfxRuntimeLock();
 
-    if (__fb_ctx.idle_sfxlib == fb_sfxCooperativeDelay)
-        __fb_ctx.idle_sfxlib = NULL;
+    if (fb_ctx.idle_sfxlib == fb_sfxCooperativeDelay)
+        fb_ctx.idle_sfxlib = NULL;
 
-    if (__fb_ctx.exit_sfxlib == fb_sfxExit)
-        __fb_ctx.exit_sfxlib = NULL;
+    if (fb_ctx.exit_sfxlib == fb_sfxExit)
+        fb_ctx.exit_sfxlib = NULL;
 
-    if (__fb_sfx == NULL)
+    if (fb_sfx_context == NULL)
     {
         fb_sfxRuntimeUnlock();
         return;
     }
 
-    should_exit_core = __fb_sfx->initialized;
+    should_exit_core = fb_sfx_context->initialized;
     if (should_exit_core)
     {
-        __fb_sfx->shutting_down = 1;
+        fb_sfx_context->shutting_down = 1;
         SFX_DEBUG("sfx_shutdown: shutting down sound subsystem");
     }
     fb_sfxRuntimeUnlock();
@@ -152,20 +152,20 @@ void fb_sfxAbort(void)
 {
     fb_sfxRuntimeLock();
 
-    if (__fb_ctx.idle_sfxlib == fb_sfxCooperativeDelay)
-        __fb_ctx.idle_sfxlib = NULL;
+    if (fb_ctx.idle_sfxlib == fb_sfxCooperativeDelay)
+        fb_ctx.idle_sfxlib = NULL;
 
-    if (__fb_ctx.exit_sfxlib == fb_sfxExit)
-        __fb_ctx.exit_sfxlib = NULL;
+    if (fb_ctx.exit_sfxlib == fb_sfxExit)
+        fb_ctx.exit_sfxlib = NULL;
 
-    if (!__fb_sfx)
+    if (!fb_sfx_context)
     {
         fb_sfxRuntimeUnlock();
         return;
     }
 
     SFX_DEBUG("sfx_shutdown: emergency shutdown");
-    __fb_sfx->shutting_down = 1;
+    fb_sfx_context->shutting_down = 1;
     fb_sfxRuntimeUnlock();
 
     fb_sfxMidiStop();
@@ -178,8 +178,8 @@ void fb_sfxAbort(void)
     fb_sfxDriverShutdown();
 
     fb_sfxRuntimeLock();
-    if (__fb_sfx)
-        __fb_sfx->initialized = 0;
+    if (fb_sfx_context)
+        fb_sfx_context->initialized = 0;
 
     fb_sfxFreeContext();
     fb_sfxRuntimeUnlock();

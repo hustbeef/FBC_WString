@@ -132,7 +132,8 @@ sub rtlAddIntrinsicProcs _
 	( _
 		byval procdef as const FB_RTL_PROCDEF ptr, _
 		byval is_sfxlib as integer = FALSE, _
-		byval is_gfxlib as integer = FALSE _
+		byval is_gfxlib as integer = FALSE, _
+		byval semantic_domain as FB_RTL_SEMANTIC_DOMAIN = FB_RTL_DOMAIN_UNKNOWN _
 	)
 	dim as FBSYMBOL ptr param = any
 	dim as integer callconv = any
@@ -232,11 +233,13 @@ sub rtlAddIntrinsicProcs _
 							i += 1
 							with procdef->paramTb(i)
 								'' add it
-								'' Note: using FBCALL for the function pointer.
-								'' Must match the function's declaration in the
-								'' rtlib. Currently only fb_ThreadCreate() is
-								'' affected.
-								subtype = symbAddProcPtr( inner_proc, .dtype, NULL, 0, 0, env.target.fbcall )
+								'' Thread callbacks retain FBCALL. C error callbacks
+								'' use CDECL even when the entry point is stdcall.
+								dim as FB_FUNCMODE callbackmode = env.target.fbcall
+								if( procdef->options and FB_RTL_OPT_CDECLCALLBACK ) then
+									callbackmode = FB_FUNCMODE_CDECL
+								end if
+								subtype = symbAddProcPtr( inner_proc, .dtype, NULL, 0, 0, callbackmode )
 							end with
 
 							param_optval = NULL
@@ -314,6 +317,9 @@ sub rtlAddIntrinsicProcs _
 
 			if( proc <> NULL ) then
 				symbSetProcCallback( proc, procdef->callback )
+				proc->proc.rtl.semantic_domain = semantic_domain
+				proc->proc.rtl.semantic_effects = rtlSemanticEffects(semantic_domain, procdef)
+				proc->proc.rtl.semantic_options = procdef->options
 				if( procdef->options and FB_RTL_OPT_UTF8ARGS ) then
 					proc->stats or= FB_SYMBSTATS_UTF8ARGS
 				end if

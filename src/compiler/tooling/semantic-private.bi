@@ -11,6 +11,7 @@
 #include once "lexer/lex.bi"
 
 declare function fbSemanticModelFullEnabled( ) as integer
+declare function fbSemanticModelTypedExpressionsEnabled( ) as integer
 declare function fbSemanticModelMacroProvenanceEnabled( ) as integer
 declare sub fbSemanticModelResetContext( )
 declare function fbSemanticModelNextDetailIdentity( ) as longint
@@ -22,9 +23,11 @@ declare sub fbSemanticModelExportSelectedExpression(byval expr as ASTNODE ptr, b
 declare function fbSemanticModelEscape( byref value as const string ) as string
 declare sub fbSemanticModelAppendDetail( byref value as string )
 declare sub fbSemanticModelAppendProvenance( byref value as const string )
+declare sub fbSemanticModelQueueParserProvenance( byref value as const string )
 declare sub fbSemanticModelFail( )
 declare sub fbSemanticModelFailAt( byref reason as const string )
 declare sub fbSemanticModelMarkSourceRemapped( byval depth as integer )
+declare function fbSemanticModelClaimWideLiteralPrefix( byval sym as FBSYMBOL ptr ) as integer
 declare function fbSemanticModelNextVisit( ) as ulongint
 declare function fbSemanticModelVisitSymbol _
 	( byval sym as FBSYMBOL ptr, byval visit as ulongint ) as integer
@@ -40,6 +43,7 @@ declare function fbSemanticModelPhaseBegin( byval proc as FBSYMBOL ptr, byref ph
 declare sub fbSemanticModelPhaseEnd( )
 declare sub fbSemanticModelExportType( byref domain as const string, byval identity as longint, byval dtype as integer, byval subtype as FBSYMBOL ptr, byval storage_bytes as longint = 0, byref role as const string = "value" )
 declare function fbSemanticModelTypeFact( byref domain as const string, byval identity as longint, byval dtype as integer, byval subtype as FBSYMBOL ptr, byval storage_bytes as longint = 0, byref role as const string = "value" ) as string
+declare function fbSemanticModelKnownStorageBytes( byval expr as ASTNODE ptr ) as longint
 declare sub fbSemanticModelExportVariable( byval sym as FBSYMBOL ptr )
 declare sub fbSemanticModelExportContext( byref filename as string )
 declare sub fbSemanticModelExportInitializer _

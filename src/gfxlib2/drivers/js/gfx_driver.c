@@ -1,4 +1,9 @@
-/* asmjs fbgfx driver */
+/*
+ * FreeBASIC gfxlib2: js/gfx_driver.c
+ * Purpose: Present gfxlib software pages through the browser SDL canvas.
+ * Responsibilities: Mode creation, presentation, input hooks and display size.
+ * This file does not own widgets or application layout.
+ */
 
 #include "../../fb_gfx.h"
 #include "fb_gfx_js.h"
@@ -20,12 +25,12 @@ static int driver_has_dirty_lines(void)
 {
 	int y;
 
-	if( __fb_gfx == NULL || __fb_gfx->dirty == NULL )
+	if( fb_gfx == NULL || fb_gfx->dirty == NULL )
 		return FALSE;
 
-	for( y = 0; y < __fb_gfx->h; y++ )
+	for( y = 0; y < fb_gfx->h; y++ )
 	{
-		if( __fb_gfx->dirty[y] )
+		if( fb_gfx->dirty[y] )
 			return TRUE;
 	}
 
@@ -57,13 +62,13 @@ static void driver_blit()
 
 	SDL_Flip(__fb_js_ctx.canvas);
 	if( copied )
-		fb_hMemSet(__fb_gfx->dirty, FALSE, __fb_gfx->h);
+		fb_hMemSet(fb_gfx->dirty, FALSE, fb_gfx->h);
 
 }
 
 static void driver_update(void *unused)
 {
-	if( !__fb_js_ctx.inited || __fb_gfx == NULL || __fb_gfx->framebuffer == NULL )
+	if( !__fb_js_ctx.inited || fb_gfx == NULL || fb_gfx->framebuffer == NULL )
 		return;
 
     int ini_time = SDL_GetTicks();
@@ -150,11 +155,11 @@ static int WGL_init(char *title, int w, int h, int depth_arg, int refresh_rate, 
 
 	fb_hGL_NormalizeParameters(flags);
 
-	SDL_GL_SetAttribute(SDL_GL_RED_SIZE, __fb_gl_params.color_red_bits); 
-	SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, __fb_gl_params.color_green_bits);
-	SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, __fb_gl_params.color_blue_bits);
-	SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, __fb_gl_params.color_alpha_bits);
-	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, __fb_gl_params.depth_bits);
+	SDL_GL_SetAttribute(SDL_GL_RED_SIZE, fb_gl_params.color_red_bits);
+	SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, fb_gl_params.color_green_bits);
+	SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, fb_gl_params.color_blue_bits);
+	SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, fb_gl_params.color_alpha_bits);
+	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, fb_gl_params.depth_bits);
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1); 
 	__fb_js_ctx.canvas = SDL_SetVideoMode(w, h, 32, SDL_DOUBLEBUF | SDL_DOUBLEBUF | SDL_OPENGL);
 
@@ -220,7 +225,7 @@ static void driver_lock(void)
 
 static void driver_unlock(void)
 {
-	if( __fb_js_ctx.inited && __fb_js_ctx.canvas != NULL && __fb_gfx != NULL && __fb_gfx->framebuffer != NULL )
+	if( __fb_js_ctx.inited && __fb_js_ctx.canvas != NULL && fb_gfx != NULL && fb_gfx->framebuffer != NULL )
 	{
 		driver_blit();
 		__fb_js_ctx.updated = TRUE;
@@ -379,7 +384,7 @@ static const GFXDRIVER fb_gfxWebGL =
 	NULL                     /* int (*resize)(int width, int height); */
 };
 
-const GFXDRIVER *__fb_gfx_drivers_list[] = {
+const GFXDRIVER *fb_gfx_drivers_list[] = {
 	&fb_gfxDriverJS,
 	&fb_gfxWebGL,
 	NULL
@@ -387,8 +392,8 @@ const GFXDRIVER *__fb_gfx_drivers_list[] = {
 
 void fb_hScreenInfo(ssize_t *width, ssize_t *height, ssize_t *depth, ssize_t *refresh)
 {
-	*width = 512;
-	*height = 512;
+	*width = EM_ASM_INT({ return typeof screen !== 'undefined' ? screen.width : 0; });
+	*height = EM_ASM_INT({ return typeof screen !== 'undefined' ? screen.height : 0; });
 	*depth = 32;
 	*refresh = GFX_JS_FPS;
 }
@@ -460,3 +465,5 @@ FBCALL int fb_GfxGetJoystick(int id, ssize_t *buttons, float *a1, float *a2, flo
 
 	return fb_ErrorSetNum(FB_RTERROR_OK);
 }
+
+/* end of gfx_driver.c */

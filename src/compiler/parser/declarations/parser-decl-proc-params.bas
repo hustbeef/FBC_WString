@@ -23,16 +23,20 @@
 
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
+#include once "tooling/semantic-type-shapes.bi"
 #include once "parser/parser.bi"
 
 declare function fbSemanticModelSourceSignatureBegin(byval proc as FBSYMBOL ptr) as longint
 declare sub fbSemanticModelSourceSignatureInput(byval identity as longint, byval proc as FBSYMBOL ptr, _
     byval ordinal as integer, byval param as FBSYMBOL ptr)
 declare sub fbSemanticModelSourceSignatureEnd(byval identity as longint, byval proc as FBSYMBOL ptr, byval count as integer)
+declare function parserGetLastTypeAlias( ) as FBSYMBOL ptr
+declare sub fbSemanticModelTypeAliasDeclaration(byval subject as FBSYMBOL ptr, byval alias_symbol as FBSYMBOL ptr)
 
 #include once "tooling/semantic-hooks.bi"
 #include once "ast/ast.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-recovery.bi"
 
 declare sub fbSemanticModelParameterType(byval param as FBSYMBOL ptr, byref written_type as const string)
 
@@ -163,7 +167,7 @@ end sub
 private sub hParamError _
 	( _
 		byval proc as FBSYMBOL ptr, _
-		byval pid as zstring ptr, _
+		byval pid as const zstring ptr, _
 		byval msgnum as FB_ERRMSG = FB_ERRMSG_ILLEGALPARAMSPECAT, _
 		byval delta as integer = 1 _
 	)
@@ -217,7 +221,9 @@ private function hOptionalExpr _
 	case FB_DATATYPE_VOID, FB_DATATYPE_FWDREF
 		errReport( FB_ERRMSG_INCOMPLETETYPE )
 		hSkipUntil( CHAR_RPRNT, FALSE, , TRUE )
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/declarations/parser-decl-proc-params.bas", __LINE__)
 	end select
 
 	expr = cInitializer( param, FB_INIOPT_ISINI, _
@@ -262,7 +268,9 @@ private function hMockParam _
 		dtype = FB_DATATYPE_INTEGER
 	end if
 
-	function = symbAddProcParam( proc, NULL, dtype, NULL, iif( pmode = FB_PARAMMODE_BYDESC, -1, 0 ), pmode, 0, 0 )
+	function = fbSemanticModelRecoverySymbol( _
+		symbAddProcParam( proc, NULL, dtype, NULL, iif( pmode = FB_PARAMMODE_BYDESC, -1, 0 ), pmode, 0, 0 ), _
+		__FUNCTION__, "parser/declarations/parser-decl-proc-params.bas", __LINE__)
 end function
 
 private function hParseParamMode( ) as integer
@@ -425,10 +433,12 @@ private function hParamDecl _
 		lexSkipToken( )
 
 	else
-		'' no id
+		'' An unnamed parameter has no period-qualified identifier.
+		dotpos = 0
 		dtype  = FB_DATATYPE_INVALID
 	end if
 
+	dim as FBSYMBOL ptr semantic_type_alias = NULL
 	dim as string semantic_written_type = iif(dtype = FB_DATATYPE_INVALID, "implicit", "suffix")
 	dimensions = 0
 	have_bounds = FALSE
@@ -492,13 +502,18 @@ private function hParamDecl _
 			options or= FB_SYMBTYPEOPT_ISBYREF
 		end if
 
+		fbSemanticModelTypeShapeDeclaration(dimensions <> 0)
 		if( cSymbolType( dtype, subtype, , , options ) = FALSE ) then
 			hParamError( proc, id )
 			'' error recovery: fake type
-			dtype = FB_DATATYPE_INTEGER
+			dtype = fbSemanticModelRecoveryType( _
+				FB_DATATYPE_INTEGER, "replacement", __FUNCTION__, _
+				"parser/declarations/parser-decl-proc-params.bas", __LINE__)
 			subtype = NULL
 			doskip = TRUE
 		end if
+
+		semantic_type_alias = parserGetLastTypeAlias( )
 
 		if( mode = FB_PARAMMODE_BYVAL ) then
 			'' Disallow BYVAL passing of objects of abstract classes
@@ -546,7 +561,9 @@ private function hParamDecl _
 		if( mode = FB_PARAMMODE_BYVAL or typeGet( dtype ) = FB_DATATYPE_FIXSTR ) then
 			hParamError( proc, id )
 			'' error recovery: fake correct type
-			dtype = typeAddrOf( dtype )
+			dtype = fbSemanticModelRecoveryType( _
+				typeAddrOf( dtype ), "pointer", __FUNCTION__, _
+				"parser/declarations/parser-decl-proc-params.bas", __LINE__)
 		end if
 
 	'' can't be as ANY on non-prototypes
@@ -554,12 +571,16 @@ private function hParamDecl _
 		if( isproto = FALSE ) then
 			hParamError( proc, id )
 			'' error recovery: fake correct type
-			dtype = typeAddrOf( dtype )
+			dtype = fbSemanticModelRecoveryType( _
+				typeAddrOf( dtype ), "pointer", __FUNCTION__, _
+				"parser/declarations/parser-decl-proc-params.bas", __LINE__)
 		else
 			if( mode = FB_PARAMMODE_BYVAL ) then
 				hParamError( proc, id )
 				'' error recovery: fake correct param
-				dtype = typeAddrOf( dtype )
+				dtype = fbSemanticModelRecoveryType( _
+					typeAddrOf( dtype ), "pointer", __FUNCTION__, _
+					"parser/declarations/parser-decl-proc-params.bas", __LINE__)
 			end if
 		end if
 
@@ -587,6 +608,7 @@ private function hParamDecl _
 		iif(isproto, "parameter-prototype", "parameter-definition"), *id)
 	fbSemanticModelParameterModes(param, declaration_occurrence, mode, written_mode, isproto, semantic_site.macro_identity)
 	fbSemanticModelParameterType(param, semantic_written_type)
+	fbSemanticModelTypeAliasDeclaration(param, semantic_type_alias)
 
 	if( isproto = FALSE ) then
 		if( symbGetSizeOf( param ) > (env.pointersize * 4) ) then

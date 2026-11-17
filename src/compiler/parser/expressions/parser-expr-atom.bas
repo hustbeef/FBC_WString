@@ -28,6 +28,7 @@
 #include once "ast/ast.bi"
 #include once "tooling/semantic-expressions.bi"
 #include once "tooling/semantic-hooks.bi"
+#include once "tooling/semantic-recovery.bi"
 
 declare sub fbSemanticModelExportBinding _
 	( _
@@ -128,12 +129,20 @@ function cParentExpression _
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 		'' error recovery: skip until next ')', fake an expr
 		hSkipUntil( CHAR_RPRNT, TRUE )
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-atom.bas", __LINE__)
 	end if
 
 	'' ')'
 	if( lexGetToken( ) = CHAR_RPRNT ) then
-		dim as longint operands = fbSemanticModelCaptureOperands(parexpr, NULL, "group", -1, semantic_site)
+		'' These saved outer-parser constraints explain why some otherwise
+		'' value-neutral parentheses are required by this grammar context.
+		'' Bits: equality-only-in-parens 1, greater-than 2, indexing 4,
+		'' optional call parentheses 8. The restored options stay unchanged.
+		dim as integer group_context = iif(eqinparensonly, 1, 0) or _
+			iif(gtinparensonly, 2, 0) or iif(idxinparensonly, 4, 0) or iif(is_opt, 8, 0)
+		dim as longint operands = fbSemanticModelCaptureOperands(parexpr, NULL, "group", group_context, semantic_site)
 		lexSkipToken( )
 		fbSemanticModelAttachOperands(parexpr, operands)
 		'' --parent cnt
@@ -397,7 +406,9 @@ private function hBaseMemberAccess _
 		errReport( FB_ERRMSG_ILLEGALOUTSIDEAMETHOD )
 		'' error recovery: skip stmt, return
 		hSkipStmt( )
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-atom.bas", __LINE__)
 	end if
 
 	var parent = symbGetNamespace( proc )
@@ -410,7 +421,9 @@ private function hBaseMemberAccess _
 			errReport( FB_ERRMSG_CLASSNOTDERIVED )
 			'' error recovery: skip stmt, return
 			hSkipStmt( )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-atom.bas", __LINE__)
 		end if
 
 		'' BASE
@@ -420,7 +433,9 @@ private function hBaseMemberAccess _
 		if( hMatch( CHAR_DOT ) = FALSE ) then
 			errReport( FB_ERRMSG_EXPECTEDPERIOD )
 			hSkipStmt( )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-atom.bas", __LINE__)
 		end if
 
 		'' (BASE '.')?

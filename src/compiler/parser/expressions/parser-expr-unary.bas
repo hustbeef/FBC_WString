@@ -46,18 +46,26 @@
 
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
+#include once "tooling/semantic-extra-facts.bi"
 #include once "parser/parser.bi"
+
+declare function parserGetLastTypeAlias( ) as FBSYMBOL ptr
+declare sub fbSemanticModelTypeAliasExpression(byval subject as ASTNODE ptr, byval alias_symbol as FBSYMBOL ptr)
+declare sub fbSemanticModelTypeAliasDeclaration(byval subject as FBSYMBOL ptr, byval alias_symbol as FBSYMBOL ptr)
+
 #include once "ast/ast.bi"
 #include once "preprocessor/pp.bi"
 #include once "tooling/semantic-hooks.bi"
 #include once "tooling/semantic-preprocessor.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-recovery.bi"
 #include once "tooling/semantic-coordinates.bi"
 #include once "tooling/semantic-macros.bi"
 
 declare function hCast( byval options as AST_CONVOPT, byref source as LEX_LOCATION ) as ASTNODE ptr
 declare function fbSemanticModelExpressionsOnlyEnabled( ) as integer
 declare function fbSemanticModelFullEnabled( ) as integer
+declare sub fbSemanticModelBuiltinFunctionUse(byval sym as FBSYMBOL ptr, byref source as LEX_LOCATION)
 declare sub fbSemanticModelSetExpressionOperatorOverride _
 	( _
 		byref source_start as LEX_LOCATION, _
@@ -83,6 +91,17 @@ declare sub fbSemanticModelPopExpressionRange _
 		byval previous_nonphysical_tokens as longint _
 	)
 declare sub fbSemanticModelExportCurrentExpressionPrefix(byval expr as ASTNODE ptr)
+declare sub fbSemanticModelExportParserExpression _
+	( _
+		byval expr as ASTNODE ptr, _
+		byref source_start as LEX_LOCATION, _
+		byref source_end as LEX_LOCATION, _
+		byval nonphysical_tokens_at_start as longint, _
+		byval nonphysical_tokens_at_end as longint, _
+		byval semantic_operator_override as integer = -1, _
+		byval force_nonphysical_range as integer = FALSE _
+	)
+
 declare sub fbSemanticModelExportExpression _
 	( _
 		byval expr as ASTNODE ptr, _
@@ -103,7 +122,7 @@ private sub hSemanticModelExportCurrentExpression _
 	)
 	if( expr = NULL ) then exit sub
 	dim as LEX_LOCATION source_end = lexGetLastLocation( )
-	fbSemanticModelExportExpression(expr, source_start, source_end, _
+	fbSemanticModelExportParserExpression(expr, source_start, source_end, _
 		nonphysical_tokens_at_start, lexGetNonphysicalTokenCount( ), _
 		semantic_operator_override)
 end sub
@@ -199,7 +218,9 @@ function cNegNotExpression _
 		if( negexpr = NULL ) then
 			errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 			'' error recovery: fake a new node
-			negexpr = astNewCONSTi( 0 )
+			negexpr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		else
 			dim as longint operands = fbSemanticModelCaptureOperands(negexpr, NULL, "unary", AST_OP_NEG, source_start)
 			negexpr = astNewUOP( AST_OP_NEG, negexpr )
@@ -210,7 +231,9 @@ function cNegNotExpression _
 		if( negexpr = NULL ) Then
 			errReport( FB_ERRMSG_TYPEMISMATCH )
 			'' error recovery: fake a new node
-			negexpr = astNewCONSTi( 0 )
+			negexpr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 		if( export_semantics ) then
 			hSemanticModelExportCurrentExpression(negexpr, source_start, _
@@ -227,7 +250,9 @@ function cNegNotExpression _
 		if( negexpr = NULL ) then
 			errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 			'' error recovery: fake a new node
-			negexpr = astNewCONSTi( 0 )
+			negexpr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		else
 			dim as longint operands = fbSemanticModelCaptureOperands(negexpr, NULL, "unary", AST_OP_PLUS, source_start)
 			negexpr = astNewUOP( AST_OP_PLUS, negexpr )
@@ -238,7 +263,9 @@ function cNegNotExpression _
 		if( negexpr = NULL ) Then
 			errReport( FB_ERRMSG_TYPEMISMATCH )
 			'' error recovery: fake a new node
-			negexpr = astNewCONSTi( 0 )
+			negexpr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 		if( negexpr->class <> AST_NODECLASS_UOP ) then
 			semantic_operator_override = AST_OP_PLUS
@@ -266,7 +293,9 @@ function cNegNotExpression _
 		if( negexpr = NULL ) then
 			errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 			'' error recovery: fake a new node
-			negexpr = astNewCONSTi( 0 )
+			negexpr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		else
 			dim as longint operands = fbSemanticModelCaptureOperands(negexpr, NULL, "unary", AST_OP_NOT, source_start)
 			negexpr = astNewUOP( AST_OP_NOT, negexpr )
@@ -277,7 +306,9 @@ function cNegNotExpression _
 		if( negexpr = NULL ) Then
 			errReport( FB_ERRMSG_TYPEMISMATCH )
 			'' error recovery: fake a new node
-			negexpr = astNewCONSTi( 0 )
+			negexpr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 
 		if( export_semantics ) then
@@ -403,6 +434,24 @@ function cHighestPrecExpr _
 			previous_nonphysical_tokens)
 	end if
 
+	'' These named function forms bypass cQuirkFunction. Capture only
+	'' branches selected by this grammar; '@', '*' and NEW are operators.
+	dim as FBSYMBOL ptr semantic_builtin = NULL
+	dim as integer semantic_builtin_expected = FALSE
+	if( fbSemanticExtraFactsEnabled(FB_SEMEXTRA_BUILTINS) and _
+		fbSemanticModelFullEnabled( ) and (lex.ctx->semantic_probe = FALSE) ) then
+		select case lexGetToken( )
+		case FB_TK_VARPTR, FB_TK_PROCPTR, FB_TK_SADD, FB_TK_STRPTR, FB_TK_CAST, FB_TK_CPTR
+			semantic_builtin_expected = TRUE
+		case FB_TK_TYPEOF, FB_TK_DEFINED
+			semantic_builtin_expected = fbGetIsPP( )
+		end select
+		if( semantic_builtin_expected ) then
+			dim as FBSYMCHAIN ptr builtin_chain = lexGetSymChain( )
+			if( builtin_chain <> NULL ) then semantic_builtin = builtin_chain->sym
+		end if
+	end if
+
 	select case lexGetToken( )
 	'' AddrOfExpression
 	case FB_TK_ADDROFCHAR
@@ -445,6 +494,7 @@ function cHighestPrecExpr _
 		'' AddrOfExpression
 		case FB_TK_VARPTR, FB_TK_PROCPTR, FB_TK_SADD, FB_TK_STRPTR
 			expr = cAddrOfExpression( )
+			if( semantic_builtin_expected and (expr <> NULL) ) then fbSemanticModelBuiltinFunctionUse(semantic_builtin, source_start)
 			return hSemanticModelFinishHighestPrecExpr(expr, export_semantics, _
 				source_start, nonphysical_tokens_at_start, previous_source_start, _
 				previous_nonphysical_tokens)
@@ -475,6 +525,7 @@ function cHighestPrecExpr _
 				'' TYPEOF '(' Expression ')'
 				case FB_TK_TYPEOF
 					expr = astNewCONSTstr( ppTypeOf( ) )
+					if( semantic_builtin_expected and (expr <> NULL) ) then fbSemanticModelBuiltinFunctionUse(semantic_builtin, source_start)
 					return hSemanticModelFinishHighestPrecExpr(expr, export_semantics, _
 						source_start, nonphysical_tokens_at_start, previous_source_start, _
 						previous_nonphysical_tokens)
@@ -482,6 +533,7 @@ function cHighestPrecExpr _
 				'' DEFINED '(' Identifier ')'
 				case FB_TK_DEFINED
 					expr = hPPDefinedExpr( )
+					if( semantic_builtin_expected and (expr <> NULL) ) then fbSemanticModelBuiltinFunctionUse(semantic_builtin, source_start)
 					return hSemanticModelFinishHighestPrecExpr(expr, export_semantics, _
 						source_start, nonphysical_tokens_at_start, previous_source_start, _
 						previous_nonphysical_tokens)
@@ -506,6 +558,7 @@ function cHighestPrecExpr _
 	end select
 
 	expr = cStrIdxOrMemberDeref( expr )
+	if( semantic_builtin_expected and (expr <> NULL) ) then fbSemanticModelBuiltinFunctionUse(semantic_builtin, source_start)
 	function = hSemanticModelFinishHighestPrecExpr(expr, export_semantics, _
 		source_start, nonphysical_tokens_at_start, previous_source_start, _
 		previous_nonphysical_tokens)
@@ -523,7 +576,9 @@ private function hCast( byval options as AST_CONVOPT, byref source as LEX_LOCATI
 		errReport( FB_ERRMSG_EXPECTEDLPRNT )
 		'' error recovery: skip until ')', fake a node
 		hSkipUntil( CHAR_RPRNT, TRUE )
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-unary.bas", __LINE__)
 	end if
 	lexSkipToken( )
 
@@ -534,12 +589,19 @@ private function hCast( byval options as AST_CONVOPT, byref source as LEX_LOCATI
 		hSkipUntil( CHAR_COMMA )
 
 		if( options and AST_CONVOPT_PTRONLY ) then
-			dtype = typeAddrOf( FB_DATATYPE_VOID )
+			dtype = fbSemanticModelRecoveryType( _
+				typeAddrOf( FB_DATATYPE_VOID ), "pointer", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		else
-			dtype = FB_DATATYPE_INTEGER
+			dtype = fbSemanticModelRecoveryType( _
+				FB_DATATYPE_INTEGER, "replacement", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 		subtype = NULL
 	end if
+
+	dim as FBSYMBOL ptr semantic_type_alias = parserGetLastTypeAlias( )
+	dim as longint semantic_nonphysical = lexGetNonphysicalTokenCount( )
 
 	'' check for invalid types
 	select case as const( typeGet( dtype ) )
@@ -547,9 +609,13 @@ private function hCast( byval options as AST_CONVOPT, byref source as LEX_LOCATI
 		errReport( FB_ERRMSG_INVALIDDATATYPES, TRUE )
 		'' error recovery: create a fake type
 		if( options and AST_CONVOPT_PTRONLY ) then
-			dtype = typeAddrOf( FB_DATATYPE_VOID )
+			dtype = fbSemanticModelRecoveryType( _
+				typeAddrOf( FB_DATATYPE_VOID ), "pointer", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		else
-			dtype = FB_DATATYPE_INTEGER
+			dtype = fbSemanticModelRecoveryType( _
+				FB_DATATYPE_INTEGER, "replacement", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 		subtype = NULL
 
@@ -586,7 +652,9 @@ private function hCast( byval options as AST_CONVOPT, byref source as LEX_LOCATI
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 		'' error recovery: create a fake node
-		expr = astNewCONSTz( dtype, subtype )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTz( dtype, subtype ), "replacement-zero", __FUNCTION__, _
+			"parser/expressions/parser-expr-unary.bas", __LINE__)
 	end if
 
 	options or= AST_CONVOPT_CHECKSTR
@@ -611,7 +679,9 @@ private function hCast( byval options as AST_CONVOPT, byref source as LEX_LOCATI
 		errReport( errmsg, TRUE )
 
 		'' error recovery: create a fake node
-		expr = astNewCONSTz( dtype, subtype )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTz( dtype, subtype ), "replacement-zero", __FUNCTION__, _
+			"parser/expressions/parser-expr-unary.bas", __LINE__)
 	end if
 
 	'' ')'
@@ -623,6 +693,13 @@ private function hCast( byval options as AST_CONVOPT, byref source as LEX_LOCATI
 		lexSkipToken( )
 	end if
 
+	if( fbSemanticModelFullEnabled( ) and (semantic_type_alias <> NULL) ) then
+		dim as LEX_LOCATION semantic_end = lexGetLastLocation( )
+		'' This full-only alias receipt is an extra snapshot; the enclosing
+		'' highest-precedence callback records the common parser result.
+		fbSemanticModelExportExpression(expr, source, semantic_end, semantic_nonphysical, lexGetNonphysicalTokenCount( ))
+		fbSemanticModelTypeAliasExpression(expr, semantic_type_alias)
+	end if
 	function = expr
 end function
 
@@ -654,7 +731,9 @@ function cDerefExpression( ) as ASTNODE ptr
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 		'' error recovery: fake a node
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-unary.bas", __LINE__)
 	end if
 
 	'' Only a typed pointer input establishes this observation. A UDT's
@@ -681,8 +760,7 @@ end function
 private function hProcPtrResolveOverload _
 	( _
 		byval ovl_head_proc as FBSYMBOL ptr, _
-		byval proc as FBSYMBOL ptr, _
-		byval check_exact as boolean = FALSE _
+		byval proc as FBSYMBOL ptr _
 	) as FBSYMBOL ptr
 
 	dim as FBSYMBOL ptr sym = ovl_head_proc
@@ -723,7 +801,6 @@ end sub
 
 private function hProcPtrBody _
 	( _
-		byval base_parent as FBSYMBOL ptr, _
 		byval proc as FBSYMBOL ptr, _
 		byval check_exact as boolean, _
 		byval is_vtable_index as integer, _
@@ -743,7 +820,9 @@ private function hProcPtrBody _
 				proc = sym
 			elseif( check_exact ) then
 				errReport( FB_ERRMSG_NOMATCHINGPROC, TRUE )
-				return astNewCONSTi( 0 )
+				return fbSemanticModelRecoveryNode( _
+					astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+					"parser/expressions/parser-expr-unary.bas", __LINE__)
 			end if
 		end if
 
@@ -824,14 +903,18 @@ function cProcPtrBody _
 		errReport( FB_ERRMSG_UNDEFINEDSYMBOL )
 		'' error recovery: skip until ')' and fake a node
 		hSkipUntil( CHAR_RPRNT, TRUE )
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-unary.bas", __LINE__)
 	end if
 
 	if( symbGetClass( sym ) <> FB_SYMBCLASS_PROC ) then
 		errReport( FB_ERRMSG_INVALIDDATATYPES, TRUE )
 		'' error recovery: skip until ')' and fake a node
 		hSkipUntil( CHAR_RPRNT, TRUE )
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-unary.bas", __LINE__)
 	end if
 
 	hCheckEmptyProcParens()
@@ -854,7 +937,9 @@ function cProcPtrBody _
 				errReport( FB_ERRMSG_INVALIDDATATYPES, TRUE )
 				'' error recovery: skip until ')' and fake a node
 				hSkipUntil( CHAR_RPRNT, TRUE )
-				return astNewCONSTi( 0 )
+				return fbSemanticModelRecoveryNode( _
+					astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+					"parser/expressions/parser-expr-unary.bas", __LINE__)
 			end if
 
 			select case typeGetDtAndPtrOnly( dtype )
@@ -867,7 +952,9 @@ function cProcPtrBody _
 				errReport( FB_ERRMSG_INVALIDDATATYPES, TRUE )
 				'' error recovery: skip until ')' and fake a node
 				hSkipUntil( CHAR_RPRNT, TRUE )
-				return astNewCONSTi( 0 )
+				return fbSemanticModelRecoveryNode( _
+					astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+					"parser/expressions/parser-expr-unary.bas", __LINE__)
 			end select
 		end if
 
@@ -876,13 +963,13 @@ function cProcPtrBody _
 		parser.ctxsym = subtype
 		parser.ctx_dtype = dtype
 
-		expr = hProcPtrBody( base_parent, sym, is_exact, is_vtable_index, semantic_site )
+		expr = hProcPtrBody( sym, is_exact, is_vtable_index, semantic_site )
 
 		parser.ctxsym = oldsym
 		parser.ctx_dtype = old_dtype
 
 	else
-		expr = hProcPtrBody( base_parent, sym, FALSE, is_vtable_index, semantic_site )
+		expr = hProcPtrBody( sym, FALSE, is_vtable_index, semantic_site )
 	end if
 
 	return expr
@@ -899,7 +986,9 @@ private function hVarPtrBody _
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
 		'' error recovery: fake a node
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-unary.bas", __LINE__)
 	end if
 
 	'' skip any casting if they won't do any conversion
@@ -919,14 +1008,18 @@ private function hVarPtrBody _
 			errReport( FB_ERRMSG_INVALIDDATATYPES )
 			'' error recovery: fake a node
 			astDelTree( expr )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 
 	case else
 		errReportEx( FB_ERRMSG_INVALIDDATATYPES, "for @ or VARPTR" )
 		'' error recovery: fake a node
 		astDelTree( expr )
-		return astNewCONSTi( 0 )
+		return fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/expressions/parser-expr-unary.bas", __LINE__)
 	end select
 
 	'' check op overloading
@@ -939,12 +1032,16 @@ private function hVarPtrBody _
 			'' build a proc call
 			expr = astBuildCall( proc, expr )
 			if( expr = NULL ) then
-				expr = astNewCONSTi( 0 )
+				expr = fbSemanticModelRecoveryNode( _
+					astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+					"parser/expressions/parser-expr-unary.bas", __LINE__)
 			end if
 			return expr
 		else
 			if( err_num <> FB_ERRMSG_OK ) then
-				return astNewCONSTi( 0 )
+				return fbSemanticModelRecoveryNode( _
+					astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+					"parser/expressions/parser-expr-unary.bas", __LINE__)
 			end if
 		end if
 	end scope
@@ -996,7 +1093,7 @@ function cAddrOfExpression( ) as ASTNODE ptr
 			lexSkipToken( LEXCHECK_POST_LANG_SUFFIX )
 			semantic_site = lexGetLastLocation( )
 			hCheckEmptyProcParens()
-			return hProcPtrBody( base_parent, sym, FALSE, FALSE, semantic_site )
+			return hProcPtrBody( sym, FALSE, FALSE, semantic_site )
 		end if
 
 		'' anything else
@@ -1013,7 +1110,9 @@ function cAddrOfExpression( ) as ASTNODE ptr
 			errReport( FB_ERRMSG_EXPECTEDLPRNT )
 			'' error recovery: skip until ')' and fake a node
 			hSkipUntil( CHAR_RPRNT, TRUE )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 
 		expr = hVarPtrBody( NULL, NULL, "varptr" )
@@ -1034,7 +1133,9 @@ function cAddrOfExpression( ) as ASTNODE ptr
 			errReport( FB_ERRMSG_EXPECTEDLPRNT )
 			'' error recovery: skip until ')' and fake a node
 			hSkipUntil( CHAR_RPRNT, TRUE )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 
 		expr = cProcPtrBody( 0, NULL )
@@ -1055,7 +1156,9 @@ function cAddrOfExpression( ) as ASTNODE ptr
 			errReport( FB_ERRMSG_EXPECTEDLPRNT )
 			'' error recovery: skip until ')' and fake a node
 			hSkipUntil( CHAR_RPRNT, TRUE )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 
 		expr = cHighestPrecExpr( NULL, NULL )
@@ -1063,7 +1166,9 @@ function cAddrOfExpression( ) as ASTNODE ptr
 			errReport( FB_ERRMSG_INVALIDDATATYPES )
 			'' error recovery: skip until ')' and fake a node
 			hSkipUntil( CHAR_RPRNT, TRUE )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 
 		dim as integer dtype = astGetDataType( expr )
@@ -1082,7 +1187,9 @@ function cAddrOfExpression( ) as ASTNODE ptr
 			'' error recovery: skip until ')' and fake a node
 			hSkipUntil( CHAR_RPRNT, TRUE )
 			astDelTree( expr )
-			return astNewCONSTi( 0 )
+			return fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/expressions/parser-expr-unary.bas", __LINE__)
 		end if
 
 		'' check for invalid classes (functions, etc)

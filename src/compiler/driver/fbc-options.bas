@@ -95,12 +95,12 @@ end sub
 '' -------------------------------------------------------------------------
 
 type FBGNUOSINFO
-	gnuid       as zstring ptr  '' Part of GNU triplet identifying a certain OS
+	gnuid       as const zstring ptr  '' Part of GNU triplet identifying a certain OS
 	os          as integer      '' Corresponding FB_COMPTARGET_*
 end type
 
 type FBGNUARCHINFO
-	gnuid       as zstring ptr  '' Part of GNU triplet identifying a certain architecture
+	gnuid       as const zstring ptr  '' Part of GNU triplet identifying a certain architecture
 	cputype     as integer      '' Corresponding FB_CPUTYPE_*
 end type
 
@@ -233,7 +233,7 @@ function fbCpuTypeFromGNUArchInfo( byref arch as string ) as integer
 end function
 
 type FBOSARCHINFO
-	targetid    as zstring ptr  '' -target option argument
+	targetid    as const zstring ptr  '' -target option argument
 	os          as integer      '' FB_COMPTARGET_*
 	cputype     as integer      '' FB_CPUTYPE_*
 end type
@@ -1372,8 +1372,7 @@ declare sub parseArgsFromFile _
 private sub handleArg _
 	( _
 		byref arg as string, _
-		byval is_source as integer, _
-		byval is_file as integer _
+		byval is_source as integer _
 	)
 	'' If the previous option wants this argument as parameter,
 	'' call the handler with it, now that it's known.
@@ -1409,6 +1408,7 @@ private sub handleArg _
 		if (optid < 0) then
 			'' Unrecognized command line option
 			hFatalInvalidOption( arg, is_source )
+			return
 		end if
 
 		'' Are we in source and option not allowed in source?
@@ -1559,7 +1559,7 @@ sub fbcParseArgsFromString _
 			arg = left(args, i)
 			arg = trim(arg)
 			arg = strUnquote(arg)
-			handleArg( arg, is_source, is_file )
+			handleArg( arg, is_source)
 		end if
 
 		args = right(args, length - i)
@@ -1629,7 +1629,7 @@ sub fbcDriverParseArgs( byval argc as integer, byval argv as zstring ptr ptr )
 	dim as string arg
 	for i as integer = 1 to (argc - 1)
 		arg = *argv[i]
-		handleArg( arg, FALSE, FALSE )
+		handleArg( arg, FALSE)
 	next
 
 	'' Waiting for argument to an option? If the user did something like

@@ -480,7 +480,7 @@ private function hLoadMacro _
 			'' token to the current argument
 			if( argtb <> NULL ) then
 				hObserveMacroSource(@argtb->tb(num), t.source)
-				fbSemanticModelMacroNumericCapture(argtb->tb(num).semantic_numeric_head, @t, argtb->tb(num).text.len)
+				fbSemanticModelMacroArgumentCapture(argtb->tb(num).semantic_numeric_head, @t, argtb->tb(num).text.len)
 				if( t.dtype <> FB_DATATYPE_WCHAR ) then
 					DZstrConcatAssign( argtb->tb(num).text, t.text )
 				else
@@ -951,11 +951,11 @@ private function hLoadMacroW _
 			if( argtb <> NULL ) then
 				if( t.dtype <> FB_DATATYPE_WCHAR ) then
 					hObserveMacroSource(@argtb->tb(num), t.source)
-					fbSemanticModelMacroNumericCapture(argtb->tb(num).semantic_numeric_head, @t, argtb->tb(num).textw.len)
+					fbSemanticModelMacroArgumentCapture(argtb->tb(num).semantic_numeric_head, @t, argtb->tb(num).textw.len)
 					DWstrConcatAssignA( argtb->tb(num).textw, t.text )
 				else
 					hObserveMacroSource(@argtb->tb(num), t.source)
-					fbSemanticModelMacroNumericCapture(argtb->tb(num).semantic_numeric_head, @t, argtb->tb(num).textw.len)
+					fbSemanticModelMacroArgumentCapture(argtb->tb(num).semantic_numeric_head, @t, argtb->tb(num).textw.len)
 					DWstrConcatAssign( argtb->tb(num).textw, t.textw )
 				end if
 			end if
@@ -1342,8 +1342,6 @@ end function
 '':::::
 private function hReadMacroText _
 	( _
-		byval args as integer, _
-		byval paramhead as FB_DEFPARAM ptr, _
 		byval ismultiline as integer _
 	) as FB_DEFTOK ptr
 
@@ -1477,6 +1475,7 @@ private function hReadMacroText _
 				WstrAssign( @toktail->textw, lexGetTextW( ) )
 			end if
 
+			fbSemanticModelMacroNumericCapture(toktail->semantic_numeric_head, lexGetHead(), 0)
 			lexSkipToken( LEX_FLAGS )
 
 		'' identifier? check if it's a parameter (params can be keywords too)
@@ -1899,7 +1898,7 @@ sub ppDefine( byval ismultiline as integer )
 	end if
 
 	'' macro..
-	tokhead = hReadMacroText( params, paramhead, ismultiline )
+	tokhead = hReadMacroText( ismultiline )
 
 	'' Parameter names are represented by argument numbers in the replacement
 	'' token list, so equivalent definitions can be compared directly even when

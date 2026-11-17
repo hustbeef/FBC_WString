@@ -26,6 +26,10 @@
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
 #include once "tooling/semantic-hooks.bi"
+#include once "tooling/semantic-constructor-string.bi"
+#include once "tooling/semantic-startup.bi"
+#include once "tooling/semantic-resolution.bi"
+#include once "tooling/semantic-prototypes.bi"
 #include once "parser/parser.bi"
 #include once "support/containers/hash.bi"
 #include once "support/containers/list.bi"
@@ -75,6 +79,35 @@ sub symbProcFreeExt( byval proc as FBSYMBOL ptr )
 	end if
 end sub
 
+function symbIsGAS32CLongDoubleCAbiResult( byval proc as FBSYMBOL ptr ) as integer
+	dim as FBSYMBOL ptr subtype
+
+	if( (proc = NULL) orElse (symbIsReturnByRef( proc )) ) then
+		exit function
+	end if
+	if( (env.clopt.backend <> FB_BACKEND_GAS) orElse _
+	    (fbGetCpuFamily( ) <> FB_CPUFAMILY_X86) orElse _
+	    (fbGetBits( ) <> 32) orElse _
+	    (symbGetProcMode( proc ) <> FB_FUNCMODE_CDECL) ) then
+		exit function
+	end if
+	'' Use the declared result type here. The real type may already be the
+	'' hidden pointer form used by the ordinary UDT return ABI.
+	if( symbGetType( proc ) <> FB_DATATYPE_STRUCT ) then
+		exit function
+	end if
+
+	subtype = symbGetSubType( proc )
+	if( subtype = NULL ) then
+		exit function
+	end if
+
+	'' The alias may already be resolved to its backing storage UDT.
+	var subtype_name = ucase( *symbGetName( subtype ) )
+	function = (subtype_name = "CLONGDOUBLE") orElse _
+	           (subtype_name = "__CLONGDOUBLE_STORAGE")
+end function
+
 function symbProcReturnsOnStack( byval proc as FBSYMBOL ptr ) as integer
 	assert( symbIsProc( proc ) )
 
@@ -95,6 +128,12 @@ function symbProcReturnsOnStack( byval proc as FBSYMBOL ptr ) as integer
 		        ((env.target.options and FB_TARGETOPT_GAS64_SYSV_ABI) = 0) ) then
 			return TRUE
 		end if
+	end if
+
+	'' The i386 C ABI returns native long double in x87 ST(0), not through
+	'' FreeBASIC's hidden result pointer used for ordinary UDT values.
+	if( symbIsGAS32CLongDoubleCAbiResult( proc ) ) then
+		exit function
 	end if
 
 	'' BYREF result never is on stack, instead it's always a pointer,
@@ -270,7 +309,7 @@ end function
 function symbAddProcParam _
 	( _
 		byval proc as FBSYMBOL ptr, _
-		byval id as zstring ptr, _
+		byval id as const zstring ptr, _
 		byval dtype as integer, _
 		byval subtype as FBSYMBOL ptr, _
 		byval dimensions as integer, _
@@ -948,6 +987,9 @@ private sub hFinalizeProcMetadata _
 	end if
 
 	proc->proc.rtl.callback = NULL
+	proc->proc.rtl.semantic_domain = 0
+	proc->proc.rtl.semantic_effects = 0
+	proc->proc.rtl.semantic_options = 0
 
 end sub
 
@@ -1480,6 +1522,9 @@ function symbPreAddProc( byval symbol as zstring ptr ) as FBSYMBOL ptr
 	proc->proc.realsubtype = NULL
 	proc->proc.returnMethod = FB_RETURN_FPU
 	proc->proc.rtl.callback = NULL
+	proc->proc.rtl.semantic_domain = 0
+	proc->proc.rtl.semantic_effects = 0
+	proc->proc.rtl.semantic_options = 0
 	proc->proc.ovl.minparams = 0
 	proc->proc.ovl.maxparams = 0
 	proc->proc.ovl.next = NULL
@@ -1679,9 +1724,10 @@ sub symbAddProcInstanceParam _
 	select case symbGetClass( parent )
 	case FB_SYMBCLASS_STRUCT
 		dtype = FB_DATATYPE_STRUCT
-	case FB_SYMBCLASS_CLASS
-		'dtype = FB_DATATYPE_CLASS
-		exit select
+	case else
+		'' Instance parameters currently belong to supported UDT methods only.
+		errReportEx( FB_ERRMSG_INTERNAL, __FUNCTION__ )
+		exit sub
 	end select
 
 	if( symbIsConstant( proc ) ) then
@@ -1704,19 +1750,22 @@ function symbFindOverloadProc _
 		byval options as FB_SYMBFINDOPT _
 	) as FBSYMBOL ptr
 
+	dim as longint semantic_prototype = fbSemanticModelPrototypeBegin(ovl_head_proc, proc, options)
+	dim as longint semantic_candidate
+
 	dim as FBSYMBOL ptr ovl = any, ovl_param = any, param = any
 	dim as FBSYMBOL ptr ovl_subtype = any, subtype = any
 	dim as integer ovl_params = any, params = any, i = any
 
 	''
 	if( (ovl_head_proc = NULL) or (proc = NULL) ) then
-		return NULL
+		return fbSemanticModelPrototypeEnd(semantic_prototype, 0, NULL, "invalid-input")
 	end if
 
 	'' procs?
 	if( (symbGetClass( ovl_head_proc ) <> FB_SYMBCLASS_PROC) or _
 	    (symbGetClass( proc ) <> FB_SYMBCLASS_PROC) ) then
-		return NULL
+		return fbSemanticModelPrototypeEnd(semantic_prototype, 0, NULL, "invalid-input")
 	end if
 
 	params = symbGetProcParams( proc )
@@ -1731,6 +1780,7 @@ function symbFindOverloadProc _
 	do
 
 		ovl_params = ovl->proc.params
+		dim as integer semantic_declared = ovl_params
 		if( symbIsMethod( ovl ) ) then
 			ovl_params -= 1
 		end if
@@ -1752,11 +1802,13 @@ function symbFindOverloadProc _
 			end if
 		end if
 
+		semantic_candidate = fbSemanticModelPrototypeCandidate(semantic_prototype, ovl, params, semantic_declared, ovl_params, is_property)
+
 		if( params = ovl_params ) then
 
 			'' arg-less?
 			if( params = 0 ) then
-				return ovl
+				return fbSemanticModelPrototypeEnd(semantic_prototype, semantic_candidate, ovl, "selected")
 			end if
 
 			'' for each arg..
@@ -1764,16 +1816,16 @@ function symbFindOverloadProc _
 			ovl_param = symbGetProcTailParam( ovl )
 			param = symbGetProcTailParam( proc )
 			do
-				if( hCanOverloadBydesc( param, ovl_param ) ) then
+				if( fbSemanticModelPrototypeParameter(semantic_prototype, semantic_candidate, ovl_params, "bydesc", param, ovl_param, hCanOverloadBydesc( param, ovl_param )) ) then
 					exit do
 				end if
 
 				'' not the same type? check next proc..
-				if( param->typ <> ovl_param->typ ) then
+				if( fbSemanticModelPrototypeParameter(semantic_prototype, semantic_candidate, ovl_params, "type", param, ovl_param, param->typ <> ovl_param->typ) ) then
 					exit do
 				end if
 
-				if( param->subtype <> ovl_param->subtype ) then
+				if( fbSemanticModelPrototypeParameter(semantic_prototype, semantic_candidate, ovl_params, "subtype", param, ovl_param, param->subtype <> ovl_param->subtype) ) then
 					exit do
 				end if
 
@@ -1785,14 +1837,14 @@ function symbFindOverloadProc _
 
 			'' all args equal?
 			if( ovl_params = 0 ) then
-				return ovl
+				return fbSemanticModelPrototypeEnd(semantic_prototype, semantic_candidate, ovl, "selected")
 			end if
 		end if
 
 		ovl = symbGetProcOvlNext( ovl )
 	loop while( ovl <> NULL )
 
-	function = NULL
+	function = fbSemanticModelPrototypeEnd(semantic_prototype, 0, NULL, "not-found")
 
 end function
 
@@ -1865,7 +1917,8 @@ end function
 		                            FB_SYMBFINDOPT_NO_CTOR )
 
 		if( proc <> NULL ) then
-			return FB_OVLPROC_HALFMATCH - OvlMatchScore( FB_DATATYPE_STRUCT, 0 )
+			return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+				arg_mode, FB_OVLPROC_HALFMATCH - OvlMatchScore( FB_DATATYPE_STRUCT, 0 ), "ctor-conversion")
 		end if
 	end if
 #endmacro
@@ -1899,7 +1952,6 @@ end function
 
 			var match = hCalcTypesDiff( param_dtype, _
 			                            param_subtype, _
-			                            symbGetPtrCnt( proc ), _
 			                            symbGetFullType( proc ), _
 			                            symbGetSubType( proc ), _
 			                            NULL, _
@@ -1908,12 +1960,15 @@ end function
 			if( match >= FB_OVLPROC_TYPEMATCH ) then
 				match = match - FB_OVLPROC_TYPEMATCH + FB_OVLPROC_CASTMATCH
 			elseif( match >= FB_OVLPROC_HALFMATCH ) then
-				match = match - FB_OVLPROC_TYPEMATCH + FB_OVLPROC_CONVMATCH
+				'' Subtract the band being remapped. Subtracting TYPEMATCH
+				'' turns an exact HALFMATCH into NO_MATCH instead of CONVMATCH.
+				match = match - FB_OVLPROC_HALFMATCH + FB_OVLPROC_CONVMATCH
 			else
 				match = FB_OVLPROC_CONVMATCH - OvlMatchScore( FB_DATATYPE_STRUCT, 0 )
 			end if
 
-			return match
+			return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+				arg_mode, match, "cast-conversion")
 		end if
 	end if
 #endmacro
@@ -1952,7 +2007,6 @@ private function hCalcTypesDiff _
 	( _
 		byval param_dtype_in as integer, _
 		byval param_subtype as FBSYMBOL ptr, _
-		byval param_ptrcnt as integer, _
 		byval arg_dtype_in as integer, _
 		byval arg_subtype as FBSYMBOL ptr, _
 		byval arg_expr as ASTNODE ptr, _
@@ -2173,12 +2227,12 @@ end function
 '':::::
 private function hCheckOvlParam _
 	( _
-		byval parent as FBSYMBOL ptr, _
 		byval param as FBSYMBOL ptr, _
 		byval arg_expr as ASTNODE ptr, _
 		byval arg_mode as integer, _
-		byval err_num as FB_ERRMSG ptr, _
-		byval options as FB_SYMBFINDOPT _
+		byval options as FB_SYMBFINDOPT, _
+		byval semantic_candidate as longint, _
+		byval semantic_ordinal as integer _
 	) as FB_OVLPROC_MATCH_SCORE
 
 	dim as integer param_dtype = any, arg_dtype = any, param_ptrcnt = any
@@ -2190,9 +2244,11 @@ private function hCheckOvlParam _
 	if( arg_expr = NULL ) then
 		'' is param optional?
 		if( symbParamIsOptional( param ) ) then
-			return FB_OVLPROC_FULLMATCH
+			return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+				arg_mode, FB_OVLPROC_FULLMATCH, "optional-default")
 		else
-			return FB_OVLPROC_NO_MATCH
+			return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+				arg_mode, FB_OVLPROC_NO_MATCH, "required-omission")
 		end if
 	end if
 
@@ -2209,7 +2265,8 @@ private function hCheckOvlParam _
 	case FB_PARAMMODE_BYDESC
 		'' but arg isn't?
 		if( arg_mode <> FB_PARAMMODE_BYDESC ) then
-			return FB_OVLPROC_NO_MATCH
+			return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+				arg_mode, FB_OVLPROC_NO_MATCH, "descriptor-mode")
 		end if
 
 		var match = FB_OVLPROC_FULLMATCH
@@ -2220,7 +2277,8 @@ private function hCheckOvlParam _
 
 		'' not same type?
 		if( match < FB_OVLPROC_TYPEMATCH ) then
-			return FB_OVLPROC_NO_MATCH
+			return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+				arg_mode, FB_OVLPROC_NO_MATCH, "descriptor-type")
 		end if
 
 		assert( astIsVAR( arg_expr ) or astIsFIELD( arg_expr ) or astIsNIDXARRAY( arg_expr ) )
@@ -2233,20 +2291,24 @@ private function hCheckOvlParam _
 		if( param->param.bydescdimensions > 0 ) then
 			if( (param->param.bydescdimensions <> symbGetArrayDimensions( array )) and _
 			    (symbGetArrayDimensions( array ) > 0) ) then
-				return FB_OVLPROC_NO_MATCH
+				return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+					arg_mode, FB_OVLPROC_NO_MATCH, "descriptor-rank")
 			end if
 		end if
 
-		return match
+		return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+			arg_mode, match, "descriptor-match")
 
 	'' byref param?
 	case FB_PARAMMODE_BYREF
 		if( symbParamWasDeclaredAsAny( param ) ) then
 			if( arg_mode = FB_PARAMMODE_BYDESC ) then
-				return FB_OVLPROC_NO_MATCH
+				return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+					arg_mode, FB_OVLPROC_NO_MATCH, "byref-descriptor")
 			end if
 
-			return FB_OVLPROC_HALFMATCH
+			return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+				arg_mode, FB_OVLPROC_HALFMATCH, "byref-any")
 		end if
 
 		'' arg being passed by value? and not a UDT?
@@ -2257,7 +2319,8 @@ private function hCheckOvlParam _
 			'' invalid type? refuse..
 			if( (typeGetClass( arg_dtype ) <> FB_DATACLASS_INTEGER) or _
 				(typeGetSize( arg_dtype ) <> env.pointersize) ) then
-				return FB_OVLPROC_NO_MATCH
+				return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+					arg_mode, FB_OVLPROC_NO_MATCH, "byref-byval-width")
 			end if
 
 			'' pretend param is a pointer
@@ -2272,12 +2335,14 @@ private function hCheckOvlParam _
 
 	case else
 		errReportEx( FB_ERRMSG_INTERNAL, __FUNCTION__ )
-		return FB_OVLPROC_NO_MATCH
+		return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+			arg_mode, FB_OVLPROC_NO_MATCH, "invalid-mode")
 	end select
 
 	'' arg passed by descriptor? refuse..
 	if( arg_mode = FB_PARAMMODE_BYDESC ) then
-		return FB_OVLPROC_NO_MATCH
+		return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+			arg_mode, FB_OVLPROC_NO_MATCH, "argument-descriptor")
 	end if
 
 	'' same types?
@@ -2291,7 +2356,7 @@ private function hCheckOvlParam _
 		'' score, such that we prefer passing arguments to the parameter
 		'' with the closest base type.
 		''
-		var baselevel = 0
+
 		dim match as FB_OVLPROC_MATCH_SCORE = FB_OVLPROC_NO_MATCH
 		if( param_subtype = arg_subtype ) then
 			match = FB_OVLPROC_FULLMATCH
@@ -2314,7 +2379,8 @@ private function hCheckOvlParam _
 
 			'' Exact same CONSTs? Then there's no point in calling symbCheckConstAssignTopLevel().
 			if( typeGetConstMask( param_dtype ) = typeGetConstMask( arg_dtype ) ) then
-				return match
+				return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+					arg_mode, match, "same-type")
 			end if
 
 			'' Check whether CONSTness allows passing the arg to the param.
@@ -2325,11 +2391,13 @@ private function hCheckOvlParam _
 					match -= OvlMatchScore( FB_DATATYPES, 0 )
 				end if
 				match += OvlMatchScore( const_matches, 0 )
-				return match
+				return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+					arg_mode, match, "compatible-const")
 			end if
 
 			'' Same/compatible type, but mismatch due to CONSTness
-			return FB_OVLPROC_NO_MATCH
+			return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+				arg_mode, FB_OVLPROC_NO_MATCH, "incompatible-const")
 		end if
 	end if
 
@@ -2350,12 +2418,14 @@ private function hCheckOvlParam _
 		                 arg_expr, _
 		                 options )
 
-		return FB_OVLPROC_NO_MATCH
+		return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+			arg_mode, FB_OVLPROC_NO_MATCH, "udt-no-conversion")
 
 	'' enum param? refuse any other argument type, even integers,
 	'' or operator overloading wouldn't work (as in C++)
 	case FB_DATATYPE_ENUM
-		return FB_OVLPROC_NO_MATCH
+		return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+			arg_mode, FB_OVLPROC_NO_MATCH, "enum-mismatch")
 
 	case else
 		select case arg_dtype
@@ -2367,18 +2437,21 @@ private function hCheckOvlParam _
 			                 arg_expr, _
 			                 options )
 
-			return FB_OVLPROC_NO_MATCH
+			return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+				arg_mode, FB_OVLPROC_NO_MATCH, "udt-no-conversion")
 		end select
 	end select
 
 	'' last resource, calc the differences
-	function = hCalcTypesDiff( param_dtype, _
+	dim as FB_OVLPROC_MATCH_SCORE semantic_score = hCalcTypesDiff( param_dtype, _
 	                           param_subtype, _
-	                           param_ptrcnt, _
 	                           arg_dtype, _
 	                           arg_subtype, _
 	                           arg_expr, _
 	                           param_mode )
+
+	return fbSemanticModelResolutionArgument(semantic_candidate, semantic_ordinal, param, arg_expr, _
+		arg_mode, semantic_score, "type-difference")
 
 end function
 
@@ -2388,11 +2461,11 @@ private function hCheckOvlProc _
 		byval ovl_head_proc as FBSYMBOL ptr, _
 		byval args as integer, _
 		byval arg_head as FB_CALL_ARG ptr, _
-		byval err_num as FB_ERRMSG ptr, _
 		byval options as FB_SYMBFINDOPT, _
 		byval ovl as FBSYMBOL ptr, _
 		byref exact_matches as integer, _
-		byref is_match as integer _
+		byref is_match as integer, _
+		byval semantic_candidate as longint _
 	) as integer
 
 	dim as FBSYMBOL ptr param = any
@@ -2400,6 +2473,9 @@ private function hCheckOvlProc _
 	dim as FB_OVLPROC_MATCH_SCORE matchscore = FB_OVLPROC_NO_MATCH
 	dim as integer matchcount = any
 	dim as FB_CALL_ARG ptr arg = any
+
+	dim as string semantic_reason = "argument-count"
+	dim as integer semantic_exact_known = FALSE, semantic_exact = -1
 
 	dim as integer is_property = symbIsProperty( ovl_head_proc )
 
@@ -2417,18 +2493,22 @@ private function hCheckOvlProc _
 			'' don't check if it's set
 			if( symbGetType( ovl ) = FB_DATATYPE_VOID ) then
 				params = -1
+				semantic_reason = "property-accessor"
 			end if
 		'' set..
 		else
 			'' don't check if it's get
 			if( symbGetType( ovl ) <> FB_DATATYPE_VOID ) then
 				params = -1
+				semantic_reason = "property-accessor"
 			end if
 		end if
 	end if
 
 	'' Only consider overloads with enough params
 	if( args <= params ) then
+		semantic_reason = "parameter-checks"
+		semantic_exact_known = TRUE
 		param = symbGetProcHeadParam( ovl )
 		if( symbIsMethod( ovl ) ) then
 			param = param->next
@@ -2442,14 +2522,15 @@ private function hCheckOvlProc _
 
 			'' Check for matching parameter.
 			arg_matchscore = hCheckOvlParam( _
-				ovl, _
 				param, _
 				arg->expr, _
 				arg->mode, _
-				err_num, _
-				options )
+				options, _
+				semantic_candidate, _
+				i + 1 )
 
 			if( arg_matchscore = FB_OVLPROC_NO_MATCH ) then
+				semantic_reason = "argument-mismatch"
 				matchscore = FB_OVLPROC_NO_MATCH
 				exit for
 			end if
@@ -2475,16 +2556,24 @@ private function hCheckOvlProc _
 			'' not optional? exit
 			if( symbParamIsOptional( param ) = FALSE ) then
 				'' Missing arg for this param - not a match afterall.
+				semantic_reason = "missing-required"
+				fbSemanticModelResolutionArgument(semantic_candidate, i + 1, param, NULL, _
+					INVALID, -1, "trailing-required")
 				is_match = FALSE
 				exit for
 			end if
 
+			fbSemanticModelResolutionArgument(semantic_candidate, i + 1, param, NULL, _
+				INVALID, -1, "trailing-optional")
 			'' next param
 			param = param->next
 		next
 
 	end if
 
+	if( semantic_exact_known ) then semantic_exact = exact_matches
+	fbSemanticModelResolutionScore(semantic_candidate, matchscore, is_match, semantic_exact_known, _
+		semantic_exact, params, semantic_reason, 0)
 	return matchscore
 
 end function
@@ -2504,9 +2593,11 @@ function symbFindClosestOvlProc _
 	dim as integer exact_matches = any, matchcount = any, is_match = any
 
 	*err_num = FB_ERRMSG_OK
+	dim as longint semantic_scope = fbSemanticModelResolutionBegin("closest", ovl_head_proc, args, options)
+	dim as longint semantic_candidate, semantic_closest, semantic_confirmation
 
 	if( ovl_head_proc = NULL ) then
-		return NULL
+		return fbSemanticModelResolutionEnd(semantic_scope, 0, 0, 0, 0, *err_num, NULL)
 	end if
 
 	closest_proc = NULL
@@ -2517,15 +2608,17 @@ function symbFindClosestOvlProc _
 	'' for each proc..
 	ovl = ovl_head_proc
 	do
+		semantic_candidate = fbSemanticModelResolutionCandidate(semantic_scope, ovl, "screen")
+		dim as string semantic_action = "rejected"
 		matchscore = hCheckOvlProc( _
 			ovl_head_proc, _
 			args, _
 			arg_head, _
-			err_num, _
 			options or FB_SYMBFINDOPT_NO_ERROR, _
 			ovl, _
 			exact_matches, _
-			is_match )
+			is_match, _
+			semantic_candidate )
 
 		if( is_match ) then
 			'' First match, or better match than any previous overload?
@@ -2542,13 +2635,23 @@ function symbFindClosestOvlProc _
 					closest_proc = ovl
 					max_matchscore = matchscore
 					matchcount = 1
+					semantic_closest = semantic_candidate
+					semantic_action = "better"
+				else
+					semantic_action = "ineligible"
 				end if
 
 			'' Same score as best previous overload?
 			elseif( matchscore = max_matchscore ) then
 				matchcount += 1
+				semantic_action = "tie"
+			else
+				semantic_action = "inferior"
 			end if
 		end if
+
+		fbSemanticModelResolutionRank(semantic_scope, semantic_candidate, semantic_action, _
+			max_matchscore, matchcount, semantic_closest)
 
 		'' next overloaded proc
 		ovl = symbGetProcOvlNext( ovl )
@@ -2557,26 +2660,29 @@ function symbFindClosestOvlProc _
 	'' more than one possibility?
 	if( matchcount > 1 ) then
 		*err_num = FB_ERRMSG_AMBIGUOUSCALLTOPROC
-		function = NULL
+		function = fbSemanticModelResolutionEnd(semantic_scope, 0, 0, max_matchscore, matchcount, *err_num, NULL)
 	else
 		if( closest_proc ) then
+			semantic_confirmation = fbSemanticModelResolutionCandidate(semantic_scope, closest_proc, "confirm")
 			matchscore = hCheckOvlProc( _
 				ovl_head_proc, _
 				args, _
 				arg_head, _
-				err_num, _
 				options, _
 				closest_proc, _
 				exact_matches, _
-				is_match )
+				is_match, _
+				semantic_confirmation )
 
 			if( is_match = FALSE ) then
-				function = NULL
+				function = fbSemanticModelResolutionEnd(semantic_scope, 0, semantic_confirmation, max_matchscore, matchcount, *err_num, NULL)
 			else
-				function = closest_proc
+				fbSemanticModelConstructorString(ovl_head_proc, closest_proc, args, arg_head, options)
+				function = fbSemanticModelResolutionEnd(semantic_scope, semantic_closest, semantic_confirmation, _
+					max_matchscore, matchcount, *err_num, closest_proc)
 			end if
 		else
-			function = NULL
+			function = fbSemanticModelResolutionEnd(semantic_scope, 0, 0, max_matchscore, matchcount, *err_num, NULL)
 		end if
 	end if
 
@@ -2796,7 +2902,8 @@ private function hCheckCastOvl _
 		byval proc as FBSYMBOL ptr, _
 		byval to_dtype as integer, _
 		byval to_subtype as FBSYMBOL ptr, _
-		byval options as FB_SYMBFINDOPT = FB_SYMBFINDOPT_NONE _
+		byval options as FB_SYMBFINDOPT, _
+		byval semantic_candidate as longint _
 	) as FB_OVLPROC_MATCH_SCORE
 
 	dim as integer proc_dtype = any
@@ -2813,44 +2920,51 @@ private function hCheckCastOvl _
 
 			'' same const?
 			if( proc_dtype = to_dtype ) then
-				return FB_OVLPROC_FULLMATCH
+				return fbSemanticModelResolutionCastScore(semantic_candidate, FB_OVLPROC_FULLMATCH, _
+					proc->proc.params, "cast-exact")
 			end if
 
-			return FB_OVLPROC_TYPEMATCH
+			return fbSemanticModelResolutionCastScore(semantic_candidate, FB_OVLPROC_TYPEMATCH, _
+				proc->proc.params, "cast-const")
 		end if
 
 		if( typeIsPtr( proc_dtype ) ) then
-			return FB_OVLPROC_NO_MATCH
+			return fbSemanticModelResolutionCastScore(semantic_candidate, FB_OVLPROC_NO_MATCH, _
+				proc->proc.params, "cast-pointer-subtype")
 		end if
 	end if
 
 	'' different types..
 	if( (options and FB_SYMBFINDOPT_EXPLICIT) <> 0 ) then
-		return FB_OVLPROC_NO_MATCH
+		return fbSemanticModelResolutionCastScore(semantic_candidate, FB_OVLPROC_NO_MATCH, _
+			proc->proc.params, "cast-explicit-mismatch")
 	end if
 
 	select case typeGet( proc_dtype )
 	'' UDT or enum? can't be different (this is the last resource,
 	'' don't try to do coercion inside a casting routine)
 	case FB_DATATYPE_STRUCT, FB_DATATYPE_ENUM ', FB_DATATYPE_CLASS
-		return FB_OVLPROC_NO_MATCH
+		return fbSemanticModelResolutionCastScore(semantic_candidate, FB_OVLPROC_NO_MATCH, _
+			proc->proc.params, "cast-nominal-result")
 
 	case else
 		select case typeGet( to_dtype )
 		'' UDT arg? refuse
 		case FB_DATATYPE_STRUCT ', FB_DATATYPE_CLASS
-			return FB_OVLPROC_NO_MATCH
+			return fbSemanticModelResolutionCastScore(semantic_candidate, FB_OVLPROC_NO_MATCH, _
+				proc->proc.params, "cast-nominal-target")
 		end select
 
 	end select
 
 	'' last resource, calc the differences
-	function = hCalcTypesDiff( proc_dtype, _
+	dim as FB_OVLPROC_MATCH_SCORE semantic_score = hCalcTypesDiff( proc_dtype, _
 	                           proc_subtype, _
-	                           symbGetPtrCnt( proc ), _
 	                           to_dtype, _
 	                           to_subtype, _
 	                           NULL )
+
+	return fbSemanticModelResolutionCastScore(semantic_candidate, semantic_score, proc->proc.params, "cast-type-difference")
 
 end function
 
@@ -2890,6 +3004,10 @@ function symbFindCastOvlProc _
 		return NULL
 	end if
 
+	dim as string semantic_kind = iif(typeGet(to_dtype) = FB_DATATYPE_VOID, "cast-precision", "cast")
+	dim as longint semantic_scope = fbSemanticModelResolutionBegin(semantic_kind, proc_head, 0, options, to_dtype, to_subtype)
+	dim as longint semantic_candidate, semantic_closest
+
 	dim as FBSYMBOL ptr p = any, proc = any, closest_proc = any
 	dim as FB_OVLPROC_MATCH_SCORE matchscore = any, max_matchscore = any
 	dim as integer matchcount = any
@@ -2904,18 +3022,28 @@ function symbFindCastOvlProc _
 		proc = proc_head
 		do while( proc <> NULL )
 
-			matchscore = hCheckCastOvl( proc, to_dtype, to_subtype, options )
+			semantic_candidate = fbSemanticModelResolutionCandidate(semantic_scope, proc, "cast")
+			dim as string semantic_action = "rejected"
+			matchscore = hCheckCastOvl( proc, to_dtype, to_subtype, options, semantic_candidate )
 			if( matchscore > max_matchscore ) then
 				closest_proc = proc
 				max_matchscore = matchscore
 				matchcount = 1
+				semantic_closest = semantic_candidate
+				semantic_action = "better"
 
 			'' same? ambiguity..
 			elseif( matchscore = max_matchscore ) then
 				if( max_matchscore > 0 ) then
 					matchcount += 1
+					semantic_action = "tie"
 				end if
+			elseif( matchscore > 0 ) then
+				semantic_action = "inferior"
 			end if
+
+			fbSemanticModelResolutionRank(semantic_scope, semantic_candidate, semantic_action, _
+				max_matchscore, matchcount, semantic_closest)
 
 			'' next
 			proc = symbGetProcOvlNext( proc )
@@ -2926,6 +3054,9 @@ function symbFindCastOvlProc _
 		'' for each overloaded proc..
 		proc = proc_head
 		do while( proc <> NULL )
+			semantic_candidate = fbSemanticModelResolutionCandidate(semantic_scope, proc, "precision")
+			dim as integer semantic_changed = FALSE
+			dim as string semantic_action = "precision-skip"
 
 			'' simple type?
 			if( symbGetSubType( proc ) = NULL ) then
@@ -2934,9 +3065,17 @@ function symbFindCastOvlProc _
 					if( symbGetType( proc ) > to_dtype ) then
 						closest_proc = proc
 						to_dtype = symbGetType( proc )
+						semantic_closest = semantic_candidate
+						semantic_changed = TRUE
+						semantic_action = "precision-better"
 					end if
 				end if
 			end if
+
+			fbSemanticModelResolutionScore(semantic_candidate, -1, semantic_changed, FALSE, -1, _
+				proc->proc.params, semantic_action, 0)
+			fbSemanticModelResolutionRank(semantic_scope, semantic_candidate, semantic_action, _
+				max_matchscore, matchcount, semantic_closest)
 
 			'' next
 			proc = symbGetProcOvlNext( proc )
@@ -2965,7 +3104,8 @@ function symbFindCastOvlProc _
 		end if
 	end if
 
-	function = closest_proc
+	function = fbSemanticModelResolutionEnd(semantic_scope, iif(closest_proc <> NULL, semantic_closest, 0), _
+		0, max_matchscore, matchcount, *err_num, closest_proc)
 
 end function
 
@@ -3064,11 +3204,13 @@ end function
 function symbAddGlobalCtor( byval proc as FBSYMBOL ptr ) as FB_GLOBCTORLIST_ITEM ptr
 	symbSetIsGlobalCtor( proc )
 	function = hAddToGlobCtorList( @symb.globctorlist, proc )
+	fbSemanticModelStartupRegistration(proc, "constructor")
 end function
 
 function symbAddGlobalDtor( byval proc as FBSYMBOL ptr ) as FB_GLOBCTORLIST_ITEM ptr
 	symbSetIsGlobalDtor( proc )
 	function = hAddToGlobCtorList( @symb.globdtorlist, proc )
+	fbSemanticModelStartupRegistration(proc, "destructor")
 end function
 
 ''::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::

@@ -133,11 +133,17 @@ type DATABUFFER
 	size    as integer
 end type
 
-'' Module state: hLoadFile() fills these buffers and hResetBuffers() releases them.
-dim shared as DATABUFFER _
-	ardata, _   '' current .a file content (if any)
-	objdata, _  '' current .o file content (can point into ardata)
-	fbctinf     '' .fbctinf section content, points into objdata
+type DATABUFFERVIEW
+	p       as const ubyte ptr
+	size    as integer
+end type
+
+'' Module state: ardata owns the archive allocation. objdata owns a standalone
+'' object allocation or borrows a span from ardata. objinfoReadEnd() frees the owner.
+dim shared as DATABUFFER ardata, objdata
+
+'' Metadata is a read-only view into objdata until objinfoReadEnd().
+dim shared as DATABUFFERVIEW fbctinf
 
 enum
 	FB_INFOSEC_EOL = 0
@@ -405,7 +411,8 @@ private sub hLoadFbctinfFrom##ELF_H( byval ELF_MACHINE as integer )
 	end if
 
 	'' index of .shstrtab's section header
-	if( (h->e_shstrndx < 0) or (h->e_shstrndx >= h->e_shnum) ) then
+	'' The ELF field is unsigned; its upper bound is the validity check.
+	if( h->e_shstrndx >= h->e_shnum ) then
 		INFO( "elf: invalid e_shstrndx" )
 		exit sub
 	end if
@@ -991,7 +998,7 @@ end sub
 '' objinfo parsing interface
 
 type ENTRYINFO
-	text       as zstring ptr
+	text       as const zstring ptr
 	has_param  as integer
 end type
 
@@ -1087,7 +1094,7 @@ sub objinfoReadLib( byref libname as string, byval libpaths as TLIST ptr )
 	objinfoReadLibfile( libfile )
 end sub
 
-private function hGetNextString( ) as zstring ptr
+private function hGetNextString( ) as const zstring ptr
 	dim as integer begin = any
 
 	function = @""
@@ -1204,7 +1211,7 @@ sub objinfoReadEnd( )
 	hResetBuffers( )
 end sub
 
-function objinfoEncode( byval entry as integer ) as zstring ptr
+function objinfoEncode( byval entry as integer ) as const zstring ptr
 	function = entries(entry).text
 end function
 

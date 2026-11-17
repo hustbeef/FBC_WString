@@ -9,15 +9,32 @@
 
 #include "../fb_gfx.h"
 
+/* An IME commits a word in one callback, before BASIC can drain INKEY. */
+#if defined(HOST_ANDROID) || defined(HOST_JS) || defined(HOST_LINUX)
+#define KEY_BUFFER_LEN		256
+#else
 #define KEY_BUFFER_LEN		16
+#endif
 
 static int key_buffer[KEY_BUFFER_LEN], key_head = 0, key_tail = 0;
 static int key_buffer_changed = FALSE;
 
+static void lock_key_buffer(void)
+{
+	if ((fb_gfx) && (fb_gfx->event_mutex))
+		fb_MutexLock(fb_gfx->event_mutex);
+}
+
+static void unlock_key_buffer(void)
+{
+	if ((fb_gfx) && (fb_gfx->event_mutex))
+		fb_MutexUnlock(fb_gfx->event_mutex);
+}
+
 static void poll_events(void)
 {
-	if ((__fb_gfx) && (__fb_gfx->driver->poll_events))
-		__fb_gfx->driver->poll_events();
+	if ((fb_gfx) && (fb_gfx->driver->poll_events))
+		fb_gfx->driver->poll_events();
 }
 
 int fb_hGfxInputBufferChanged( void )
@@ -25,43 +42,42 @@ int fb_hGfxInputBufferChanged( void )
 	int res;
 
 	FB_GRAPHICS_LOCK( );
-	DRIVER_LOCK();
+	lock_key_buffer();
 
     res = key_buffer_changed;
     key_buffer_changed = FALSE;
 
-	DRIVER_UNLOCK();
+	unlock_key_buffer();
 	FB_GRAPHICS_UNLOCK( );
 
 	return res;
 }
 
-/* Only called from gfx drivers; caller is expected to hold DRIVER_LOCK() */
+/* Drivers post keys without waiting for the display to finish presenting. */
 void fb_hPostKey(int key)
 {
+	lock_key_buffer();
 	key_buffer[key_tail] = key;
 	if (((key_tail + 1) & (KEY_BUFFER_LEN - 1)) == key_head)
 		key_head = (key_head + 1) & (KEY_BUFFER_LEN - 1);
     key_tail = (key_tail + 1) & (KEY_BUFFER_LEN - 1);
     key_buffer_changed = TRUE;
+	unlock_key_buffer();
 }
 
 static int get_key(void)
 {
 	int key = 0;
 
-	DRIVER_LOCK();
+	lock_key_buffer();
 
 	if (key_head != key_tail) {
 		key = key_buffer[key_head];
 		key_head = (key_head + 1) & (KEY_BUFFER_LEN - 1);
 	}
-
-    /* Reset the status for "key buffer changed" when a key
-     * was removed from the input queue. */
-    fb_hGfxInputBufferChanged();
-
-	DRIVER_UNLOCK();
+	/* INKEY and INPUT SLEEP share the pending-key notification state. */
+	key_buffer_changed = FALSE;
+	unlock_key_buffer();
 
 	return key;
 }
@@ -76,7 +92,7 @@ int fb_GfxGetkey(void)
 		FB_GRAPHICS_LOCK( );
 
 		/* Abort if gfx screen was closed */
-		if (!__fb_gfx) {
+		if (!fb_gfx) {
 			FB_GRAPHICS_UNLOCK( );
 			break;
 		}
@@ -105,30 +121,30 @@ int fb_GfxKeyHit(void)
 
 	poll_events( );
 
-	DRIVER_LOCK();
+	lock_key_buffer();
 
 	res = (key_head != key_tail? 1: 0);
 
-	DRIVER_UNLOCK();
+	unlock_key_buffer();
 	FB_GRAPHICS_UNLOCK( );
 
 	return res;
 }
 
 /* Caller is expected to hold FB_LOCK() */
-FBSTRING *fb_GfxInkey(void)
+FBSTRING_ACCESS *fb_GfxInkey(void)
 {
-	FBSTRING *res;
+	FBSTRING_ACCESS *res;
 	int ch;
 
 	FB_GRAPHICS_LOCK( );
 
 	poll_events( );
 
-	if (__fb_gfx && (ch = get_key())) {
+	if (fb_gfx && (ch = get_key())) {
 		res = fb_hMakeInkeyStr( ch );
 	} else {
-		res = &__fb_ctx.null_desc;
+		res = &fb_ctx.null_desc;
 	}
 
 	FB_GRAPHICS_UNLOCK( );

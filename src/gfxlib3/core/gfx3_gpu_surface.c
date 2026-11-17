@@ -25,6 +25,7 @@
 		- page lifecycle, page switching, or presentation policy
 */
 
+#include "../gfx3_exports.h"
 #include "../gfx3_api_internal.h"
 #include "../gfx3_file_api.h"
 #include "../gfx3_gpu_surface.h"
@@ -201,7 +202,7 @@ done:
 	return node;
 }
 
-FBCALL void *fb_Gfx3SurfaceLoad(FBSTRING *filename, int depth,
+FBCALL void *fb_Gfx3SurfaceLoad(FBSTRING_ACCESS *filename, int depth,
 	unsigned int usage)
 {
 	FB_GFX3_GPU_SURFACE_NODE *node = NULL;
@@ -270,7 +271,7 @@ unlock:
 FBCALL void *fb_Gfx3SurfaceLoadWstr(const FB_WCHAR *filename, int depth,
 	unsigned int usage)
 {
-	FBSTRING *utf8;
+	FBSTRING_ACCESS *utf8;
 	/* Convert before acquiring the graphics lock. The existing loader owns
 	   the temporary descriptor and the platform's UTF-8 file operation. */
 	FB_STRLOCK();
@@ -1005,41 +1006,66 @@ FBCALL int fb_Gfx3DrawPoints(void *destination_pointer,
 {
 	FB_GFX3_DRAW_STATE *state;
 	FB_GFX3_SURFACE *surface = NULL;
+	FB_GFX3_MODE *mode = NULL;
 	FB_GFX3_POINT *points = NULL;
 	FB_GFX3_RECT clip;
 	size_t allocation_size;
 	uint32_t bytes_per_pixel;
 	int index;
+	int allocated_points = FALSE;
 	int result = FB_GFX3_INVALID;
+	/* Retain one usual packet; larger one-off submissions do not grow mode scratch. */
+	const size_t retained_point_limit = 16384u;
 
 	if ((count < 0) || ((count != 0) && (public_points == NULL)) ||
 	    (fb_gfx3_size_multiply((size_t)count, sizeof(*points),
 	     &allocation_size) != FB_GFX3_OK))
 		goto done;
-	if (count != 0) {
-		points = (FB_GFX3_POINT *)malloc(allocation_size);
-		if (points == NULL) {
-			result = FB_GFX3_OUT_OF_MEMORY;
-			goto done;
-		}
-	}
 	FB_GRAPHICS_LOCK();
 	state = fb_gfx3_api_get_draw_state_locked();
-	if (state == NULL)
+	if ((state == NULL) || (state->mode == NULL))
 		goto unlock;
+	mode = state->mode;
 	if (destination_pointer == NULL) {
-		if (state->work_page >= state->mode->page_count)
+		if (state->work_page >= mode->page_count)
 			goto unlock;
-		surface = &state->mode->pages[state->work_page];
+		surface = &mode->pages[state->work_page];
 		clip = state->view;
 	} else {
 		if (fb_gfx3_gpu_surface_lookup_locked(destination_pointer,
-		    state->mode, &surface) != FB_GFX3_OK)
+		    mode, &surface) != FB_GFX3_OK)
 			goto unlock;
 		clip.x1 = 0;
 		clip.y1 = 0;
 		clip.x2 = (int32_t)surface->width - 1;
 		clip.y2 = (int32_t)surface->height - 1;
+	}
+	if (count != 0) {
+		/*
+			The mode scratch is shared with line conversion. The global graphics
+			lock serializes both users, and the converted points are consumed
+			before this public call releases that lock.
+		*/
+		if ((mode->primitive_scratch != NULL) &&
+		    (allocation_size <= mode->primitive_scratch_capacity)) {
+			points = (FB_GFX3_POINT *)mode->primitive_scratch;
+		} else if (allocation_size <= retained_point_limit * sizeof(*points)) {
+			void *scratch = realloc(mode->primitive_scratch, allocation_size);
+			if (scratch == NULL) {
+				result = FB_GFX3_OUT_OF_MEMORY;
+				goto unlock;
+			}
+			mode->primitive_scratch = scratch;
+			mode->primitive_scratch_capacity = allocation_size;
+			points = (FB_GFX3_POINT *)scratch;
+		} else {
+			points = (FB_GFX3_POINT *)malloc(allocation_size);
+			if (points == NULL) {
+				result = FB_GFX3_OUT_OF_MEMORY;
+				goto unlock;
+			}
+			allocated_points = TRUE;
+		}
 	}
 	bytes_per_pixel = gpu_surface_bytes_per_pixel(surface->depth);
 	for (index = 0; index < count; index++) {
@@ -1075,7 +1101,216 @@ FBCALL int fb_Gfx3DrawPoints(void *destination_pointer,
 unlock:
 	FB_GRAPHICS_UNLOCK();
 done:
-	free(points);
+	if (allocated_points)
+		free(points);
+	return fb_ErrorSetNum(fb_gfx3_api_runtime_error(result));
+}
+
+FBCALL int fb_Gfx3DrawLines(const FB_GFX3_COMPAT_LINE *lines, int count)
+{
+	FB_GFX3_DRAW_STATE *state;
+	int result = FB_GFX3_INVALID;
+
+	if ((count < 0) ||
+	    ((uint32_t)count > FB_GFX3_CONTEXT_PENDING_LINE_LIMIT) ||
+	    ((count != 0) && (lines == NULL)))
+		goto done;
+	FB_GRAPHICS_LOCK();
+	state = fb_gfx3_api_get_draw_state_locked();
+	if (state == NULL)
+		goto unlock;
+	if (state->work_page >= state->mode->page_count)
+		goto unlock;
+	result = fb_gfx3_compat_lines_logical(state, lines, (uint32_t)count);
+
+unlock:
+	FB_GRAPHICS_UNLOCK();
+done:
+	return fb_ErrorSetNum(fb_gfx3_api_runtime_error(result));
+}
+
+static int gpu_surface_draw_glyphs_as_points_locked(
+	FB_GFX3_DRAW_STATE *state, const FB_GFX3_GLYPH *glyphs, uint32_t count)
+{
+	FB_GFX3_MODE *mode;
+	FB_GFX3_POINT *points;
+	size_t maximum_point_count;
+	size_t allocation_size;
+	uint32_t glyph_offset;
+	uint32_t bytes_per_pixel;
+	const uint32_t glyphs_per_batch = 64u;
+	int result = FB_GFX3_OK;
+
+	if ((state == NULL) || (state->mode == NULL) || (glyphs == NULL))
+		return FB_GFX3_INVALID;
+	mode = state->mode;
+	if ((fb_gfx3_size_multiply(glyphs_per_batch, 128u,
+	    &maximum_point_count) != FB_GFX3_OK) ||
+	    (fb_gfx3_size_multiply(maximum_point_count, sizeof(*points),
+	    &allocation_size) != FB_GFX3_OK))
+		return FB_GFX3_INVALID;
+	if (allocation_size > mode->primitive_scratch_capacity) {
+		void *scratch = realloc(mode->primitive_scratch, allocation_size);
+		if (scratch == NULL)
+			return FB_GFX3_OUT_OF_MEMORY;
+		mode->primitive_scratch = scratch;
+		mode->primitive_scratch_capacity = allocation_size;
+	}
+	points = (FB_GFX3_POINT *)mode->primitive_scratch;
+	bytes_per_pixel = gpu_surface_bytes_per_pixel(mode->depth);
+
+	for (glyph_offset = 0u; glyph_offset < count;
+	     glyph_offset += glyphs_per_batch) {
+		uint32_t glyph_count = count - glyph_offset;
+		uint32_t point_count = 0u;
+		uint32_t glyph_index;
+
+		if (glyph_count > glyphs_per_batch)
+			glyph_count = glyphs_per_batch;
+		for (glyph_index = 0u; glyph_index < glyph_count; ++glyph_index) {
+			const FB_GFX3_GLYPH *glyph = &glyphs[glyph_offset + glyph_index];
+			uint32_t row;
+
+			for (row = 0u; row < glyph->height; ++row) {
+				uint32_t column;
+
+				for (column = 0u; column < glyph->width; ++column) {
+					int64_t pixel_x = (int64_t)glyph->x + column;
+					int64_t pixel_y = (int64_t)glyph->y + row;
+					int foreground =
+						(glyph->row[row] & (1u << column)) != 0u;
+					uint32_t color;
+
+					if (!foreground &&
+					    ((glyph->flags & FB_GFX3_GLYPH_BACKGROUND) == 0u))
+						continue;
+					if ((pixel_x < state->view.x1) ||
+					    (pixel_x > state->view.x2) ||
+					    (pixel_y < state->view.y1) ||
+					    (pixel_y > state->view.y2) ||
+					    (pixel_x < 0) || (pixel_y < 0) ||
+					    ((uint64_t)pixel_x >= mode->width) ||
+					    ((uint64_t)pixel_y >= mode->height))
+						continue;
+					color = foreground ? glyph->foreground : glyph->background;
+					points[point_count].x = (int32_t)pixel_x;
+					points[point_count].y = (int32_t)pixel_y;
+					points[point_count].color = fb_gfx3_image_fix_color(
+						bytes_per_pixel, color);
+					points[point_count].flags = 0u;
+					point_count++;
+				}
+			}
+		}
+		if (point_count != 0u) {
+			result = fb_gfx3_compat_points_absolute(state, points,
+				point_count);
+			if (result != FB_GFX3_OK)
+				return result;
+		}
+	}
+	return result;
+}
+
+FBCALL int fb_Gfx3DrawGlyphs(const FB_GFX3_GLYPH *glyphs, int count)
+{
+	FB_GFX3_DRAW_STATE *state;
+	FB_GFX3_MODE *mode;
+	FB_GFX3_GLYPH *normalized_glyphs;
+	size_t allocation_size;
+	uint32_t index;
+	uint32_t bytes_per_pixel;
+	int result = FB_GFX3_INVALID;
+
+	if ((count < 0) ||
+	    ((uint32_t)count > FB_GFX3_CONTEXT_PENDING_GLYPH_LIMIT) ||
+	    ((count != 0) && (glyphs == NULL)))
+		goto done;
+	FB_GRAPHICS_LOCK();
+	state = fb_gfx3_api_get_draw_state_locked();
+	if ((state == NULL) || (state->mode == NULL))
+		goto unlock;
+	mode = state->mode;
+	if (state->work_page >= mode->page_count)
+		goto unlock;
+	if (count == 0) {
+		result = FB_GFX3_OK;
+		goto unlock;
+	}
+	for (index = 0u; index < (uint32_t)count; ++index) {
+		int64_t last_x = (int64_t)glyphs[index].x +
+			(int64_t)glyphs[index].width - 1;
+		int64_t last_y = (int64_t)glyphs[index].y +
+			(int64_t)glyphs[index].height - 1;
+
+		if ((glyphs[index].width == 0u) || (glyphs[index].width > 8u) ||
+		    (glyphs[index].height == 0u) || (glyphs[index].height > 16u) ||
+		    (last_x > INT32_MAX) || (last_y > INT32_MAX) ||
+		    ((glyphs[index].flags &
+		      ~(uint32_t)FB_GFX3_GLYPH_BACKGROUND) != 0u))
+			goto unlock;
+	}
+	if ((mode->context.renderer.backend.caps.features &
+	     FB_GFX3_FEATURE_PACKED_GLYPHS) != 0u) {
+		if (fb_gfx3_size_multiply((size_t)count, sizeof(*normalized_glyphs),
+		    &allocation_size) != FB_GFX3_OK) {
+			result = FB_GFX3_INVALID;
+			goto unlock;
+		}
+		if (allocation_size > mode->primitive_scratch_capacity) {
+			void *scratch = realloc(mode->primitive_scratch,
+				allocation_size);
+			if (scratch == NULL) {
+				result = FB_GFX3_OUT_OF_MEMORY;
+				goto unlock;
+			}
+			mode->primitive_scratch = scratch;
+			mode->primitive_scratch_capacity = allocation_size;
+		}
+		normalized_glyphs = (FB_GFX3_GLYPH *)mode->primitive_scratch;
+		bytes_per_pixel = gpu_surface_bytes_per_pixel(mode->depth);
+		for (index = 0u; index < (uint32_t)count; ++index) {
+			normalized_glyphs[index] = glyphs[index];
+			normalized_glyphs[index].foreground = fb_gfx3_image_fix_color(
+				bytes_per_pixel, glyphs[index].foreground);
+			normalized_glyphs[index].background = fb_gfx3_image_fix_color(
+				bytes_per_pixel, glyphs[index].background);
+		}
+		result = fb_gfx3_compat_glyphs_absolute(state, normalized_glyphs,
+			(uint32_t)count);
+	} else {
+		result = gpu_surface_draw_glyphs_as_points_locked(state, glyphs,
+			(uint32_t)count);
+	}
+
+unlock:
+	FB_GRAPHICS_UNLOCK();
+done:
+	return fb_ErrorSetNum(fb_gfx3_api_runtime_error(result));
+}
+
+FBCALL int fb_Gfx3DrawRectangles(
+	const FB_GFX3_COMPAT_RECTANGLE *rectangles, int count)
+{
+	FB_GFX3_DRAW_STATE *state;
+	int result = FB_GFX3_INVALID;
+
+	if ((count < 0) ||
+	    ((uint32_t)count > FB_GFX3_CONTEXT_PENDING_RECTANGLE_LIMIT) ||
+	    ((count != 0) && (rectangles == NULL)))
+		goto done;
+	FB_GRAPHICS_LOCK();
+	state = fb_gfx3_api_get_draw_state_locked();
+	if (state == NULL)
+		goto unlock;
+	if (state->work_page >= state->mode->page_count)
+		goto unlock;
+	result = fb_gfx3_compat_rectangles_logical(state, rectangles,
+		(uint32_t)count);
+
+unlock:
+	FB_GRAPHICS_UNLOCK();
+done:
 	return fb_ErrorSetNum(fb_gfx3_api_runtime_error(result));
 }
 

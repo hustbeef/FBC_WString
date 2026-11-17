@@ -8,31 +8,33 @@
 #include <windows.h>
 #include <winspool.h>
 
-struct _W32_PRINTER_INFO;
+struct FB_W32_PRINTER_INFO;
 
-typedef void (*FnEmuPrint)(struct _W32_PRINTER_INFO *pInfo, const void *pText, size_t uiLength, int isunicode);
+typedef void (*FnEmuPrint)(struct FB_W32_PRINTER_INFO *pInfo, const void *pText, size_t uiLength, int isunicode);
 
 /* Win32-specific printer information */
-typedef struct _W32_PRINTER_INFO {
+typedef struct FB_W32_PRINTER_INFO {
     HANDLE          hPrinter;
     DWORD           dwJob;
     HDC             hDc;
+    /* GDI reports signed logical coordinates and font sizes.
+       Spooler job identifiers and enumeration counts remain DWORD. */
     struct {
-        DWORD       dwFullSizeX;
-        DWORD       dwFullSizeY;
-        DWORD       dwSizeX;
-        DWORD       dwSizeY;
-        DWORD       dwOffsetX;
-        DWORD       dwOffsetY;
-        DWORD       dwDPI_X;
-        DWORD       dwDPI_Y;
+        LONG        dwFullSizeX;
+        LONG        dwFullSizeY;
+        LONG        dwSizeX;
+        LONG        dwSizeY;
+        LONG        dwOffsetX;
+        LONG        dwOffsetY;
+        LONG        dwDPI_X;
+        LONG        dwDPI_Y;
 
-        DWORD       dwCurrentX;
-        DWORD       dwCurrentY;
+        LONG        dwCurrentX;
+        LONG        dwCurrentY;
         HFONT       hFont;
         COLORREF    clFore, clBack;
-        DWORD       dwFontSizeX;
-        DWORD       dwFontSizeY;
+        LONG        dwFontSizeX;
+        LONG        dwFontSizeY;
         int         iPageStarted;
 
         FnEmuPrint  pfnPrint;

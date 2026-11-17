@@ -24,6 +24,8 @@
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
 #include once "runtime/rtl.bi"
+#include once "tooling/semantic-object-model.bi"
+#include once "tooling/semantic-object-operations.bi"
 
 declare function symbGetCompCopyCtor( byval sym as FBSYMBOL ptr ) as FBSYMBOL ptr
 
@@ -102,6 +104,10 @@ private function hDeclareProc _
 	'' Close the namespace again
 	symbNestEnd( TRUE )
 
+	if( proc <> NULL ) then
+		dim as longint semantic_operation = fbSemanticModelObjectOperationBegin("generated-member-declaration", udt, proc, proc, pattrib, op)
+		fbSemanticModelObjectOperationEnd(semantic_operation, NULL, "complete")
+	end if
 	function = proc
 end function
 
@@ -120,7 +126,7 @@ private sub hSetMinimumVtableSize( byval udt as FBSYMBOL ptr )
 	end if
 end sub
 
-private sub hReBuildRtti( byval udt as FBSYMBOL ptr )
+private sub hReBuildRtti( byval udt as FBSYMBOL ptr, byref semantic_state as const string )
 	dim as ASTNODE ptr initree = any, rttibase = any
 	dim as FBSYMBOL ptr rtti = any, fld = any
 	if udt then
@@ -157,6 +163,7 @@ private sub hReBuildRtti( byval udt as FBSYMBOL ptr )
 			astTypeIniEnd( initree, TRUE )
 
 			symbSetTypeIniTree( rtti, initree )
+			fbSemanticModelObjectRtti(udt, rtti, semantic_state, initree)
 		endif
 	endif
 end sub
@@ -182,9 +189,10 @@ private function hBuildRtti( byval udt as FBSYMBOL ptr ) as Integer
 		' the specific initialization code will be regenerated.
 		symbSetIsUnusedVtable( rtti )
 		symbSetTypeIniTree( rtti, astNewNOP() )
+		fbSemanticModelObjectRtti(udt, rtti, "deferred", symbGetTypeIniTree(rtti))
 		return FALSE
 	else ' Not a pure abstract function type
-		hReBuildRtti( udt )
+		hReBuildRtti( udt, "initialized" )
 		baseudt = udt
 		do while baseudt->udt.base <> NULL
 			baseudt = baseudt->udt.base->subtype
@@ -203,7 +211,7 @@ private function hBuildRtti( byval udt as FBSYMBOL ptr ) as Integer
 						astDelNode( initree )
 						symbSetTypeIniTree( rtti, NULL )
 					end if
-					hReBuildRtti( baseudt )
+					hReBuildRtti( baseudt, "activated" )
 
 					default.defctor = baseudt->udt.ext->defctor
 					default.copyctor = baseudt->udt.ext->copyctor
@@ -224,6 +232,7 @@ private sub hBuildVtable( byval udt as FBSYMBOL ptr )
 	dim as ASTNODE ptr initree = any, basevtableinitree = any
 	dim as FBSYMBOL ptr member = any, rtti = any, vtable = any
 	dim as integer i = any, basevtableelements = any
+	dim as integer semantic_copied_elements = 0
 
 	'' The vtable is an array of pointers:
 	''    0. null pointer (why? just following GCC...)
@@ -293,6 +302,7 @@ private sub hBuildVtable( byval udt as FBSYMBOL ptr )
 		'' except the first 2 (they are set above already)
 		astTypeIniCopyElements( initree, basevtableinitree, 2 )
 		assert( basevtableelements > 2 )
+		semantic_copied_elements = basevtableelements - 2
 		i += (basevtableelements - 2)
 	end if
 
@@ -338,6 +348,7 @@ private sub hBuildVtable( byval udt as FBSYMBOL ptr )
 	wend
 
 	udt->udt.ext->vtable = vtable
+	fbSemanticModelObjectVtable(udt, vtable, basevtableelements, semantic_copied_elements, initree)
 end sub
 
 private sub hProcBegin( byval udt as FBSYMBOL ptr, byval proc as FBSYMBOL ptr )
@@ -361,6 +372,7 @@ private sub hAddCtorBody _
 
 	'' The AST will add any implicit base/field construction/destruction
 	'' code automatically
+	dim as longint semantic_operation = fbSemanticModelObjectOperationBegin("generated-member-body", udt, proc, proc, abs(is_copyctor <> FALSE))
 	hProcBegin( udt, proc )
 
 	if( is_copyctor ) then
@@ -371,6 +383,7 @@ private sub hAddCtorBody _
 	end if
 
 	hProcEnd( )
+	fbSemanticModelObjectOperationEnd(semantic_operation, NULL, "complete")
 
 	symbSetCantUndef( udt )
 end sub
@@ -423,7 +436,15 @@ private sub hAssignDynamicArray _
 	'' src   = rhs.arraydesc.ptr
 	'' limit = src + rhs.arraydesc.size
 	astAdd( astBuildVarAssign( dst, astBuildDerefAddrOf( astBuildVarField( this_, fld ), symb.fbarray_ptr, dtype, fld->subtype ), AST_OPOPT_ISINI ) )
+
+	'' Keep REDIMTO's allocation error, but do not access missing storage
+	'' when runtime error checking is disabled or execution has resumed.
+	astAdd( astBuildBranch( astNewBOP( AST_OP_EQ, astNewVAR( dst ), _
+		astNewCONSTi( 0, dtype, fld->subtype ) ), exitlabel, TRUE ) )
+
 	astAdd( astBuildVarAssign( src, astBuildDerefAddrOf( astBuildVarField( rhs  , fld ), symb.fbarray_ptr, dtype, fld->subtype ), AST_OPOPT_ISINI ) )
+	astAdd( astBuildBranch( astNewBOP( AST_OP_EQ, astNewVAR( src ), _
+		astNewCONSTi( 0, dtype, fld->subtype ) ), exitlabel, TRUE ) )
 	astAdd( astBuildVarAssign( _
 		limit, _
 		astNewBOP( AST_OP_ADD, _
@@ -462,13 +483,28 @@ private sub hAssignList _
 	) static
 
 	dim as FBSYMBOL ptr cnt, label, dst, src, subtype
+	dim as integer srcdtype, const_source
 
 	subtype = symbGetSubtype( fld )
 
 	cnt = symbAddTempVar( FB_DATATYPE_INTEGER )
 	label = symbAddLabel( NULL )
-	dst = symbAddTempVar( typeAddrOf( symbGetType( fld ) ), subtype )
-	src = symbAddTempVar( typeAddrOf( symbGetType( fld ) ), subtype )
+	dst = symbAddTempVar( typeAddrOf( typeUnsetIsConst( symbGetFullType( fld ) ) ), subtype )
+	'' Ordinary copies read the source elements. A mutable LET overload
+	'' needs the existing mutable view so overload selection stays unchanged.
+	srcdtype = symbGetFullType( fld )
+	const_source = typeIsConst( symbGetFullType( rhs ) )
+	if( typeGetDtAndPtrOnly( srcdtype ) = FB_DATATYPE_STRUCT ) then
+		if( subtype->udt.ext <> NULL ) then
+			if( subtype->udt.ext->copyletop <> NULL ) then
+				const_source = FALSE
+				srcdtype = typeUnsetIsConst( srcdtype )
+			end if
+		end if
+	end if
+	if( const_source ) then srcdtype = typeSetIsConst( srcdtype )
+	fbSemanticModelObjectOperationChoice("copy-source", iif(const_source, "const", "mutable"))
+	src = symbAddTempVar( typeAddrOf( srcdtype ), subtype )
 
 	'' dst = @this.arrayfield(0)
 	astAdd( astBuildVarAssign( dst, astNewADDROF( astBuildVarField( this_, fld ) ), AST_OPOPT_ISINI ) )
@@ -502,12 +538,15 @@ private function hCopyUnionFields _
 	dim as FBSYMBOL ptr fld = any
 	dim as longint bytes = any, lgt = any, base_ofs = any
 
+	dim as longint semantic_operation = fbSemanticModelObjectOperationBegin("generated-union-copy", symbGetSubtype(this_), base_fld)
+
 	'' merge all union fields
 	fld = base_fld
 	bytes = 0
 	base_ofs = symbGetOfs( base_fld )
 
 	do
+		fbSemanticModelObjectOperationSymbolChoice("union-member", fld)
 		lgt = symbGetRealSize( fld ) + (symbGetOfs( fld ) - base_ofs)
 		if( lgt > bytes ) then
 			bytes = lgt
@@ -518,11 +557,13 @@ private function hCopyUnionFields _
 	loop while( fld andalso symbIsField( fld ) andalso symbGetIsUnionField( fld ) )
 
 	'' copy all them at once
-	astAdd( astNewMEM( AST_OP_MEMMOVE, _
+	fbSemanticModelObjectOperationNumberChoice("union-bytes", bytes)
+	dim as ASTNODE ptr semantic_tree = astAdd( astNewMEM( AST_OP_MEMMOVE, _
 				astBuildVarField( this_, base_fld ), _
 				astBuildVarField( rhs, base_fld ), _
 				bytes ) )
 
+	fbSemanticModelObjectOperationEnd(semantic_operation, semantic_tree, iif(semantic_tree = NULL, "empty", "built"))
 	function = fld
 end function
 
@@ -535,6 +576,7 @@ private sub hAddLetOpBody _
 	dim as FBSYMBOL ptr fld = any, this_ = any, rhs = any
 	dim as integer do_copy = any
 
+	dim as longint semantic_operation = fbSemanticModelObjectOperationBegin("generated-member-body", udt, letproc, letproc)
 	hProcBegin( udt, letproc )
 
 	this_ = symbGetParamVar( symbGetProcHeadParam( letproc ) )
@@ -570,23 +612,32 @@ private sub hAddLetOpBody _
 				continue while
 			end if
 
+			dim as longint semantic_field = fbSemanticModelObjectOperationBegin("generated-assignment-field", udt, fld)
 			'' Dynamic array field?
 			if( symbIsDynamic( fld ) ) then
+				fbSemanticModelObjectOperationChoice("copy-route", "dynamic-array")
 				hAssignDynamicArray( fld, this_, rhs )
 			else
 				if( symbGetArrayDimensions( fld ) = 0 ) then
+					fbSemanticModelObjectOperationChoice("copy-route", "scalar")
 					'' this.field = rhs.field
 					astAdd( astNewASSIGN( astBuildVarField( this_, fld ), astBuildVarField( rhs, fld ) ) )
 				else
+					fbSemanticModelObjectOperationChoice("copy-route", "fixed-array")
 					hAssignList( fld, this_, rhs )
 				end if
 			end if
+			fbSemanticModelObjectOperationEnd(semantic_field, NULL, "complete")
+		else
+			dim as longint semantic_field = fbSemanticModelObjectOperationBegin("field-exclusion", udt, fld, NULL, 2)
+			fbSemanticModelObjectOperationEnd(semantic_field, NULL, "skipped")
 		end if
 
 		fld = fld->next
 	wend
 
 	hProcEnd( )
+	fbSemanticModelObjectOperationEnd(semantic_operation, NULL, "complete")
 
 	symbSetCantUndef( udt )
 
@@ -1521,8 +1572,9 @@ sub symbCompRTTIInit( )
 	'' stdlibvtable as any ptr
 	symbAddField( rttitype, "stdlibvtable", 0, dTB(), typeAddrOf( FB_DATATYPE_VOID ), NULL, 0, 0, 0 )
 
-	'' dim id as zstring ptr
-	symbAddField( rttitype, "id", 0, dTB(), typeAddrOf( FB_DATATYPE_CHAR ), NULL, 0, 0, 0 )
+	'' RTTI names are immutable literals. Match FB_RTTI.id in fb_oop.h so
+	'' generated C keeps that contract without casting away const.
+	symbAddField( rttitype, "id", 0, dTB(), typeAddrOf( typeSetIsConst( FB_DATATYPE_CHAR ) ), NULL, 0, 0, 0 )
 
 	'' dim rttibase as fb_RTTI$ ptr
 	symbAddField( rttitype, "rttibase", 0, dTB(), typeAddrOf( FB_DATATYPE_STRUCT ), rttitype, 0, 0, 0 )

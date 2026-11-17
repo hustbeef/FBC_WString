@@ -17,7 +17,7 @@ FBCALL void fb_GfxScreenInfo
 		ssize_t *bpp,
 		ssize_t *pitch,
 		ssize_t *refresh,
-		FBSTRING *driver
+		FBSTRING_ACCESS *driver
 	)
 {
 	const char *name;
@@ -26,18 +26,18 @@ FBCALL void fb_GfxScreenInfo
 	FB_GRAPHICS_LOCK( );
 	fb_hApplyPendingResize();
 
-	if (!__fb_gfx) {
+	if (!fb_gfx) {
 		name = "";
 		fb_hScreenInfo(width, height, depth, refresh);
 		*bpp = *pitch = 0;
 	} else {
-		name = __fb_gfx->driver->name;
-		*width = __fb_gfx->w;
-		*height = __fb_gfx->h;
-		*depth = __fb_gfx->depth;
-		*bpp = __fb_gfx->bpp;
-		*pitch = __fb_gfx->pitch;
-		*refresh = __fb_gfx->refresh_rate;
+		name = fb_gfx->driver->name;
+		*width = fb_gfx->w;
+		*height = fb_gfx->h;
+		*depth = fb_gfx->depth;
+		*bpp = fb_gfx->bpp;
+		*pitch = fb_gfx->pitch;
+		*refresh = fb_gfx->refresh_rate;
 	}
 
 	if (fb_hStrDelTemp(driver)) {
@@ -57,7 +57,7 @@ FBCALL void fb_GfxScreenInfo32
 		int *bpp,
 		int *pitch,
 		int *refresh,
-		FBSTRING *driver
+		FBSTRING_ACCESS *driver
 	)
 {
 	ssize_t w, h, d, b, p, r;
@@ -78,7 +78,7 @@ FBCALL void fb_GfxScreenInfo64
 		long long *bpp,
 		long long *pitch,
 		long long *refresh,
-		FBSTRING *driver
+		FBSTRING_ACCESS *driver
 	)
 {
 	ssize_t w, h, d, b, p, r;

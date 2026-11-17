@@ -27,6 +27,7 @@
 #include once "parser/parser.bi"
 #include once "ast/ast.bi"
 #include once "runtime/rtl.bi"
+#include once "tooling/semantic-procedure-state.bi"
 
 	dim shared as FB_RTL_PROCDEF funcdata( 0 to ... ) = _
 	{ _
@@ -78,6 +79,95 @@
 			1, _
 			{ _
 				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE ) _
+			} _
+		), _
+		/' C error-frame bridge: ERRORFRAMEENTER. '/ _
+		( _
+			@FB_RTL_ERRORFRAMEENTER, NULL, _
+			FB_DATATYPE_LONG, FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_CDECLCALLBACK, _
+			5, _
+			{ _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ), _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ), _
+				( typeAddrOf( FB_DATATYPE_FUNCTION ), FB_PARAMMODE_BYVAL, TRUE, 1 ), _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ), _
+				( FB_DATATYPE_VOID, NULL, FALSE, 0 ) _
+			} _
+		), _
+		/' C error-frame bridge: ERRORFRAMEBUFFER. '/ _
+		( _
+			@FB_RTL_ERRORFRAMEBUFFER, NULL, _
+			typeAddrOf( FB_DATATYPE_VOID ), FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_NONE, _
+			1, _
+			{ _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ) _
+			} _
+		), _
+		/' C error-frame bridge: ERRORFRAMEREADY. '/ _
+		( _
+			@FB_RTL_ERRORFRAMEREADY, NULL, _
+			FB_DATATYPE_LONG, FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_NONE, _
+			1, _
+			{ _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ) _
+			} _
+		), _
+		/' C error-frame bridge: ERRORFRAMESETHANDLER. '/ _
+		( _
+			@FB_RTL_ERRORFRAMESETHANDLER, NULL, _
+			FB_DATATYPE_LONG, FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_CDECLCALLBACK, _
+			5, _
+			{ _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ), _
+				( typeAddrOf( FB_DATATYPE_FUNCTION ), FB_PARAMMODE_BYVAL, TRUE, 1 ), _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ), _
+				( FB_DATATYPE_LONG, NULL, FALSE, 0 ), _
+				( typeAddrOf( typeAddrOf( FB_DATATYPE_VOID ) ), FB_PARAMMODE_BYVAL, FALSE, 0 ) _
+			} _
+		), _
+		/' C error-frame bridge: ERRORFRAMERESTORE. '/ _
+		( _
+			@FB_RTL_ERRORFRAMERESTORE, NULL, _
+			typeAddrOf( FB_DATATYPE_VOID ), FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_NONE, _
+			1, _
+			{ _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ) _
+			} _
+		), _
+		/' C error-frame bridge: ERRORFRAMESETTARGET. '/ _
+		( _
+			@FB_RTL_ERRORFRAMESETTARGET, NULL, _
+			FB_DATATYPE_LONG, FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_NONE, _
+			2, _
+			{ _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ), _
+				( FB_DATATYPE_LONG, FB_PARAMMODE_BYVAL, FALSE, 0 ) _
+			} _
+		), _
+		/' C error-frame bridge: ERRORFRAMEGETTARGET. '/ _
+		( _
+			@FB_RTL_ERRORFRAMEGETTARGET, NULL, _
+			FB_DATATYPE_LONG, FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_NONE, _
+			1, _
+			{ _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ) _
+			} _
+		), _
+		/' C error-frame bridge: ERRORFRAMELEAVE. '/ _
+		( _
+			@FB_RTL_ERRORFRAMELEAVE, NULL, _
+			FB_DATATYPE_LONG, FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_NONE, _
+			1, _
+			{ _
+				( typeAddrOf( FB_DATATYPE_VOID ), FB_PARAMMODE_BYVAL, FALSE, 0 ) _
 			} _
 		), _
 		/' function fb_ErrorGetNum( ) as long '/ _
@@ -228,6 +318,79 @@
 				( typeAddrOf( typeSetIsConst( FB_DATATYPE_WCHAR ) ), FB_PARAMMODE_BYVAL, FALSE ) _
 			} _
 		), _
+		/' Native Win64 GAS handler activation retirement. '/ _
+		( _
+			@FB_RTL_ERRORNATIVEOWNERLEAVE, NULL, _
+			FB_DATATYPE_LONG, FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_NONE, _
+			0 _
+		), _
+		/' C activation-local ERROR continuation APIs. '/ _
+		( _
+			@FB_RTL_ERRORCRESUMEENTER, NULL, _
+			typeAddrOf(FB_DATATYPE_VOID), FB_FUNCMODE_CDECL, _
+			NULL, FB_RTL_OPT_NONE, _
+			3, _
+			{ _
+				(typeAddrOf(FB_DATATYPE_VOID), FB_PARAMMODE_BYVAL, FALSE), _
+				(typeAddrOf(typeSetIsConst(FB_DATATYPE_VOID)), FB_PARAMMODE_BYVAL, FALSE), _
+				(typeAddrOf(typeSetIsConst(FB_DATATYPE_VOID)), FB_PARAMMODE_BYVAL, FALSE) _
+			} _
+		), _
+		( _
+			@FB_RTL_ERRORCRESUMETARGET, NULL, _
+			typeAddrOf(FB_DATATYPE_VOID), FB_FUNCMODE_CDECL, _
+			NULL, FB_RTL_OPT_NONE, _
+			1, _
+			{ _
+				(typeAddrOf(FB_DATATYPE_VOID), FB_PARAMMODE_BYVAL, FALSE) _
+			} _
+		), _
+		( _
+			@FB_RTL_ERRORCRESUMEPOP, NULL, _
+			FB_DATATYPE_LONG, FB_FUNCMODE_CDECL, _
+			NULL, FB_RTL_OPT_NONE, _
+			1, _
+			{ _
+				(typeAddrOf(FB_DATATYPE_VOID), FB_PARAMMODE_BYVAL, FALSE) _
+			} _
+		), _
+		( _
+			@FB_RTL_ERRORCRESUMECHECKPOINT, @"_setjmp", _
+			FB_DATATYPE_LONG, FB_FUNCMODE_CDECL, _
+			NULL, FB_RTL_OPT_NONE, _
+			2, _
+			{ _
+				(typeAddrOf(FB_DATATYPE_VOID), FB_PARAMMODE_BYVAL, FALSE), _
+				(typeAddrOf(FB_DATATYPE_VOID), FB_PARAMMODE_BYVAL, FALSE) _
+			} _
+		), _
+		( _
+			@FB_RTL_ERRORNATIVEHANDLERFRAME, NULL, _
+			typeAddrOf(FB_DATATYPE_VOID), FB_FUNCMODE_CDECL, _
+			NULL, FB_RTL_OPT_NONE, _
+			1, _
+			{ _
+				(typeAddrOf(FB_DATATYPE_VOID), FB_PARAMMODE_BYVAL, FALSE) _
+			} _
+		), _
+		/' Native dispatch owns the handler's outgoing stack argument area. '/ _
+		( _
+			@FB_RTL_ERRORNATIVEDISPATCH, NULL, _
+			FB_DATATYPE_VOID, FB_FUNCMODE_CDECL, _
+			NULL, FB_RTL_OPT_NONE, _
+			1, _
+			{ _
+				(typeAddrOf(FB_DATATYPE_VOID), FB_PARAMMODE_BYVAL, FALSE) _
+			} _
+		), _
+		/' Native local destruction must follow abandoned C worker cleanup. '/ _
+		( _
+			@FB_RTL_ERRORNATIVEOWNERCLEANUP, NULL, _
+			FB_DATATYPE_VOID, FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_NONE, _
+			0 _
+		), _
 		/' EOL '/ _
 		( _
 			NULL _
@@ -237,7 +400,7 @@
 '':::::
 sub rtlErrorModInit( )
 
-	rtlAddIntrinsicProcs( @funcdata(0) )
+	rtlAddIntrinsicProcs( @funcdata(0), FALSE, FALSE, FB_RTL_DOMAIN_ERROR )
 
 end sub
 
@@ -393,9 +556,17 @@ sub rtlErrorSetHandler _
 		byval savecurrent as integer _
 	)
 
-	dim as ASTNODE ptr proc = any, expr = any
+	dim as ASTNODE ptr proc = any
 
 	''
+	if( env.clopt.backend = FB_BACKEND_GAS64 andalso env.clopt.target = FB_COMPTARGET_WIN32 andalso _
+	    fbGetCpuFamily() = FB_CPUFAMILY_X86_64 ) then
+		'' The public setter's leaf wrapper captures the native frame base.
+		'' Retire its metadata on every ordinary exit, even if registration
+		'' belonged to a conditional branch that did not execute.
+		parser.currproc->proc.ext->stats or= FB_PROCSTATS_NATIVEERROROWNER
+	end if
+
 	proc = astNewCALL( PROCLOOKUP( ERRORSETHANDLER ) )
 
 	'' byval newhandler as uint
@@ -403,23 +574,35 @@ sub rtlErrorSetHandler _
 		exit sub
 	end if
 
-	''
-	expr = NULL
 	if( savecurrent ) then
 		if( fbIsModLevel( ) = FALSE ) then
 			with parser.currproc->proc.ext->err
 				if( .lasthnd = NULL ) then
-					.lasthnd = symbAddTempVar( typeAddrOf( FB_DATATYPE_VOID ) )
-					expr = astNewVAR( .lasthnd )
-					astAdd( astNewASSIGN( expr, proc ) )
+					'' Both values live until procedure exit, even when this
+					'' statement belongs to a nested lexical scope.
+					.lasthnd = symbAddImplicitVar( typeAddrOf( FB_DATATYPE_VOID ), NULL, FB_SYMBOPT_UNSCOPE )
+					.hndsaved = symbAddImplicitVar( FB_DATATYPE_INTEGER, NULL, FB_SYMBOPT_UNSCOPE )
+					fbSemanticModelProcedureState(parser.currproc, "handler-allocated")
 				end if
+
+				'' A local handler can be selected in either branch, or set
+				'' repeatedly in a loop. Save the previous handler on the
+				'' first runtime activation, not the first parsed statement.
+				dim as FBSYMBOL ptr previous = symbAddTempVar( typeAddrOf( FB_DATATYPE_VOID ) )
+				dim as FBSYMBOL ptr skipsave = symbAddLabel( NULL )
+				astAdd( astNewASSIGN( astNewVAR( previous ), proc ) )
+				astAdd( astNewBOP( AST_OP_NE, astNewVAR( .hndsaved ), _
+					astNewCONSTi( FALSE ), skipsave, AST_OPOPT_NONE ) )
+				astAdd( astNewASSIGN( astNewVAR( .lasthnd ), astNewVAR( previous ) ) )
+				astAdd( astNewASSIGN( astNewVAR( .hndsaved ), astNewCONSTi( TRUE ) ) )
+				astAdd( astNewLABEL( skipsave ) )
+				fbSemanticModelProcedureState(parser.currproc, "handler-save", "none", previous, skipsave)
 			end with
+			exit sub
 		end if
 	end if
 
-	if( expr = NULL ) then
-		astAdd( proc )
-	end if
+	astAdd( proc )
 
 end sub
 
@@ -491,6 +674,7 @@ function rtlErrorSetModName _
 			.lastmod = symbAddTempVar( typeAddrOf( FB_DATATYPE_CHAR ) )
 			expr = astNewVAR( .lastmod )
 			function = astNewASSIGN( expr, proc )
+			fbSemanticModelProcedureState(sym, "module-name-save")
 		end with
 	else
 		function = proc
@@ -519,11 +703,28 @@ function rtlErrorSetFuncName _
 			.lastfun = symbAddTempVar( typeAddrOf( FB_DATATYPE_CHAR ) )
 			expr = astNewVAR( .lastfun )
 			function = astNewASSIGN( expr, proc )
+			fbSemanticModelProcedureState(sym, "function-name-save")
 		end with
 	else
 		function = proc
 	end if
 
+end function
+
+'' The checked runtime hook terminates if a live child still references this
+'' frame; returning with retained metadata would leave an expired target.
+sub rtlErrorNativeOwnerLeave( )
+	astAdd( astNewCALL( PROCLOOKUP( ERRORNATIVEOWNERLEAVE ) ) )
+end sub
+
+'' No cache index is needed for this compiler-generated exit call. Keep the
+'' intrinsic's zero-argument ABI separate from the frame-pointer leaf thunk.
+function rtlErrorNativeOwnerCleanup( ) as ASTNODE ptr
+	var proc = symbLookupByNameAndClass( @symbGetGlobalNamespc(), _
+		@FB_RTL_ERRORNATIVEOWNERCLEANUP, FB_SYMBCLASS_PROC, FALSE, FALSE )
+	assert( proc <> NULL )
+	assert( symbGetIsRTL(proc) )
+	return astNewCALL( proc )
 end function
 
 '' end of runtime/rtl-error.bas

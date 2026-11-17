@@ -16,8 +16,8 @@ static int key_buffer_changed = FALSE;
 
 static void poll_events(void)
 {
-	if ((__fb_gfx) && (__fb_gfx->driver->poll_events))
-		__fb_gfx->driver->poll_events();
+	if ((fb_gfx) && (fb_gfx->driver->poll_events))
+		fb_gfx->driver->poll_events();
 }
 
 int fb_hGfxInputBufferChanged( void )
@@ -81,7 +81,7 @@ int fb_GfxGetkey(void)
 		FB_GRAPHICS_LOCK( );
 
 		/* Abort if gfx screen was closed */
-		if (!__fb_gfx) {
+		if (!fb_gfx) {
 			FB_GRAPHICS_UNLOCK( );
 			break;
 		}
@@ -121,19 +121,19 @@ int fb_GfxKeyHit(void)
 }
 
 /* Caller is expected to hold FB_LOCK() */
-FBSTRING *fb_GfxInkey(void)
+FBSTRING_ACCESS *fb_GfxInkey(void)
 {
-	FBSTRING *res;
+	FBSTRING_ACCESS *res;
 	int ch;
 
 	FB_GRAPHICS_LOCK( );
 
 	poll_events( );
 
-	if (__fb_gfx && (ch = get_key())) {
+	if (fb_gfx && (ch = get_key())) {
 		res = fb_hMakeInkeyStr( ch );
 	} else {
-		res = &__fb_ctx.null_desc;
+		res = &fb_ctx.null_desc;
 	}
 
 	FB_GRAPHICS_UNLOCK( );

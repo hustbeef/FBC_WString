@@ -29,9 +29,10 @@
 #include once "support/numeric/fp-policy.bi"
 #include once "tooling/semantic-hooks.bi"
 #include once "tooling/semantic-expressions.bi"
+#include once "tooling/semantic-recovery.bi"
 
 
-declare sub fbSemanticModelExportExpression _
+declare sub fbSemanticModelExportParserExpression _
 	( _
 		byval expr as ASTNODE ptr, _
 		byref source_start as LEX_LOCATION, _
@@ -159,7 +160,9 @@ function cTypeConvExpr _
 	expr = cExpression( )
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/intrinsics/parser-quirk-casting.bas", __LINE__)
 		conversion_valid = FALSE
 	end if
 
@@ -199,7 +202,9 @@ function cTypeConvExpr _
 			end if
 			errReport( errmsg, TRUE )
 
-			expr = astNewCONSTi( 0 )
+			expr = fbSemanticModelRecoveryNode( _
+				astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+				"parser/intrinsics/parser-quirk-casting.bas", __LINE__)
 			conversion_valid = FALSE
 		end if
 	end if
@@ -245,7 +250,7 @@ function cTypeConvExpr _
 		fbSemanticModelExportOperation(expr, iif(is_overloaded_conversion, AST_OP_CAST, _
 			semantic_operator_override), source_start)
 		nonphysical_tokens_at_end = lexGetNonphysicalTokenCount( )
-		fbSemanticModelExportExpression(expr, source_start, source_end, _
+		fbSemanticModelExportParserExpression(expr, source_start, source_end, _
 			nonphysical_tokens_at_start, nonphysical_tokens_at_end, _
 			semantic_operator_override)
 	end if

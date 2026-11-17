@@ -595,6 +595,19 @@ declare function    hThreadCall_cb      ( byval sym as FBSYMBOL ptr ) as integer
 				( FB_DATATYPE_ULONGINT, FB_PARAMMODE_BYVAL, FALSE ) _
 			} _
 		), _
+		/' Private runtime TLS uses a static object's identity, not its name. '/ _
+		( _
+			@FB_RTL_TLSGETVARKEY, NULL, _
+			typeAddrOf( FB_DATATYPE_VOID ), FB_FUNCMODE_FBCALL, _
+			NULL, FB_RTL_OPT_REQUIRED, _
+			4, _
+			{ _
+				( typeAddrOf( typeSetIsConst( FB_DATATYPE_VOID ) ), FB_PARAMMODE_BYVAL, FALSE ), _
+				( FB_DATATYPE_ULONG, FB_PARAMMODE_BYVAL, FALSE ), _
+				( FB_DATATYPE_ULONG, FB_PARAMMODE_BYVAL, FALSE ), _
+				( FB_DATATYPE_ULONGINT, FB_PARAMMODE_BYVAL, FALSE ) _
+			} _
+		), _
 		/' function fb_Int128Bop( byval destination as any ptr, byval left as const any ptr, byval right as const any ptr, byval operation as long, byval is_signed as long, byval shift_count as ulongint ) as any ptr '/ _
 		( _
 			@FB_RTL_INT128BOP, NULL, _
@@ -721,14 +734,17 @@ declare function    hThreadCall_cb      ( byval sym as FBSYMBOL ptr ) as integer
 '':::::
 sub rtlSystemModInit( )
 	for i as integer = lbound( funcdata ) to ubound( funcdata )
-		if( funcdata(i).name = @FB_RTL_TLSGETVAR ) then
+		'' Intrinsic names are text keys. C need not merge identical literals.
+		'' The final table row has a NULL name.
+		if( (funcdata(i).name <> NULL) andalso _
+		    ((*funcdata(i).name = FB_RTL_TLSGETVAR) or _
+		     (*funcdata(i).name = FB_RTL_TLSGETVARKEY)) ) then
 			funcdata(i).paramTb(3).dtype = _
 				iif( env.pointersize = 8, FB_DATATYPE_ULONGINT, FB_DATATYPE_ULONG )
-			exit for
 		end if
 	next
 
-	rtlAddIntrinsicProcs( @funcdata(0) )
+	rtlAddIntrinsicProcs( @funcdata(0), FALSE, FALSE, FB_RTL_DOMAIN_SYSTEM )
 
 end sub
 

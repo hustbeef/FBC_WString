@@ -101,6 +101,7 @@ type FBTOKEN
 
 	len             as integer                  '' length
 	sym_chain       as FBSYMCHAIN ptr           '' symbol found, if any
+	semantic_lookup as longint                  '' actual lookup attempt supplying this token; zero if unobserved
 
 	union
 		prdpos      as integer                  '' period '.' pos in symbol names
@@ -402,7 +403,12 @@ declare function hMatch _
 
 #define lexGetType( ) (lex.ctx->head->dtype)
 
-#define lexGetSymChain( ) (lex.ctx->head->sym_chain)
+declare function fbSemanticModelNamespaceLookupApplied _
+	( byval chain_ as FBSYMCHAIN ptr, byref kind as const string ) as FBSYMCHAIN ptr
+
+'' Observe parser requests, not the lexer lookahead that populated this cache.
+'' The observer returns this exact chain without allocating native chain slots.
+#define lexGetSymChain( ) (fbSemanticModelNamespaceLookupApplied(lex.ctx->head->sym_chain, "parser-token"))
 
 #define lexGetPeriodPos( ) (lex.ctx->head->prdpos)
 

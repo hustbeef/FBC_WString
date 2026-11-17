@@ -6,6 +6,7 @@
  * This file intentionally does NOT contain: Compiler parsing or unrelated runtime subsystems.
  */
 #include "fb.h"
+#include "rnd_state.h"
 
 /* Needed by FB_RND_REAL */
 #if defined HOST_WIN32
@@ -279,7 +280,7 @@ static void hRndCtxInitREAL32 ( uint64_t seed )
 
 static void hStartup( void )
 {
-	switch( __fb_ctx.lang ) {
+	switch( fb_ctx.lang ) {
 	case FB_LANG_QB:
 		hRndCtxInitQB32( INITIAL_SEED );
 		break;
@@ -308,7 +309,7 @@ static double hRnd_Startup ( float n )
 static int getAlogrithm( int algorithm )
 {
 	if( algorithm == FB_RND_AUTO ) {
-		switch( __fb_ctx.lang ) {
+		switch( fb_ctx.lang ) {
 		case FB_LANG_QB:			algorithm = FB_RND_QB; break;
 		case FB_LANG_FB_FBLITE:
 		case FB_LANG_FB_DEPRECATED:	algorithm = FB_RND_CRT; break;
@@ -350,13 +351,14 @@ FBCALL void fb_Randomize ( double seed, int algorithm )
 		hRndCtxInitFAST32( (uint32_t)seed );
 		break;
 
-	case FB_RND_QB:
+	case FB_RND_QB: {
 		seedbits = hDoubleToBits( seed );
 		uint32_t s = (uint32_t)( seedbits >> 32 );
 		s ^= ( s >> 16 );
 		s = ( ( s & 0xFFFF ) << 8 ) | ( ctx.iseed32 & 0xFF );
 		hRndCtxInitQB32( (uint32_t)s );
 		break;
+	}
 
 #if defined HOST_WIN32 || defined HOST_LINUX || defined HOST_ANDROID
 	case FB_RND_REAL:

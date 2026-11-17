@@ -36,8 +36,8 @@
         driver output queues and capture input use the shared ring buffer
 */
 
-#ifndef __FB_SFX_BUFFER_H__
-#define __FB_SFX_BUFFER_H__
+#ifndef FB_SFX_BUFFER_H
+#define FB_SFX_BUFFER_H
 
 #include "fb_sfx.h"
 
@@ -88,6 +88,9 @@ typedef FB_SFX_RINGBUFFER FB_SFXRINGBUFFER;
 
 /*
     Initialize a ring buffer.
+
+    A successfully initialized buffer owns its data allocation. Call
+    fb_sfxRingBufferShutdown() before initializing that object again.
 
     Parameters:
 

@@ -764,8 +764,7 @@ end function
 private function hAstCheckTypeIniAssignment _
 	( _
 		byval n as ASTNODE ptr, _
-		byval maxsize as longint, _
-		byval scoped as integer _
+		byval maxsize as longint _
 	) as integer
 
 	if( (maxsize > 0) ) then
@@ -838,7 +837,7 @@ function astTypeIniFlush overload _
 		select case( n->class )
 		'' Write the given initializer expression to the given offset in the target
 		case AST_NODECLASS_TYPEINI_ASSIGN
-			if( hAstCheckTypeIniAssignment( n, maxsize, scoped ) ) then
+			if( hAstCheckTypeIniAssignment( n, maxsize) ) then
 				if( n->sym ) then
 					'' Field?
 					if( symbIsField( n->sym ) ) then
@@ -866,7 +865,7 @@ function astTypeIniFlush overload _
 
 		'' Clear the given amount of bytes at the given offset in the target
 		case AST_NODECLASS_TYPEINI_PAD
-			if( hAstCheckTypeIniAssignment( n, maxsize, scoped ) ) then
+			if( hAstCheckTypeIniAssignment( n, maxsize) ) then
 				l = astBuildDerefAddrOf( astCloneTree( target ), n->typeini.ofs, n->dtype, n->subtype )
 				l = astNewMEM( AST_OP_MEMFILL, l, astNewCONSTi( n->typeini.bytes ) )
 				t = astNewLINK( t, l, AST_LINK_RETURN_NONE )
@@ -875,7 +874,7 @@ function astTypeIniFlush overload _
 		'' Use the given CALL (and its ARGs) as-is, but insert the byref instance argument,
 		'' pointing to the given offset in the target
 		case AST_NODECLASS_TYPEINI_CTORCALL
-			if( hAstCheckTypeIniAssignment( n, maxsize, scoped ) ) then
+			if( hAstCheckTypeIniAssignment( n, maxsize) ) then
 				l = astBuildDerefAddrOf( astCloneTree( target ), n->typeini.ofs, n->dtype, n->subtype, n->sym )
 
 				l = astPatchCtorCall( n->l, l )
@@ -1269,6 +1268,8 @@ private function hWalk _
 end function
 
 '' -eassert can enable this tree-count check without debug code generation.
+'' __FB_ERR__ bit 5 enables assertions independently of debug generation.
+#if (__FB_ERR__ and &h20)
 private function astCountTypeinis( byval n as ASTNODE ptr ) as integer
 	dim as integer count = any
 
@@ -1285,6 +1286,7 @@ private function astCountTypeinis( byval n as ASTNODE ptr ) as integer
 
 	function = count
 end function
+#endif
 
 function astTypeIniUpdate( byval tree as ASTNODE ptr ) as ASTNODE ptr
 	dim as ASTNODE ptr tempvarinitcode = any
@@ -1293,7 +1295,9 @@ function astTypeIniUpdate( byval tree as ASTNODE ptr ) as ASTNODE ptr
 	'' tree passed in here can be any kind of tree, not just TYPEINI
 
 	'' Shouldn't miss any TYPEINIs
+#if (__FB_ERR__ and &h20)
 	assert( astCountTypeinis( tree ) <= ast.typeinicount )
+#endif
 
 	'' Shortcut if there are no TYPEINIs
 	if( ast.typeinicount <= 0 ) then

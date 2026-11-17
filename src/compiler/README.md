@@ -92,6 +92,7 @@ sequence. Its implementation modules have separate translation units:
 | `fbc-compile.bas` | Source compilation, parser restarts, assembly, resources, archives |
 | `fbc-link.bas` | Object metadata, default libraries, startup objects, linking |
 | `fbc-help.bas` | Usage and version presentation |
+| `fbc-semantic.bas` | Selected module roles, ordered driver inputs, and resource identity |
 | `fbc-platform.bas` | Target hook implementations and dispatch |
 
 `fbc-private.bi` is a driver implementation contract. The invocation context
@@ -199,8 +200,68 @@ same export checks against the maintained OMA programs.
 stream. Both use the runtime's fixed-width metadata query; native filesystem
 structures stay in the runtime. Compiler sources and bootstrap inputs remain
 BASIC.
+`tooling/semantic-data.bas` observes DATA values before descriptor lowering,
+and records native READ/RESTORE selections without predicting runtime cursors.
+`tooling/semantic-emission-names.bas` retains names supplied by backend selection
+and keeps unknown object identities explicit. It does not invoke the mangler.
+`tooling/semantic-namespace-visibility.bas` records actual USING requests,
+native relationship lifetimes and binding-time lexical/lookup contexts.
+`tooling/semantic-flag-names.bas` supplies class-aware names for initialized
+native flags. `tooling/semantic-flags.bas` publishes their definitions and live
+snapshots alongside the target datatype table's actual ranks and remappings.
+`tooling/semantic-layout.bas` observes packing requests, native alignment and
+storage decisions, anonymous-member relocation and initialized type snapshots.
+Its callers retain transient decisions on their stack; the exporter keeps
+semantic identities and counts without retaining native symbol pointers.
+`tooling/semantic-abi.bas` publishes live frontend procedure/formal ABI
+snapshots, keeping source modes, unresolved layouts, descriptor pointers and
+frontend slot policy separate from final backend allocation.
+`tooling/semantic-backend-abi.bas` copies selected C/LLVM signature components
+at the existing formatters, including split words, indirect arguments and
+exact type/attribute spellings. It does not run another ABI or formatting pass.
+`tooling/semantic-call-abi.bas` copies actual call operands, emitted order and
+carried source identities. LLVM builtin lowering has separate receipts, and
+the observer releases copied state at module completion or rollback.
+`tooling/semantic-object-operations.bas` observes actual base/member/union/vptr
+initialization, chaining, generated members, materialization and destruction.
+Copied native choices and immutable root attachments keep compiler construction
+work separate from runtime execution. It performs no overload selection.
+`tooling/semantic-object-model.bas` copies actual virtual-table slots, assigned
+member indices and RTTI initialization phases, including deferred abstract
+storage. Type snapshots keep plain, incomplete and external runtime ownership
+distinct, and no object-model resolver is run a second time.
+`tooling/semantic-declarations.bas` preserves accepted B/DCL declaration receipt
+order across all source symbol classes, including macro names without physical
+ranges. It keeps acceptance order separate from native statement counters and
+lexical token order.
+`tooling/semantic-startup.bas` observes native startup list order, accepted
+priorities, generated global/static cleanup ownership and guarded instance
+paths. Backends copy selected attributes/array entries/section requests without
+running another registration or sorting pass.
+`tooling/semantic-blocks.bas` copies native procedure/scope boundaries and
+source scope exits before the break lists are consumed. Cleanup observations
+follow actual destructor insertion and retain their exiting edge and owner.
+`tooling/semantic-lifetimes.bas` observes normal scope/procedure teardown,
+including empty traversals, selected storage order and inserted cleanup roots.
+It uses the native selection rather than deriving destruction from type names.
+`tooling/semantic-temporaries.bas` observes native destructor-list registration,
+references, cookie changes, cancellation and flush actions. Scope occurrences
+keep identities across cookie reuse, and IIf records name their actual branch
+flushes. The observer does not run destructor selection a second time.
+`runtime/rtl-effects.bas` supplies metadata-only contracts for compiler-owned
+runtime registration families. `tooling/semantic-effects.bas` exports those
+contracts and keeps cloneability, unknown callees and alias uncertainty separate.
+No optimizer decision consumes the added effect metadata.
+`backend/ir-observe.bas` decorates requested-sidecar IR dispatch without
+changing callback arguments, results or availability. Its observer in
+`tooling/semantic-ir-flow.bas` records complete outer-dispatch block membership
+and actual late transfers, retaining unknown indirect/error/assembly targets.
+`tooling/semantic-loads.bas` records actual recursive AST-load intervals and
+snapshot provenance, including newly created load-time nodes. Emitted calls
+and runtime-check handler transfers retain their actual selection and unknown
+indirect targets. Compiler loading order is kept separate from runtime paths.
 The exporter serializes records through the writer's opaque interface. Make
-builds both modules through the ordinary BASIC rules in each compiler variant,
+builds these modules through the ordinary BASIC rules in each compiler variant,
 and bootstrap emission translates them along with the rest of the compiler.
 
 ### LLVM interoperability

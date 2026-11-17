@@ -29,6 +29,8 @@
 #include once "backend/ir.bi"
 #include once "runtime/rtl.bi"
 #include once "ast/ast.bi"
+#include once "tooling/semantic-loads.bi"
+#include once "tooling/semantic-call-abi.bi"
 
 sub astCallInit
 	listInit( @ast.call.tmpstrlist, 32, len( AST_TMPSTRLIST_ITEM ), LIST_FLAGS_NOCLEAR )
@@ -119,11 +121,20 @@ function astNewCALL _
 	n->call.argtail = NULL
 	n->call.strtail = NULL
 
-	'' Allocate temp struct result if needed
-	if( symbProcReturnsOnStack( sym ) ) then
-		'' The result slot may be a structure or an extended scalar.
-		n->call.tmpres = symbAddTempVar( symbGetFullType( sym ), _
-		                                 symbGetSubtype( sym ) )
+	'' Allocate temp result storage for stack-returned values and the i386
+	'' CLongDouble ABI, which returns through x87 rather than a hidden pointer.
+	if( symbProcReturnsOnStack( sym ) orElse _
+	    symbIsGAS32CLongDoubleCAbiResult( sym ) ) then
+		'' The C long-double prototype's full type may already be its ABI
+		'' pointer form, but the temporary must hold the declared value.
+		if( symbIsGAS32CLongDoubleCAbiResult( sym ) ) then
+			n->call.tmpres = symbAddTempVar( symbGetType( sym ), _
+			                                 symbGetSubType( sym ) )
+		else
+			'' The result slot may be a structure or an extended scalar.
+			n->call.tmpres = symbAddTempVar( symbGetFullType( sym ), _
+			                                 symbGetSubtype( sym ) )
+		end if
 		astDtorListAdd( n->call.tmpres )
 	else
 		n->call.tmpres = NULL
@@ -181,6 +192,9 @@ private sub hCopyStringsBack( byval f as ASTNODE ptr )
 	loop
 end sub
 
+declare function irhlcErrorUDTCallBegin( byval call_node as ASTNODE ptr ) as integer
+declare sub irhlcErrorUDTCallComplete( byval index as integer, byval is_dtor as integer )
+
 function astLoadCALL( byval n as ASTNODE ptr ) as IRVREG ptr
 	static as integer reclevel = 0
 	'' totalstackbytes is the sum of all args and padding currently on the stack
@@ -200,7 +214,11 @@ function astLoadCALL( byval n as ASTNODE ptr ) as IRVREG ptr
 	'' ARGs can contain CALLs themselves, then astLoadCALL() will recurse
 	reclevel += 1
 
+	dim as integer c_owner_resource = -1
 	proc = n->sym
+	if( ast.doemit and (env.clopt.backend = FB_BACKEND_GCC or env.clopt.backend = FB_BACKEND_CLANG) ) then
+		c_owner_resource = irhlcErrorUDTCallBegin(n)
+	end if
 
 	if( (env.clopt.backend = FB_BACKEND_GAS) andalso _
 	    ((env.target.options and FB_TARGETOPT_STACKALIGN16) <> 0) ) then
@@ -270,7 +288,6 @@ function astLoadCALL( byval n as ASTNODE ptr ) as IRVREG ptr
 
 		'' flush the arg expression
 		v1 = astLoad( l )
-		astDelNode( l )
 
 		if( ast.doemit ) then
 			if( arg->sym->param.regnum <> 0 ) then
@@ -297,6 +314,8 @@ function astLoadCALL( byval n as ASTNODE ptr ) as IRVREG ptr
 				irEmitPUSHARG( arg->sym, v1, arg->arg.lgt, reclevel, NULL )
 			end if
 		end if
+		'' Register arguments still need the expression's type above.
+		astDelNode( l )
 		totalstackbytes += argbytes
 
 		astDelNode( arg )
@@ -352,7 +371,11 @@ function astLoadCALL( byval n as ASTNODE ptr ) as IRVREG ptr
 						TRUE ) )
 			end if
 
-			if( symbProcReturnsOnStack( proc ) andalso _
+			if( symbIsGAS32CLongDoubleCAbiResult( proc ) ) then
+				'' The result pointer is carried as backend metadata, not as a
+				'' C argument. The GAS32 emitter stores ST(0) into this slot.
+				vr = NULL
+			elseif( symbProcReturnsOnStack( proc ) andalso _
 			    typeIsInteger128Scalar( symbGetFullType( proc ) ) ) then
 				'' The hidden result slot already contains the full scalar value.
 				vr = NULL
@@ -377,12 +400,21 @@ function astLoadCALL( byval n as ASTNODE ptr ) as IRVREG ptr
 	'' Evaluate a function-pointer expression before loading register
 	'' arguments because it may contain a call of its own.
 	l = n->l
-	if( l ) then
-		v1 = astLoad( l )
+	var is_indirect = (l <> NULL)
+	dim as IRVREG ptr call_target = NULL
+	if( is_indirect ) then
+		call_target = astLoad( l )
 		astDelNode( l )
 	end if
 
 	if( ast.doemit ) then
+		if( symbIsGAS32CLongDoubleCAbiResult( proc ) ) then
+			l = astNewVAR( n->call.tmpres )
+			l = astNewADDROF( l )
+			vr = astLoad( l )
+			astDelNode( l )
+		end if
+
 		if( regarg_count > 0 ) then
 			'' Profiling and function-pointer evaluation happen after the
 			'' arguments.  Preserve any values they leave live before ECX and
@@ -401,13 +433,25 @@ function astLoadCALL( byval n as ASTNODE ptr ) as IRVREG ptr
 			next
 		next
 
-		if( l ) then
-			irEmitCALLPTR( proc, v1, vr, bytestopop, reclevel )
+		'' Copy only carried identities after recursive argument/target loading.
+		'' The backend consumes them during this immediate dispatch. Profiling
+		'' and deferred string copyback calls must not inherit this source call.
+		dim as FBSYMBOL ptr semantic_caller = NULL
+		if( astGetProc( ) <> NULL ) then semantic_caller = astGetProc( )->sym
+		fbSemanticModelCallAbiContext(n, semantic_caller)
+		fbSemanticModelLoadCall(proc, is_indirect, "call")
+		if( is_indirect ) then
+			irEmitCALLPTR( proc, call_target, vr, bytestopop, reclevel )
 		else
 			irEmitCALLFUNCT( proc, bytestopop, vr, reclevel )
 		end if
+		fbSemanticModelCallAbiContext(NULL, NULL)
 
-		if( symbProcReturnsOnStack( proc ) andalso _
+		if( symbIsGAS32CLongDoubleCAbiResult( proc ) ) then
+			'' The parser exposes the caller-owned slot through
+			'' astBuildCallResultVar(), as it does for stack-returned UDTs.
+			vr = NULL
+		elseif( symbProcReturnsOnStack( proc ) andalso _
 		    typeIsInteger128Scalar( symbGetFullType( proc ) ) ) then
 			'' Expose the caller-owned result slot as the scalar expression value.
 			l = astNewVAR( n->call.tmpres )
@@ -423,6 +467,7 @@ function astLoadCALL( byval n as ASTNODE ptr ) as IRVREG ptr
 		if( pcvr ) then
 			if( ast.doemit ) then
 				irEmitPUSHARG( NULL, pcvr, 0, reclevel, NULL )
+				fbSemanticModelLoadCall(n->call.profend->sym, FALSE, "profile-end")
 				irEmitCALLFUNCT( n->call.profend->sym, 0, NULL, reclevel )
 			end if
 		end if
@@ -431,6 +476,10 @@ function astLoadCALL( byval n as ASTNODE ptr ) as IRVREG ptr
 	end if
 
 	hCopyStringsBack( n )
+
+	'' A guarded destructor call also guards profiling and deferred argument
+	'' work. Close its owner transition after the complete call sequence.
+	if( c_owner_resource >= 0 ) then irhlcErrorUDTCallComplete(c_owner_resource, symbIsDestructor1(proc))
 
 	reclevel -= 1
 
@@ -568,7 +617,8 @@ end sub
 '' For accessing the temp result var allocated by CALLs that return on stack
 function astBuildCallResultVar( byval expr as ASTNODE ptr ) as ASTNODE ptr
 	assert( astIsCALL( expr ) )
-	assert( symbProcReturnsOnStack( expr->sym ) )
+	assert( symbProcReturnsOnStack( expr->sym ) orElse _
+	        symbIsGAS32CLongDoubleCAbiResult( expr->sym ) )
 
 	'' CALL first, but return the VAR
 	function = astNewLINK( expr, _
@@ -584,7 +634,8 @@ function astBuildCallResultUdt( byval expr as ASTNODE ptr ) as ASTNODE ptr
 	assert( astGetDataType( expr ) = FB_DATATYPE_STRUCT )
 	assert( symbIsReturnByRef( expr->sym ) = FALSE )
 
-	if( symbProcReturnsOnStack( expr->sym ) ) then
+	if( symbProcReturnsOnStack( expr->sym ) orElse _
+	    symbIsGAS32CLongDoubleCAbiResult( expr->sym ) ) then
 		'' UDT returned in temp var already, just access that one
 		function = astBuildCallResultVar( expr )
 	else

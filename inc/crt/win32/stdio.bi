@@ -1,3 +1,9 @@
+'' Project: FreeBASIC Windows CRT bindings
+'' File: crt/win32/stdio.bi
+'' Purpose: Describe Windows C stream types and stdio entry points.
+'' Responsibilities: Keep UCRT and legacy MSVCRT declarations consistent with their ABI.
+'' This file intentionally does NOT contain stream implementations.
+
 ''
 ''
 '' stdio -- header translated with help of SWIG FB wrapper
@@ -30,6 +36,12 @@
 #define STDERR_FILENO 2
 
 type _iobuf
+#if defined(__FB_64BIT__)
+	'' Keep 64-bit streams opaque, matching UCRT's one-pointer public record.
+	'' MinGW can also bridge these pointers to legacy MSVCRT streams; its
+	'' larger record is not exposed or copied through this interface.
+	_Placeholder as any ptr
+#else
 	_ptr as zstring ptr
 	_cnt as long
 	_base as zstring ptr
@@ -38,18 +50,18 @@ type _iobuf
 	_charbuf as long
 	_bufsiz as long
 	_tmpfname as zstring ptr
+#endif
 end type
 
 type FILE as _iobuf
 
 extern "c"
 
-	'' All supported 64-bit Windows targets use the Universal CRT.  In
-	'' particular, UCRT64 does not export the older __iob_func entry point.
-	'' Keep the legacy stream table only for 32-bit targets that can still be
-	'' linked against MSVCRT40 for Windows 95 compatibility.
+	'' UCRT exports the indexed accessor; MinGW supplies a compatible bridge
+	'' for legacy MSVCRT. Index through that API instead of assuming a FILE
+	'' stride. The 32-bit binding retains the Windows 95-era stream table.
 #if defined(__FB_64BIT__)
-	declare function __acrt_iob_func(byval index as uinteger) as FILE ptr
+	declare function __acrt_iob_func(byval index as ulong) as FILE ptr
 	#define stdin (__acrt_iob_func(STDIN_FILENO))
 	#define stdout (__acrt_iob_func(STDOUT_FILENO))
 	#define stderr (__acrt_iob_func(STDERR_FILENO))
@@ -94,3 +106,5 @@ declare function _tempnam (byval as zstring ptr, byval as zstring ptr) as zstrin
 end extern
 
 #endif
+
+'' end of crt/win32/stdio.bi

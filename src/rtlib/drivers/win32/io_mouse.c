@@ -29,7 +29,7 @@ int fb_ConsoleGetMouse( int *x, int *y, int *z, int *buttons, int *clip )
 	if( inited == -1 ) {
 		inited = GetSystemMetrics( SM_CMOUSEBUTTONS );
 		if( inited ) {
-			__fb_con.mouseEventHook = ProcessMouseEvent;
+			fb_console_context.mouseEventHook = ProcessMouseEvent;
 			last_x = last_y = 1;
 			fb_hConvertToConsole( &last_x, &last_y, NULL, NULL );
 		}
@@ -45,14 +45,14 @@ int fb_ConsoleGetMouse( int *x, int *y, int *z, int *buttons, int *clip )
 	}
 
 	if( inited > 0) {
-		GetConsoleMode( __fb_in_handle, &dwMode );
+		GetConsoleMode( FB_CONSOLE_INPUT_HANDLE, &dwMode );
 		/* Test for Mouse_Input on and Quick_Edit off */
 		if( (dwMode & (ENABLE_MOUSE_INPUT | ENABLE_QUICK_EDIT_MODE) ) != ENABLE_MOUSE_INPUT )
 		{
 			/* Turning off QuickEdit requires the extended flag value */
 			dwMode |= (ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS);
 			dwMode &= (~ENABLE_QUICK_EDIT_MODE);
-			SetConsoleMode( __fb_in_handle, dwMode );
+			SetConsoleMode( FB_CONSOLE_INPUT_HANDLE, dwMode );
 		}
 	}
 
@@ -71,6 +71,10 @@ int fb_ConsoleGetMouse( int *x, int *y, int *z, int *buttons, int *clip )
 
 int fb_ConsoleSetMouse( int x, int y, int cursor, int clip )
 {
+	(void)x;
+	(void)y;
+	(void)cursor;
+	(void)clip;
 	return fb_ErrorSetNum( FB_RTERROR_ILLEGALFUNCTIONCALL );
 }
 

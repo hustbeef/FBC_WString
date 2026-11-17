@@ -24,10 +24,12 @@
 
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
+#include once "tooling/semantic-type-shapes.bi"
 #include once "parser/parser.bi"
 #include once "ast/ast.bi"
 #include once "runtime/rtl.bi"
 #include once "tooling/semantic-primitive-types.bi"
+#include once "tooling/semantic-recovery.bi"
 
 declare function fbSemanticModelExpressionCheckpoint( ) as longint
 declare sub fbSemanticModelUnevaluatedQuery(byval checkpoint as longint, byref query_kind as const string)
@@ -49,14 +51,18 @@ function cConstIntExpr _
 	'' bad expression? fake a constant value
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
-		expr = astNewCONSTi( 0, dtype )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0, dtype ), "replacement-constant", __FUNCTION__, _
+			"parser/declarations/parser-decl-symbtype.bas", __LINE__)
 	end if
 
 	'' not a CONST? delete the tree and fake a constant value
 	if( astIsCONST( expr ) = FALSE ) then
 		errReport( FB_ERRMSG_EXPECTEDCONST )
 		astDelTree( expr )
-		expr = astNewCONSTi( 0, dtype )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0, dtype ), "replacement-constant", __FUNCTION__, _
+			"parser/declarations/parser-decl-symbtype.bas", __LINE__)
 	end if
 
 	'' flush the expr to the specified dtype.
@@ -149,14 +155,18 @@ function cConstIntExprRanged _
 	'' bad expression? fake a constant value
 	if( expr = NULL ) then
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
-		expr = astNewCONSTi( 0, todtype )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0, todtype ), "replacement-constant", __FUNCTION__, _
+			"parser/declarations/parser-decl-symbtype.bas", __LINE__)
 	end if
 
 	'' not a CONST? delete the tree and fake a longint constant value
 	if( astIsCONST( expr ) = FALSE ) then
 		errReport( FB_ERRMSG_EXPECTEDCONST )
 		astDelTree( expr )
-		expr = astNewCONSTi( 0, FB_DATATYPE_LONGINT )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0, FB_DATATYPE_LONGINT ), "replacement-constant", __FUNCTION__, _
+			"parser/declarations/parser-decl-symbtype.bas", __LINE__)
 	end if
 
 	'' save the dtype of the expression before we flush the ast to longint
@@ -173,7 +183,7 @@ function cConstIntExprRanged _
 
 end function
 
-private function cSymbolTypeFuncPtr( byval is_func as integer ) as FBSYMBOL ptr
+private function cSymbolTypeFuncPtr( byval is_func as integer, byval semantic_shape as integer ) as FBSYMBOL ptr
 	dim as integer dtype = any, mode = any, attrib = any, pattrib = any
 	dim as integer mode_is_explicit
 	dim as LEX_LOCATION semantic_site = lexGetLastLocation( )
@@ -189,6 +199,8 @@ private function cSymbolTypeFuncPtr( byval is_func as integer ) as FBSYMBOL ptr
 
 	'' mode
 	mode = cProcCallingConv( FB_FUNCMODE_FBCALL, mode_is_explicit )
+	fbSemanticModelTypeShapeConvention(semantic_shape, mode_is_explicit, _
+		(parser.mangling <> FB_MANGLING_BASIC) and (parser.mangling <> FB_MANGLING_RTLIB))
 
 	proc = symbPreAddProc( NULL )
 
@@ -212,7 +224,9 @@ private function cSymbolTypeFuncPtr( byval is_func as integer ) as FBSYMBOL ptr
 		if( is_func ) then
 			errReport( FB_ERRMSG_EXPECTEDRESTYPE )
 			'' error recovery: fake a type
-			dtype = FB_DATATYPE_INTEGER
+			dtype = fbSemanticModelRecoveryType( _
+				FB_DATATYPE_INTEGER, "replacement", __FUNCTION__, _
+				"parser/declarations/parser-decl-symbtype.bas", __LINE__)
 		else
 			dtype = FB_DATATYPE_VOID
 		end if
@@ -387,7 +401,9 @@ function cTypeOrExpression _
 		parser.nsprefix = NULL
 		errReport( FB_ERRMSG_EXPECTEDEXPRESSION )
 		'' error recovery: fake an expr
-		expr = astNewCONSTi( 0 )
+		expr = fbSemanticModelRecoveryNode( _
+			astNewCONSTi( 0 ), "replacement-constant", __FUNCTION__, _
+			"parser/declarations/parser-decl-symbtype.bas", __LINE__)
 	end if
 
 	'' Every expression parsed inside TYPEOF/SIZEOF is unevaluated, including
@@ -623,6 +639,17 @@ private sub hCheckFixedStringSize _
 
 end sub
 
+'' cSymbolType is synchronous and the compiler parses one unit per thread.
+'' This lexical result is valid only until the next cSymbolType call. Callers
+'' snapshot it before parsing initializers/defaults or other nested types.
+'' Recursive type parsing retains its own local selection, then publishes it
+'' on successful completion. No FBSYMBOL or AST layout changes are required.
+private dim shared as FBSYMBOL ptr parser_last_type_alias
+
+function parserGetLastTypeAlias( ) as FBSYMBOL ptr
+	return parser_last_type_alias
+end function
+
 private sub hParseUserDefinedType _
 	( _
 		byref dtype as integer, _
@@ -630,7 +657,8 @@ private sub hParseUserDefinedType _
 		byref lgt as longint, _
 		byref is_fixlenstr as integer, _
 		byref ptr_cnt as integer, _
-		byval options as FB_SYMBTYPEOPT _
+		byval options as FB_SYMBTYPEOPT, _
+		byref selected_alias as FBSYMBOL ptr _
 	)
 
 	dim as FBSYMCHAIN ptr chain_ = NULL
@@ -690,6 +718,7 @@ private sub hParseUserDefinedType _
 				exit do, do
 
 			case FB_SYMBCLASS_TYPEDEF
+				selected_alias = sym
 				'' Check access on the typedef only.  The final type
 				'' will be checked after it is returned.
 				if( symbCheckAccess( sym ) = FALSE ) then
@@ -769,17 +798,21 @@ end sub
 ''
 '' Type parsing is an ordered grammar with shared qualifier and subtype state.
 ''
-function cSymbolType _
+private function hParseSymbolType _
 	( _
 		byref dtype as integer, _
 		byref subtype as FBSYMBOL ptr, _
 		byref lgt as longint, _
 		byref is_fixlenstr as integer, _
-		byval options as FB_SYMBTYPEOPT _
+		byval options as FB_SYMBTYPEOPT, _
+		byval semantic_shape as integer _
 	) as integer
 
 	dim as integer isunsigned = any, isfunction = any
+	dim as FBSYMBOL ptr selected_alias = NULL
+	parser_last_type_alias = NULL
 	dim as integer semantic_primitive_token = 0
+	dim as integer semantic_written_pointers = 0
 	dim as LEX_LOCATION semantic_primitive_site
 
 	function = FALSE
@@ -794,6 +827,7 @@ function cSymbolType _
 
 	'' TYPEOF?
 	if( lexGetToken( ) = FB_TK_TYPEOF ) then
+		fbSemanticModelTypeShapeKind(semantic_shape, "typeof")
 		lexSkipToken( LEXCHECK_POST_SUFFIX )
 
 		'' '('
@@ -826,6 +860,17 @@ function cSymbolType _
 		'' Named types and callback containers are filtered by the observer.
 		semantic_primitive_token = lexGetToken( )
 		semantic_primitive_site = lexGetCurrentLocation( )
+
+		select case semantic_primitive_token
+		case FB_TK_FUNCTION, FB_TK_SUB
+			fbSemanticModelTypeShapeKind(semantic_shape, "callback")
+		case FB_TK_ANY, FB_TK_BOOLEAN, FB_TK_BYTE, FB_TK_UBYTE, FB_TK_SHORT, FB_TK_USHORT, _
+			FB_TK_INTEGER, FB_TK_UINT, FB_TK_LONG, FB_TK_ULONG, FB_TK_LONGINT, FB_TK_ULONGINT, _
+			FB_TK_SINGLE, FB_TK_DOUBLE, FB_TK_STRING, FB_TK_USTRING, FB_TK_ZSTRING, FB_TK_WSTRING
+			fbSemanticModelTypeShapeKind(semantic_shape, "primitive")
+		case else
+			fbSemanticModelTypeShapeKind(semantic_shape, "named")
+		end select
 
 		''
 		select case as const lexGetToken( )
@@ -955,7 +1000,7 @@ function cSymbolType _
 			dtype = typeAddrOf( FB_DATATYPE_FUNCTION )
 			ptr_cnt += 1
 
-			subtype = cSymbolTypeFuncPtr( isfunction )
+			subtype = cSymbolTypeFuncPtr( isfunction, semantic_shape )
 			if( subtype = NULL ) then
 				exit function
 			end if
@@ -973,7 +1018,7 @@ function cSymbolType _
 			end select
 		else
 			hParseUserDefinedType( dtype, subtype, lgt, is_fixlenstr, _
-			                       ptr_cnt, options )
+			                       ptr_cnt, options, selected_alias )
 		end if
 
 		'' no type?
@@ -1055,6 +1100,7 @@ function cSymbolType _
 					else
 						dtype = typeSetIsConst( typeAddrOf( dtype ) )
 						ptr_cnt += 1
+					semantic_written_pointers += 1
 					end if
 
 					lexSkipToken( LEXCHECK_POST_SUFFIX )
@@ -1071,6 +1117,7 @@ function cSymbolType _
 				else
 					dtype = typeAddrOf( dtype )
 					ptr_cnt += 1
+					semantic_written_pointers += 1
 				end if
 
 				lexSkipToken( LEXCHECK_POST_SUFFIX )
@@ -1090,7 +1137,9 @@ function cSymbolType _
 			if( (options and FB_SYMBTYPEOPT_ALLOWFORWARD) = 0 ) then
 				errReport( FB_ERRMSG_INCOMPLETETYPE, TRUE )
 				'' error recovery: fake a type
-				dtype = typeAddrOf( FB_DATATYPE_VOID )
+				dtype = fbSemanticModelRecoveryType( _
+					typeAddrOf( FB_DATATYPE_VOID ), "pointer", __FUNCTION__, _
+					"parser/declarations/parser-decl-symbtype.bas", __LINE__)
 				subtype = NULL
 			end if
 
@@ -1102,16 +1151,36 @@ function cSymbolType _
 				if( (options and FB_SYMBTYPEOPT_CHECKSTRPTR) <> 0 ) then
 					errReport( FB_ERRMSG_EXPECTEDPOINTER )
 					'' error recovery: make pointer
-					dtype = typeAddrOf( dtype )
+					dtype = fbSemanticModelRecoveryType( _
+						typeAddrOf( dtype ), "pointer", __FUNCTION__, _
+						"parser/declarations/parser-decl-symbtype.bas", __LINE__)
 				end if
 				lgt = typeGetSize( dtype )
 			end select
 		end if
 	end if
 
+	fbSemanticModelTypeShapePointers(semantic_shape, semantic_written_pointers)
 	fbSemanticModelPrimitiveType(dtype, lgt, is_fixlenstr, semantic_primitive_token, semantic_primitive_site)
+	parser_last_type_alias = selected_alias
 	function = TRUE
 
+end function
+
+function cSymbolType _
+	( _
+		byref dtype as integer, _
+		byref subtype as FBSYMBOL ptr, _
+		byref lgt as longint, _
+		byref is_fixlenstr as integer, _
+		byval options as FB_SYMBTYPEOPT _
+	) as integer
+	dim as LEX_LOCATION first = lexGetCurrentLocation()
+	dim as integer semantic_shape = fbSemanticModelTypeShapeBegin(first)
+	dim as integer accepted = hParseSymbolType(dtype, subtype, lgt, is_fixlenstr, options, semantic_shape)
+	dim as LEX_LOCATION last = lexGetLastLocation()
+	fbSemanticModelTypeShapeEnd(semantic_shape, accepted, last)
+	return accepted
 end function
 
 '' end of parser/declarations/parser-decl-symbtype.bas

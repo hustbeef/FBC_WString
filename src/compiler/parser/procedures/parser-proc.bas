@@ -25,10 +25,16 @@
 
 #include once "core/fb.bi"
 #include once "core/fbint.bi"
+#include once "tooling/semantic-type-shapes.bi"
 #include once "tooling/semantic-hooks.bi"
+#include once "tooling/semantic-startup.bi"
 #include once "tooling/semantic-diagnostics.bi"
 #include once "tooling/semantic-link.bi"
 #include once "parser/parser.bi"
+
+declare function parserGetLastTypeAlias( ) as FBSYMBOL ptr
+declare sub fbSemanticModelTypeAliasDeclaration(byval subject as FBSYMBOL ptr, byval alias_symbol as FBSYMBOL ptr)
+
 #include once "runtime/rtl.bi"
 #include once "ast/ast.bi"
 
@@ -51,6 +57,28 @@ declare sub fbSemanticModelDeclarationRepeat(byval sym as FBSYMBOL ptr, byref ki
 	byval repeated as integer, byref source as LEX_LOCATION)
 declare sub fbSemanticModelExportProcedureReplacement(byval previous as FBSYMBOL ptr, byval canonical as FBSYMBOL ptr)
 declare sub fbSemanticModelProcedureVisibility(byval proc as FBSYMBOL ptr, byref written as const string)
+
+declare function fbSemanticModelFullEnabled() as integer
+declare function fbSemanticModelNumber(byval value as longint) as string
+declare function fbSemanticModelCurrentStatement() as longint
+declare sub fbSemanticModelAppendDetail(byref value as string)
+
+'' Final method symbols are implicitly overloaded in modern FB. Keep the
+'' parser-accepted header choice independently, including explicit absence.
+'' The statement subject prevents a later definition from replacing the
+'' declaration's policy evidence. Metadata capture never changes attributes.
+private sub hSemanticWrittenOverload(byval proc as FBSYMBOL ptr, byval written_overload as integer)
+    if( fbSemanticModelFullEnabled() = FALSE ) then exit sub
+    dim as longint statement = fbSemanticModelCurrentStatement()
+    if( statement = 0 ) then
+        fbSemanticModelFailAt("written OVERLOAD header has no statement")
+        exit sub
+    end if
+    fbSemanticModelAppendDetail("K" + TABCHAR + "symbol" + TABCHAR + _
+        fbSemanticModelNumber(fbSemanticModelSymbolId(proc)) + TABCHAR + _
+        "procedure-header-written-overload:" + fbSemanticModelNumber(statement) + _
+        TABCHAR + iif(written_overload, "1", "0"))
+end sub
 
 '' [ALIAS "id"]
 function cAliasAttribute( ) as zstring ptr
@@ -631,12 +659,14 @@ sub cProcRetType _
 		options and= not FB_SYMBTYPEOPT_CHECKSTRPTR
 	end if
 
+	fbSemanticModelTypeShapeDeclaration()
 	if( cSymbolType( dtype, subtype, , , options ) = FALSE ) then
 		errReport( FB_ERRMSG_EXPECTEDIDENTIFIER )
 		'' error recovery: fake a type
 		dtype = FB_DATATYPE_INTEGER
 		subtype = NULL
 	else
+		fbSemanticModelTypeAliasDeclaration(proc, parserGetLastTypeAlias( ))
 		'' check for invalid types
 		select case( typeGetDtAndPtrOnly( dtype ) )
 		case FB_DATATYPE_WCHAR
@@ -1422,6 +1452,12 @@ private function hPreAddHeaderProc _
 		byref op as integer _
 	) as FBSYMBOL ptr
 
+	'' Only named procedures have a previous declaration, and only operators
+	'' have an operator code. Callers also inspect these outputs for headers
+	'' such as constructors, so define their absent states before dispatch.
+	head_proc = NULL
+	op = INVALID
+
 	select case( tk )
 	case FB_TK_CONSTRUCTOR, FB_TK_DESTRUCTOR
 		'' Ctors/dtors don't have an ID on their own
@@ -1512,7 +1548,8 @@ private sub hParseProcHeaderAttributes _
 		byref mode_is_explicit as integer, _
 		byref palias as zstring ptr, _
 		byref semantic_has_library as integer, _
-		byref semantic_written_convention as integer _
+		byref semantic_written_convention as integer, _
+		byref semantic_written_overload as integer _
 	)
 
 	'' [NAKED]
@@ -1557,6 +1594,7 @@ private sub hParseProcHeaderAttributes _
 			errReportNotAllowed( FB_LANG_OPT_FUNCOVL )
 		else
 			pattrib or= FB_PROCATTRIB_OVERLOADED
+			semantic_written_overload = TRUE
 		end if
 		lexSkipToken( LEXCHECK_POST_SUFFIX )
 	end if
@@ -1867,6 +1905,7 @@ function cProcHeader _
 	dim as integer mode_is_explicit = any
 	dim as integer semantic_has_library
 	dim as integer semantic_written_convention, semantic_dynamic_string
+	dim as integer semantic_written_overload = FALSE
 	dim as string semantic_result_form = "special"
 	dim as LEX_LOCATION semantic_site, diagnostic_site
 	dim as integer diagnostic_header_errors = errGetCount( )
@@ -1916,7 +1955,7 @@ function cProcHeader _
 	end if
 
 	hParseProcHeaderAttributes( tk, options, is_memberproc, attrib, pattrib, _
-	                            mode, mode_is_explicit, palias, semantic_has_library, semantic_written_convention )
+	                            mode, mode_is_explicit, palias, semantic_has_library, semantic_written_convention, semantic_written_overload )
 	dim as integer semantic_has_alias = (palias <> NULL)
 	dim as longint semantic_callback_start = fbSemanticModelCallbackCount( )
 
@@ -1992,6 +2031,7 @@ function cProcHeader _
 				(declaration_nonphysical = lexGetNonphysicalTokenCount( ))
 			fbSemanticModelExportDeclaration(proc, declaration_site, "procedure-prototype", id)
 			fbSemanticModelProcedureTyping(proc, tk, "prototype", semantic_result_form)
+			hSemanticWrittenOverload(proc, semantic_written_overload)
 			fbSemanticModelProcedureAbiInput(proc, "prototype", semantic_has_library, semantic_has_alias, semantic_callback_start, semantic_abi_site, _
 				semantic_written_convention, semantic_dynamic_string, tk, id)
 		end if
@@ -2227,12 +2267,14 @@ function cProcHeader _
 		end if
 		symbAddGlobalCtor( proc )
 		symbSetProcPriority( proc, priority )
+		fbSemanticModelStartupPriority(proc, priority)
 	elseif( stats and FB_SYMBSTATS_GLOBALDTOR ) then
 		if( proc->attrib and (FB_SYMBATTRIB_VIS_PRIVATE or FB_SYMBATTRIB_VIS_PROTECTED) ) then
 			errReport( FB_ERRMSG_NOACCESSTODTOR, TRUE )
 		end if
 		symbAddGlobalDtor( proc )
 		symbSetProcPriority( proc, priority )
+		fbSemanticModelStartupPriority(proc, priority)
 	end if
 
 	if( tk = FB_TK_PROPERTY ) then
@@ -2253,6 +2295,7 @@ function cProcHeader _
 			(declaration_nonphysical = lexGetNonphysicalTokenCount( ))
 		fbSemanticModelExportDeclaration(proc, declaration_site, "procedure-definition", id)
 		fbSemanticModelProcedureTyping(proc, tk, "definition", semantic_result_form)
+		hSemanticWrittenOverload(proc, semantic_written_overload)
 		fbSemanticModelProcedureAbiInput(proc, "definition", semantic_has_library, semantic_has_alias, semantic_callback_start, semantic_abi_site, _
 			semantic_written_convention, semantic_dynamic_string, tk, id)
 	end if

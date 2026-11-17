@@ -17,7 +17,7 @@
 #if defined(HOST_DOS) && defined(ENABLE_MT) && defined(FB_DOS_PDMLWP)
 	#include "drivers/dos/fb_dos_thread.h"
 	struct FB_DOS_MUTEX_WAITER;
-	struct _FBMUTEX {
+	struct FBMUTEX_ {
 		int owner;
 		unsigned int depth;
 		struct FB_DOS_MUTEX_WAITER *head;
@@ -27,23 +27,23 @@
 
 #if defined HOST_UNIX
 	#include <pthread.h>
-	struct _FBMUTEX {
+	struct FBMUTEX_ {
 		pthread_mutex_t id;
 	};
 #elif defined HOST_WIN32
 	#include <windows.h>
-	struct _FBMUTEX {
+	struct FBMUTEX_ {
 		HANDLE id;
 	};
 #elif defined HOST_XBOX
 	#include <windows.h>
-	struct _FBMUTEX {
+	struct FBMUTEX_ {
 		CRITICAL_SECTION id;
 	};
 #elif defined HOST_WII
 	#include <ogc/lwp.h>
 	#include <ogc/mutex.h>
-	struct _FBMUTEX {
+	struct FBMUTEX_ {
 		mutex_t id;
 	};
 #endif
@@ -61,10 +61,12 @@
 // small minimum stacks that are not sufficient for resolver calls made by
 // threaded TCP programs. illumos has the same issue in ordinary BASIC thread
 // examples. Linux targets using musl can expose it too.
+// Android's 16 KiB minimum also overflows ordinary TLS certificate and JNI
+// call chains. Use the same reserve as the other supported POSIX targets.
 // 8192 KiB seems about alright (jeffm)
 // see https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=234775
 */
-#if defined( HOST_LINUX ) || defined( HOST_FREEBSD ) || defined( HOST_DRAGONFLY ) || defined( HOST_OPENBSD ) || defined( HOST_NETBSD ) || defined( HOST_HAIKU ) || defined( HOST_SOLARIS )
+#if defined( HOST_LINUX ) || defined( HOST_ANDROID ) || defined( HOST_FREEBSD ) || defined( HOST_DRAGONFLY ) || defined( HOST_OPENBSD ) || defined( HOST_NETBSD ) || defined( HOST_HAIKU ) || defined( HOST_SOLARIS )
 	#define FBTHREAD_STACK_MIN (8192 * 1024)
 #else
 	#define FBTHREAD_STACK_MIN PTHREAD_STACK_MIN
@@ -82,7 +84,7 @@
    a void*, because pthread_t doesn't have to be an integer or pointer, and
    furthermore, zero may be a valid value for it. */
 
-typedef enum _FBTHREADFLAGS
+typedef enum FBTHREADFLAGS_
 {
 	FBTHREAD_NONE = 0,
 	FBTHREAD_MAIN = 1,
@@ -90,7 +92,7 @@ typedef enum _FBTHREADFLAGS
 	FBTHREAD_DETACHED = 4
 } FBTHREADFLAGS;
 
-struct _FBTHREAD {
+struct FBTHREAD_ {
 #if defined HOST_DOS
 	int id;
 	void *opaque;
@@ -118,7 +120,7 @@ typedef struct {
 	FBTHREAD         *thread;
 } FBTHREADINFO;
 
-typedef struct _FB_FBTHREADCTX
+typedef struct FB_FBTHREADCTX_
 {
 	FBTHREAD	*self;
 } FB_FBTHREADCTX;

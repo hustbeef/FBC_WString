@@ -158,7 +158,8 @@ static int opengl_probe(FB_GFX3_BACKEND_CAPS *caps)
 		FB_GFX3_FEATURE_PRESENT_IMMEDIATE | FB_GFX3_FEATURE_PACKED_BLITS |
 		FB_GFX3_FEATURE_HETEROGENEOUS_BLITS |
 		FB_GFX3_FEATURE_PACKED_RECTANGLES |
-		FB_GFX3_FEATURE_PACKED_LINES;
+		FB_GFX3_FEATURE_PACKED_LINES |
+		FB_GFX3_FEATURE_PACKED_GLYPHS;
 	caps->max_surface_width = 16384;
 	caps->max_surface_height = 16384;
 	caps->max_batch_commands = 4096;
@@ -494,6 +495,9 @@ static void opengl_shutdown(FB_GFX3_BACKEND *backend)
 	if ((state->clear_program != 0) && (state->gl.delete_program != NULL))
 		state->gl.delete_program(state->clear_program);
 
+	free(state->line_batch_items);
+	state->line_batch_items = NULL;
+	state->line_batch_items_capacity = 0u;
 	if ((state->platform_vtable != NULL) &&
 	    (state->platform_vtable->destroy != NULL))
 		state->platform_vtable->destroy(state->platform);
@@ -1592,7 +1596,7 @@ static void *opengl_get_opengl_proc(FB_GFX3_BACKEND *backend,
 
 #endif
 
-const FB_GFX3_BACKEND_VTABLE __fb_gfx3_backend_opengl = {
+const FB_GFX3_BACKEND_VTABLE fb_gfx3_backend_opengl = {
 	FB_GFX3_BACKEND_ABI_VERSION,
 	"OpenGL 4.3 compute",
 	opengl_probe,

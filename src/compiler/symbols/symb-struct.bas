@@ -30,6 +30,7 @@
 #include once "support/containers/hash.bi"
 #include once "support/containers/list.bi"
 #include once "backend/ir.bi"
+#include once "tooling/semantic-layout.bi"
 
 ''::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 '' add
@@ -89,6 +90,7 @@ function symbStructBegin _
 
 	''
 	s->ofs = 0
+	dim as integer semantic_requested_align = align
 
 	'' Assume FIELD = 1 under -lang qb, because QB didn't do any alignment
 	if( fbLangIsSet( FB_LANG_QB ) ) then
@@ -114,6 +116,7 @@ function symbStructBegin _
 		symbNestBegin( s, FALSE )
 	end if
 
+	fbSemanticModelLayoutBegin(s, parent, semantic_requested_align)
 	function = s
 end function
 
@@ -205,18 +208,24 @@ private function hCalcPadding _
 		byval align as integer, _
 		byval dtype as integer, _
 		byval subtype as FBSYMBOL ptr, _
-		byval attrib as FB_SYMBATTRIB = FB_SYMBATTRIB_NONE _
+		byval attrib as FB_SYMBATTRIB = FB_SYMBATTRIB_NONE, _
+		byval observed as FB_SEMANTIC_LAYOUT_DECISION ptr = NULL, _
+		byval typealign as integer = 0 _
 	) as integer
 
 	dim as integer natalign = any
+	dim as integer requested_align = align
+	dim as FB_SEMANTIC_LAYOUT_REASON semantic_reason = FB_SEMLAYOUT_NATURAL
 
 	natalign = typeCalcNaturalAlign( dtype, subtype )
+	if( typealign > natalign ) then natalign = typealign
 
 	'' default?
 	if( align = 0 ) then
 		align = natalign
 	'' packed..
 	else
+		semantic_reason = FB_SEMLAYOUT_PACKING
 		'' Field is ok with smaller alignment than what's given for FIELD=N?
 		'' Then the field's alignment takes precedence, i.e. FIELD=N can
 		'' only decrease the alignment but not increase it.
@@ -224,19 +233,33 @@ private function hCalcPadding _
 			align = natalign
 		end if
 
-		'' Var-len STRINGs and dynamic array descriptors are managed by the
-		'' runtime through descriptor pointers.  Those runtime entry points
-		'' expect naturally aligned descriptors, so FIELD=N must not place
-		'' them at byte offsets that can fault on strict-alignment CPUs.
+		'' Keep the established natural offsets of STRINGs and array
+		'' descriptors even when FIELD=N reduces the record's alignment.
+		'' A packed parent or array stride can still unalign their actual
+		'' addresses; native runtime access views handle those addresses.
 		if( (typeIsDynamicString( typeGetDtAndPtrOnly( dtype ) )) or _
 		    ((attrib and FB_SYMBATTRIB_DESCRIPTOR) <> 0) ) then
 			align = natalign
+			semantic_reason = FB_SEMLAYOUT_MANAGED
 		end if
 	end if
 
 	'' Calculate the padding bytes needed to align the current offset,
 	'' so that offset mod align = 0.
-	function = (align - (ofs and (align - 1))) and (align - 1)
+	dim as integer padding = (align - (ofs and (align - 1))) and (align - 1)
+	if( observed <> NULL ) then
+		'' Copy the actual decision here. Later bitfield container selection
+		'' can change the applied padding without repeating this calculation.
+		observed->reason = semantic_reason
+		observed->dtype = dtype
+		observed->subtype = subtype
+		observed->offset = ofs
+		observed->packing = requested_align
+		observed->natural = natalign
+		observed->effective = align
+		observed->padding = padding
+	end if
+	function = padding
 end function
 
 private function hCheckUDTSize _
@@ -382,20 +405,23 @@ end function
 function symbAddField _
 	( _
 		byval parent as FBSYMBOL ptr, _
-		byval id as zstring ptr, _
+		byval id as const zstring ptr, _
 		byval dimensions as integer, _
 		dTB() as FBARRAYDIM, _
 		byval dtype as integer, _
 		byval subtype as FBSYMBOL ptr, _
 		byval lgt as longint, _
 		byval bits as integer, _
-		byval attrib as FB_SYMBATTRIB _
+		byval attrib as FB_SYMBATTRIB, _
+		byval typealign as integer _
 	) as FBSYMBOL ptr
 
 	dim as FBSYMBOL ptr sym = any, tail = any, base_parent = any, _
 		desc = any, desctype = any
 	dim as integer pad = any, alloc_field = any, elen = any, options = any
 	dim as longint offset = any
+	dim as FB_SEMANTIC_LAYOUT_DECISION semantic_layout
+	dim as integer semantic_padding = 0
 
 	function = NULL
 	desc = NULL
@@ -486,7 +512,9 @@ function symbAddField _
 
 	'' Add padding for normal fields (neither bitfield nor fake array)
 	if( alloc_field ) then
-		pad = hCalcPadding( offset, parent->udt.align, dtype, subtype, attrib )
+		pad = hCalcPadding( _
+			offset, parent->udt.align, dtype, subtype, attrib, @semantic_layout, _
+			typealign)
 		if( pad > 0 ) then
 
 			'' bitfield?
@@ -508,13 +536,14 @@ function symbAddField _
 		'' Check whether adding this field would make the UDT be too big
 		if( hCheckUDTSize( offset, lgt, pad ) ) then
 			offset += pad
+			semantic_padding = pad
 		else
 			'' error recovery: don't add this field
 			alloc_field = FALSE
 		end if
 
 		'' update largest field len
-		elen = typeCalcNaturalAlign( dtype, subtype )
+		elen = semantic_layout.natural
 		'' larger?
 		if( elen > parent->udt.natalign ) then
 			parent->udt.natalign = elen
@@ -550,6 +579,7 @@ function symbAddField _
 	sym->lgt = lgt
 	sym->ofs = offset
 	symbVarInitFields( sym )
+	sym->var_.align = typealign
 	symbVarInitArrayDimensions( sym, dimensions, dTB() )
 	if( desc ) then
 		sym->var_.array.desc = desc
@@ -685,6 +715,7 @@ function symbAddField _
 
 	sym->parent = parent
 
+	fbSemanticModelLayoutField(parent, sym, alloc_field, semantic_layout, semantic_padding, realsize)
 	function = sym
 end function
 
@@ -697,20 +728,26 @@ sub symbInsertInnerUDT _
 	dim as FBSYMBOL ptr fld = any
 	dim as FBSYMBOLTB ptr symtb = any
 	dim as integer pad = any
+	dim as FB_SEMANTIC_LAYOUT_DECISION semantic_layout
+	dim as longint semantic_old_offset = parent->ofs, semantic_old_length = parent->lgt
+	dim as integer semantic_old_natural = parent->udt.natalign
 
 	if( symbGetUDTIsUnion( parent ) = FALSE ) then
 		'' calc padding (should be aligned like if an UDT field was being added)
-		pad = hCalcPadding( parent->ofs, parent->udt.align, FB_DATATYPE_STRUCT, inner )
+		pad = hCalcPadding( parent->ofs, parent->udt.align, FB_DATATYPE_STRUCT, inner, FB_SYMBATTRIB_NONE, @semantic_layout )
 		if( hCheckUDTSize( parent->ofs, 0, pad ) ) then
 			parent->ofs += pad
 		end if
 	end if
+	dim as longint semantic_insertion = fbSemanticModelLayoutInsertBegin(parent, inner, semantic_layout, _
+		semantic_old_offset, semantic_old_length, semantic_old_natural)
 
 	'' move the nodes from inner to parent
 	fld = inner->udt.ns.symtb.head
 
 	'' unless it's a fake struct
 	if( fld = NULL ) then
+		fbSemanticModelLayoutInsertEnd(semantic_insertion, parent)
 		exit sub
 	end if
 
@@ -727,6 +764,7 @@ sub symbInsertInnerUDT _
 	'' breaking their FBSYMBOL.parent pointers which are needed for
 	'' correct traversal of the tree of nested structs/unions.
 	while( fld )
+		dim as longint semantic_old_member_offset = fld->ofs
 
 		fld->symtb = symtb
 
@@ -735,6 +773,7 @@ sub symbInsertInnerUDT _
 		else
 			fld->ofs += parent->ofs
 		end if
+		fbSemanticModelLayoutPromote(semantic_insertion, fld, semantic_old_member_offset)
 
 		fld = fld->next
 	wend
@@ -771,6 +810,7 @@ sub symbInsertInnerUDT _
 	if( symbGetUdtHasBitfield( inner ) ) then
 		symbSetUdtHasBitfield( parent )
 	end if
+	fbSemanticModelLayoutInsertEnd(semantic_insertion, parent)
 
 end sub
 
@@ -923,6 +963,9 @@ private function hGetReturnType( byval sym as FBSYMBOL ptr ) as integer
 		return FB_DATATYPE_STRUCT
 	end if
 
+	'' A filtered member list may contain no instance field. Without one,
+	'' the scalar register cases cannot classify the result; keep the
+	'' existing hidden-result fallback instead of dereferencing NULL.
 	select case as const( unpadlen )
 	case 1
 		res = FB_DATATYPE_BYTE
@@ -933,6 +976,9 @@ private function hGetReturnType( byval sym as FBSYMBOL ptr ) as integer
 	case 3
 		'' return as int only if first is a short
 		fld = symbUdtGetFirstField( sym )
+		if( fld = NULL ) then
+			return typeAddrOf( FB_DATATYPE_STRUCT )
+		end if
 		if( fld->lgt = 2 ) then
 			'' and if the struct is not packed
 			if( sym->lgt >= 4 ) then
@@ -944,6 +990,9 @@ private function hGetReturnType( byval sym as FBSYMBOL ptr ) as integer
 		'' return in ST(0) if there's only one element and it's a SINGLE
 		do
 			fld = symbUdtGetFirstField( sym )
+			if( fld = NULL ) then
+				return typeAddrOf( FB_DATATYPE_STRUCT )
+			end if
 
 			'' second field?
 			if( symbUdtGetNextField( fld ) ) then
@@ -968,6 +1017,9 @@ private function hGetReturnType( byval sym as FBSYMBOL ptr ) as integer
 	case 5, 6, 7
 		'' return as longint only if first is a small int
 		fld = symbUdtGetFirstField( sym )
+		if( fld = NULL ) then
+			return typeAddrOf( FB_DATATYPE_STRUCT )
+		end if
 		if( fld->lgt <= 4 ) then
 			'' and if the struct is not packed
 			if( sym->lgt >= 8 ) then
@@ -979,6 +1031,9 @@ private function hGetReturnType( byval sym as FBSYMBOL ptr ) as integer
 		'' return in ST(0) if there's only one element and it's a DOUBLE
 		do
 			fld = symbUdtGetFirstField( sym )
+			if( fld = NULL ) then
+				return typeAddrOf( FB_DATATYPE_STRUCT )
+			end if
 
 			'' second field?
 			if( symbUdtGetNextField( fld ) ) then
@@ -1027,10 +1082,11 @@ sub symbStructEnd _
 
 	'' save length without the tail padding added below
 	sym->udt.unpadlgt = sym->lgt
+	dim as FB_SEMANTIC_LAYOUT_DECISION semantic_layout
 
 	'' Add tail padding bytes, i.e. round up the structure size to match
 	'' the alignment of the largest natural field.
-	pad = hCalcPadding( sym->lgt, sym->udt.align, FB_DATATYPE_STRUCT, sym )
+	pad = hCalcPadding( sym->lgt, sym->udt.align, FB_DATATYPE_STRUCT, sym, FB_SYMBATTRIB_NONE, @semantic_layout )
 	if( hCheckUDTSize( sym->lgt, 0, pad ) ) then
 		sym->lgt += pad
 	end if
@@ -1092,6 +1148,7 @@ sub symbStructEnd _
 	if( symb.fwdrefcnt > 0 ) then
 		symbCheckFwdRef( sym )
 	end if
+	fbSemanticModelLayoutEnd(sym, semantic_layout)
 
 end sub
 

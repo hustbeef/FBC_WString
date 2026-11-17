@@ -30,6 +30,13 @@
 #include once "parser/parser.bi"
 #include once "ast/ast.bi"
 #include once "backend/ir.bi"
+#include once "runtime/rtl.bi"
+#include once "tooling/semantic-blocks.bi"
+#include once "tooling/semantic-lifetimes.bi"
+
+declare function irhlcErrorNeedsCleanupBoundary(byval body as ASTNODE ptr) as integer
+declare sub irhlcErrorRegisterRecoveryBoundary(byval proc as FBSYMBOL ptr, _
+	byval label as FBSYMBOL ptr, byval branch as ASTNODE ptr, byval target as FBSYMBOL ptr)
 
 declare sub fbSemanticModelAttachPendingScopeExitSource(byval branch as ASTNODE ptr)
 declare function fbSemanticModelEnabled( ) as integer
@@ -130,6 +137,7 @@ sub astScopeBreak( byval target as FBSYMBOL ptr )
 	n->break.scope = parser.scope
 	n->break.linenum = lexLineNum( )
 	n->break.stmtnum = parser.stmt.cnt
+	n->break.semantic_cleanup_count = 0
 	n->break.semantic_dependency = -1
 	n->break.semantic_start_line = 0
 	n->break.semantic_start_column = 0
@@ -142,6 +150,8 @@ sub astScopeBreak( byval target as FBSYMBOL ptr )
 	'' processing the proc's branch list
 	'' Same concerns apply as for the astAdd() of SCOPEBEGIN above
 	n->l = astNewBRANCH( AST_OP_JMP, target )
+	n->break.semantic_identity = fbSemanticModelScopeExit(n)
+	n->l->op.semantic_scope_exit = n->break.semantic_identity
 	astAdd( n->l )
 
 	hAddToBreakList( @ast.proc.curr->block.breaklist, n )
@@ -160,8 +170,9 @@ sub astScopeEnd( byval n as ASTNODE ptr )
 	parser.stmt.cnt += 1
 
 	n->block.endstmt = parser.stmt.cnt
+	fbSemanticModelScopeBlock(n)
 
-	astScopeDestroyVars(symbGetScopeSymbTb(s).tail)
+	astScopeDestroyVars(symbGetScopeSymbTb(s).tail, s)
 
 	'' remove symbols from hash table
 	symbDelScopeTb( s )
@@ -189,16 +200,32 @@ function astScopeUpdBreakList( byval proc as ASTNODE ptr ) as integer
 	dim as ASTNODE ptr n = any
 
 	function = FALSE
+	dim as integer recovery_edges = FALSE
+	if( env.clopt.backend = FB_BACKEND_GCC or env.clopt.backend = FB_BACKEND_CLANG ) then
+		recovery_edges = irhlcErrorNeedsCleanupBoundary(proc->l)
+	end if
 
 	'' for each break in this proc..
 	n = proc->block.breaklist.head
 	do while( n <> NULL )
+
+		if( recovery_edges ) then
+			'' Both explicit exits and ordinary GOTOs can destroy source locals.
+			'' A selected callback returns before those destructors execute.
+			var boundary = symbAddLabel(NULL)
+			astAddAfter(astNewLABEL(boundary), astGetPrev(n->l))
+			irhlcErrorRegisterRecoveryBoundary(proc->sym, boundary, n->l, n->sym)
+		end if
 
 		'' EXIT SUB | FUNCTION?
 		if( n->sym = proc->block.exitlabel ) then
 			'' special case due the non implicit scope block, that
 			'' can't be created for procs because the implicit
 			'' main() function
+			'' The following local destructors must run after abandoned callees.
+			if( proc->sym->proc.ext->stats and FB_PROCSTATS_NATIVEERROROWNER ) then
+				astAddAfter( rtlErrorNativeOwnerCleanup(), astGetPrev(n->l) )
+			end if
 			hDelLocals( n, FALSE )
 
 		else
@@ -206,6 +233,8 @@ function astScopeUpdBreakList( byval proc as ASTNODE ptr ) as integer
 				exit function
 			end if
 		end if
+
+		fbSemanticModelScopeExitEnd(n)
 
 		'' next
 		n = n->next
@@ -457,6 +486,9 @@ private sub hDestroyBlockLocals _
 								end if
 							end if
 							base_expr = astAddAfter( expr, base_expr )
+							'' Tag the root returned after astUpdate, which can replace
+							'' or eliminate the original destruction expression.
+							fbSemanticModelExitCleanup(branch, s, blk, base_expr)
 						end if
 					end if
 				end if
@@ -658,8 +690,10 @@ private function hCheckBranch _
 
 end function
 
-sub astScopeDestroyVars( byval symtbtail as FBSYMBOL ptr )
+sub astScopeDestroyVars( byval symtbtail as FBSYMBOL ptr, byval owner as FBSYMBOL ptr )
 	dim as FBSYMBOL ptr s = any
+	dim as longint semantic_group = fbSemanticModelLexicalCleanupBegin(owner)
+	dim as integer semantic_ordinal = 0
 
 	'' For each symbol declared inside the block (in reverse order)
 	s = symtbtail
@@ -668,11 +702,14 @@ sub astScopeDestroyVars( byval symtbtail as FBSYMBOL ptr )
 		if( symbIsVar( s ) ) then
 			'' has a dtor?
 			if( symbGetVarHasDtor( s ) ) then
-				astAdd( astBuildVarDtorCall( s, TRUE ) )
+				dim as ASTNODE ptr action = astAdd( astBuildVarDtorCall( s, TRUE ) )
+				semantic_ordinal += 1
+				fbSemanticModelLexicalCleanup(semantic_group, semantic_ordinal, s, action)
 			end if
 		end if
 		s = s->prev
 	wend
+	fbSemanticModelLexicalCleanupEnd(semantic_group, semantic_ordinal)
 end sub
 
 sub astScopeAllocLocals( byval symtbhead as FBSYMBOL ptr )

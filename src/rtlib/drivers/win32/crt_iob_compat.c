@@ -11,12 +11,13 @@
 
     Responsibilities:
 
-        - provide __iob_func() when 32-bit x86 uses an older target C runtime
         - route MinGW's indexed stream access to the Windows 95 stream table
         - map numbered stat imports to their 32-bit Windows 95 equivalents
-        - keep the compatibility symbol inside programs that actually need it
+        - keep the compatibility symbols inside programs that actually need them
 
-    This file intentionally does NOT contain: - general C runtime replacements
+    This file intentionally does NOT contain:
+
+        - general C runtime replacements
         - stream allocation or ownership
         - operating-system version detection
 */
@@ -35,9 +36,9 @@
 	#define FB_CRT_WEAK
 #endif
 
-extern void *FB_CRT_CDECL __p__iob( void );
 extern int FB_CRT_CDECL _stat( const char *path, void *status );
 extern int FB_CRT_CDECL _wstat( const unsigned short *path, void *status );
+extern void *FB_CRT_CDECL __p__iob( void );
 
 typedef int (FB_CRT_CDECL *FB_CRT_STAT_PROC)( const char *path, void *status );
 typedef int (FB_CRT_CDECL *FB_CRT_WSTAT_PROC)( const unsigned short *path,
@@ -50,24 +51,13 @@ enum {
 };
 
 /*
-   Recent MinGW headers route standard streams through __iob_func().  The
-   older Microsoft runtime exposes the same stream table through __p__iob().
-   Returning that table preserves the expected FILE pointer ABI without
-   requiring a newer MSVCRT DLL on Windows 95.
-*/
-void *FB_CRT_CDECL FB_CRT_WEAK __iob_func( void )
-{
-	return __p__iob( );
-}
-
-/*
    Current MinGW headers obtain stdin, stdout, and stderr by indexing the
    stream table through __acrt_iob_func().  MSVCRT40 predates that helper, but
    its FILE entries use the same 32-byte layout expected by 32-bit MinGW.
 */
 static void *FB_CRT_CDECL fb_CrtAcrtIobFunc( unsigned int index )
 {
-	unsigned char *streams = (unsigned char *)__iob_func( );
+	unsigned char *streams = (unsigned char *)__p__iob( );
 
 	return streams + (index * FB_CRT_FILE_SIZE);
 }
@@ -103,6 +93,9 @@ FB_CRT_IOB_PROC fb_CrtImpAcrtIobFunc
 #undef FB_CRT_CDECL
 #undef FB_CRT_WEAK
 
+#else
+/* Keep the Win64 translation unit valid without defining 32-bit symbols. */
+typedef int fb_crt_iob_compat_empty_translation_unit;
 #endif
 
 /* end of drivers/win32/crt_iob_compat.c */

@@ -615,7 +615,7 @@ enum FB_WCHARCONV
 end enum
 
 type FBTARGET
-	id              as zstring ptr
+	id              as const zstring ptr
 	wchar           as FB_DATATYPE  '' Real wstring data type
 	fbcall          as FB_FUNCMODE  '' Default calling convention, must match the rtlib's FBCALL
 	stdcall         as FB_FUNCMODE  '' Calling convention to use for stdcall (stdcall or stdcallms)
@@ -703,7 +703,7 @@ end type
 #include once "support/hlp.bi"
 
 declare function fbGetInputFileParentDir( ) as string
-declare sub fbAddLib(byval libname as zstring ptr)
+declare sub fbAddLib(byval libname as const zstring ptr)
 declare sub fbAddLibPath(byval path as zstring ptr)
 
 extern env as FBENV

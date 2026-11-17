@@ -13,6 +13,7 @@
 #     * build native packages for Haiku and the supported BSD guests under QEMU
 #     * install and test those packages, then retain them as workflow artifacts
 #     * run fbctests and Exampleageddon on AROS and RISC OS emulators
+#     * build a DOS ZIP and run its emulator preflight and full unit suite
 #     * compile fbctests and Exampleageddon for Windows CE without a licensed ROM
 #     * retain platform reports and failure evidence as workflow artifacts
 #
@@ -61,7 +62,9 @@ on:
 
 concurrency:
   group: fbc-xl-extended-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve an active master qualification; newer pushes replace the pending
+  # revision rather than discarding hours of guest build and test work.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/master') }}
 
 permissions:
   contents: read
@@ -70,7 +73,95 @@ env:
   JOBS: 4
 
 jobs:
+  changes:
+    name: Select CI scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run_builds: ${{ steps.scope.outputs.run_builds }}
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Check CI scope contracts
+        run: python3 -B build_scripts/test-ci-change-scope.py
+      - name: Check shared C ABI consumers
+        run: python3 -B build_scripts/test-rtlib-abi-names.py
+      - name: Select qualification scope
+        id: scope
+        env:
+          CI_SOURCE_REF: ${{ inputs.source_ref }}
+        run: python3 -B build_scripts/ci-change-scope.py
+
+  dos:
+    needs: changes
+    if: needs.changes.outputs.run_builds == 'true' && !inputs.package_guests_only
+    name: DOS compiler ZIP, fbctests and Exampleageddon
+    runs-on: windows-2025
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      MAKE_JOBS: 4
+      DOS_UNIT_TIMEOUT: 600
+      DOSBOX_X_VERSION: '2026.10.01'
+      DOS_TEST_CORE: dynamic_x86
+      DOS_THREAD_PROVIDER: pdmlwp
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          release: false
+          update: true
+          install: >-
+            make git curl rsync tar xz gzip zip unzip patch pkgconf python
+            mingw-w64-x86_64-toolchain mingw-w64-x86_64-libffi
+            mingw-w64-x86_64-python
+      - name: Build native compiler for the DOS cross build
+        run: |
+          bash build_scripts/ci-seed-source-bootstrap.sh win64 win64
+          make -j4 bootstrap-minimal </dev/null
+          make -j4 compiler BUILD_FBCFLAGS="-d __FB_BOOTSTRAP_COMPAT__" </dev/null
+          make clean-compiler
+          make -j4 compiler </dev/null
+      - name: Build DOS distribution and ZIP
+        id: dos-build
+        run: |
+          export HOST_FBC_ROOT="$PWD"
+          bash build_scripts/msdos-build-freebasic.sh --skip-deps --keep-buildroot
+      - name: Run DOS emulator preflight and full fbctests
+        run: bash build_scripts/msdos-unit-tests.sh
+      - name: Run DOS Exampleageddon with the packaged compiler
+        if: ${{ !cancelled() && steps.dos-build.outcome == 'success' }}
+        run: bash build_scripts/msdos-exampleageddon.sh
+      - name: Retain DOS package and qualification receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fbc-xl-dos
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            out/msdos/*.zip
+            out/msdos/qualification/
+            out/msdos/exampleageddon/reports/
+            out/msdos/exampleageddon/manifest.json
+            out/msdos/exampleageddon/B*/receipt.json
+            out/msdos/exampleageddon/B*/RESULT.TSV
+            out/msdos/exampleageddon/B*/DONE.TXT
+            out/msdos/exampleageddon/B*/dosbox-*.log
+            out/msdos/exampleageddon/B*/LOG/
+
   qemu-guests:
+    needs: changes
+    if: needs.changes.outputs.run_builds == 'true'
     name: ${{ matrix.name }} native package (fbctests + Exampleageddon)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -143,8 +234,7 @@ jobs:
       - name: Install VM host dependencies
         run: |
           set -euo pipefail
-          sudo bash build_scripts/github-actions-apt-update.sh
-          sudo apt-get install -y --no-install-recommends \
+          sudo bash build_scripts/github-actions-apt-install.sh \
             binutils bzip2 ca-certificates curl g++ gcc libncurses-dev make \
             openssh-client \
             python3 python3-pexpect qemu-system-x86 qemu-utils \
@@ -220,6 +310,8 @@ jobs:
           printf 'Verified installable package: %s\n' "${package_files[@]}"
 
       - name: Upload installable guest package
+        # Artifact storage is an output channel, not part of package qualification.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: fbc-xl-platform-package-${{ matrix.id }}
@@ -232,6 +324,8 @@ jobs:
 
       - name: Upload guest qualification evidence
         if: always()
+        # Keep completed guest checks green when Actions artifact storage is unavailable.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: fbc-xl-${{ matrix.id }}-evidence
@@ -242,8 +336,9 @@ jobs:
             ${{ matrix.log_path }}/
 
   aros:
+    needs: changes
     name: AROS x86_64 (fbctests + Exampleageddon)
-    if: ${{ !inputs.package_guests_only }}
+    if: needs.changes.outputs.run_builds == 'true' && !inputs.package_guests_only
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
@@ -291,6 +386,8 @@ jobs:
 
       - name: Upload AROS qualification evidence
         if: always()
+        # Evidence uploads must not override the emulator test result.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: fbc-xl-aros-x86_64-evidence
@@ -301,8 +398,9 @@ jobs:
             out/aros/exampleageddon/
 
   riscos:
+    needs: changes
     name: RISC OS ARM (fbctests + Exampleageddon)
-    if: ${{ !inputs.package_guests_only }}
+    if: needs.changes.outputs.run_builds == 'true' && !inputs.package_guests_only
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
@@ -315,8 +413,7 @@ jobs:
       - name: Install headless display support
         run: |
           set -euo pipefail
-          sudo bash build_scripts/github-actions-apt-update.sh
-          sudo apt-get install -y --no-install-recommends xauth xvfb
+          sudo bash build_scripts/github-actions-apt-install.sh xauth xvfb
 
       - name: Seed host bootstrap sources
         run: bash build_scripts/ci-seed-source-bootstrap.sh linux-x86_64 linux-x86_64
@@ -386,6 +483,8 @@ jobs:
 
       - name: Upload RISC OS qualification evidence
         if: always()
+        # Evidence uploads must not override the emulator test result.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: fbc-xl-riscos-arm-evidence
@@ -398,8 +497,9 @@ jobs:
             out/riscos/gccsdk/gcc4/build-*-output.txt
 
   wince:
+    needs: changes
     name: Windows CE ARM ROM-free compile qualification
-    if: ${{ !inputs.package_guests_only }}
+    if: needs.changes.outputs.run_builds == 'true' && !inputs.package_guests_only
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
@@ -412,8 +512,7 @@ jobs:
       - name: Install Windows CE host dependencies
         run: |
           set -euo pipefail
-          sudo bash build_scripts/github-actions-apt-update.sh
-          sudo apt-get install -y --no-install-recommends rsync
+          sudo bash build_scripts/github-actions-apt-install.sh rsync
           docker version
 
       - name: Seed host bootstrap sources
@@ -450,6 +549,8 @@ jobs:
 
       - name: Upload Windows CE compile evidence
         if: always()
+        # Evidence uploads must not override the compile qualification result.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: fbc-xl-wince-arm-compile-evidence

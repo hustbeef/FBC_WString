@@ -1,5 +1,5 @@
-'' Project: FreeBASIC compiler - compiler driver target policy (updated Testing)
-'' ----------------------------------------- 
+'' Project: FreeBASIC compiler - compiler driver target policy
+'' -----------------------------------------
 ''
 '' File: driver/platforms/wince/fbc-platform.bi
 ''

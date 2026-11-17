@@ -127,7 +127,6 @@ pkgroot/
 dist
 generated
 obj
-winCE/
 !/src/rtlib/drivers/wince/
 !/src/rtlib/drivers/wince/**
 !/src/gfxlib2/drivers/wince/

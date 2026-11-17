@@ -20,7 +20,7 @@
 #define SNAKE_GAME_HEIGHT 18U
 #define SNAKE_MATRIX_SIZE (SNAKE_GAME_WIDTH * SNAKE_GAME_HEIGHT)
 #define SNAKE_CELL_MAX_BITS 3U
-#define SNAKE_CELL_SET_BITS (not (not 0u  shl  SNAKE_CELL_MAX_BITS))
+#define SNAKE_CELL_SET_BITS (not (not 0u  Shl  SNAKE_CELL_MAX_BITS))
 #define SHIFT(x, y) (((x) + ((y) * SNAKE_GAME_WIDTH)) * SNAKE_CELL_MAX_BITS)
 
 '' use the callbacks instead of main()
@@ -28,74 +28,74 @@
 '' -------------------------------------------------------------------------
 '' Game state and metadata
 '' -------------------------------------------------------------------------
-dim shared joystick as SDL_Joystick ptr = cptr(SDL_Joystick ptr, 0)
-enum SnakeCell
+Dim Shared joystick As SDL_Joystick Ptr = CPtr(SDL_Joystick Ptr, 0)
+Enum SnakeCell
 	SNAKE_CELL_NOTHING = (0u)
 	SNAKE_CELL_SRIGHT = (1u)
 	SNAKE_CELL_SUP = (2u)
 	SNAKE_CELL_SLEFT = (3u)
 	SNAKE_CELL_SDOWN = (4u)
 	SNAKE_CELL_FOOD = (5u)
-end enum
+End Enum
 
-enum SnakeDirection
+Enum SnakeDirection
 	SNAKE_DIR_RIGHT
 	SNAKE_DIR_UP
 	SNAKE_DIR_LEFT
 	SNAKE_DIR_DOWN
-end enum
+End Enum
 
-type SnakeContext
-	cells(0 to 161) as ubyte
-	head_xpos as byte
-	head_ypos as byte
-	tail_xpos as byte
-	tail_ypos as byte
-	next_dir as byte
-	inhibit_tail_step as byte
-	occupied_cells as ulong
-end type
+Type SnakeContext
+	cells(0 To 161) As UByte
+	head_xpos As Byte
+	head_ypos As Byte
+	tail_xpos As Byte
+	tail_ypos As Byte
+	next_dir As Byte
+	inhibit_tail_step As Byte
+	occupied_cells As ULong
+End Type
 
-type AppState
-	window_ as SDL_Window ptr
-	renderer as SDL_Renderer ptr
-	snake_ctx as SnakeContext
-	last_step as Uint64
-end type
+Type AppState
+	window_ As SDL_Window Ptr
+	renderer As SDL_Renderer Ptr
+	snake_ctx As SnakeContext
+	last_step As Uint64
+End Type
 
-type ExtendedMetadataRecord
-	key as const zstring ptr
-	value as const zstring ptr
-end type
+Type ExtendedMetadataRecord
+	key As Const ZString Ptr
+	value As Const ZString Ptr
+End Type
 
-dim shared extended_metadata(0 to 3) as ExtendedMetadataRecord = {type<ExtendedMetadataRecord>(strptr(SDL_PROP_APP_METADATA_URL_STRING), _
-strptr("https://examples.libsdl.org/SDL3/demo/01-snake/")), type<ExtendedMetadataRecord>(strptr(SDL_PROP_APP_METADATA_CREATOR_STRING), strptr("SDL team")), _
-type<ExtendedMetadataRecord>(strptr(SDL_PROP_APP_METADATA_COPYRIGHT_STRING), strptr("Placed in the public domain")), _
-type<ExtendedMetadataRecord>(strptr(SDL_PROP_APP_METADATA_TYPE_STRING), strptr("game"))}
+Dim Shared extended_metadata(0 To 3) As ExtendedMetadataRecord = {Type<ExtendedMetadataRecord>(StrPtr(SDL_PROP_APP_METADATA_URL_STRING), _
+StrPtr("https://examples.libsdl.org/SDL3/demo/01-snake/")), Type<ExtendedMetadataRecord>(StrPtr(SDL_PROP_APP_METADATA_CREATOR_STRING), StrPtr("SDL team")), _
+Type<ExtendedMetadataRecord>(StrPtr(SDL_PROP_APP_METADATA_COPYRIGHT_STRING), StrPtr("Placed in the public domain")), _
+Type<ExtendedMetadataRecord>(StrPtr(SDL_PROP_APP_METADATA_TYPE_STRING), StrPtr("game"))}
 
-declare function snake_cell_at cdecl(byval ctx as const SnakeContext ptr, byval x as byte, byval y as byte) as SnakeCell
-declare sub set_rect_xy_ cdecl(byval r as SDL_FRect ptr, byval x as short, byval y as short)
-declare sub put_cell_at_ cdecl(byval ctx as SnakeContext ptr, byval x as byte, byval y as byte, byval ct as SnakeCell)
-declare function are_cells_full_ cdecl(byval ctx as SnakeContext ptr) as long
-declare sub new_food_pos_ cdecl(byval ctx as SnakeContext ptr)
-declare sub snake_initialize cdecl(byval ctx as SnakeContext ptr)
-declare sub snake_redir cdecl(byval ctx as SnakeContext ptr, byval direction_index as SnakeDirection)
-declare sub wrap_around_ cdecl(byval val_ as zstring ptr, byval max as byte)
-declare sub snake_step cdecl(byval ctx as SnakeContext ptr)
-declare function handle_key_event_ cdecl(byval ctx as SnakeContext ptr, byval key_code as SDL_Scancode) as SDL_AppResult
-declare function handle_hat_event_ cdecl(byval ctx as SnakeContext ptr, byval hat as Uint8) as SDL_AppResult
-declare function SDL_AppIterate cdecl(byval appstate as any ptr) as SDL_AppResult
-declare function SDL_AppInit cdecl(byval appstate as any ptr ptr, byval argc as long, byval argv as zstring ptr ptr) as SDL_AppResult
-declare function SDL_AppEvent cdecl(byval appstate as any ptr, byval event as SDL_Event ptr) as SDL_AppResult
-declare sub SDL_AppQuit cdecl(byval appstate as any ptr, byval result as SDL_AppResult)
+Declare Function snake_cell_at cdecl(ByVal ctx As Const SnakeContext Ptr, ByVal x As Byte, ByVal y As Byte) As SnakeCell
+Declare Sub set_rect_xy_ cdecl(ByVal r As SDL_FRect Ptr, ByVal x As Short, ByVal y As Short)
+Declare Sub put_cell_at_ cdecl(ByVal ctx As SnakeContext Ptr, ByVal x As Byte, ByVal y As Byte, ByVal ct As SnakeCell)
+Declare Function are_cells_full_ cdecl(ByVal ctx As SnakeContext Ptr) As Long
+Declare Sub new_food_pos_ cdecl(ByVal ctx As SnakeContext Ptr)
+Declare Sub snake_initialize cdecl(ByVal ctx As SnakeContext Ptr)
+Declare Sub snake_redir cdecl(ByVal ctx As SnakeContext Ptr, ByVal direction_index As SnakeDirection)
+Declare Sub wrap_around_ cdecl(ByVal val_ As ZString Ptr, ByVal max As Byte)
+Declare Sub snake_step cdecl(ByVal ctx As SnakeContext Ptr)
+Declare Function handle_key_event_ cdecl(ByVal ctx As SnakeContext Ptr, ByVal key_code As SDL_Scancode) As SDL_AppResult
+Declare Function handle_hat_event_ cdecl(ByVal ctx As SnakeContext Ptr, ByVal hat As Uint8) As SDL_AppResult
+Declare Function SDL_AppIterate cdecl(ByVal appstate As Any Ptr) As SDL_AppResult
+Declare Function SDL_AppInit cdecl(ByVal appstate As Any Ptr Ptr, ByVal argc As Long, ByVal argv As ZString Ptr Ptr) As SDL_AppResult
+Declare Function SDL_AppEvent cdecl(ByVal appstate As Any Ptr, ByVal event As SDL_Event Ptr) As SDL_AppResult
+Declare Sub SDL_AppQuit cdecl(ByVal appstate As Any Ptr, ByVal result As SDL_AppResult)
 
 '' -------------------------------------------------------------------------
 '' Input and game loop
 '' -------------------------------------------------------------------------
-function snake_cell_at cdecl(byval ctx as const SnakeContext ptr, byval x as byte, byval y as byte) as SnakeCell
-	scope
-		dim shift_bits as long = (((((x) + (((y) * 24u)))) * 3u))
-		dim range as ushort
+Function snake_cell_at cdecl(ByVal ctx As Const SnakeContext Ptr, ByVal x As Byte, ByVal y As Byte) As SnakeCell
+	Scope
+		Dim shift_bits As Long = (((((x) + (((y) * 24u)))) * 3u))
+		Dim range As UShort
 		SDL_memcpy(cptr(any ptr, @(range)), cptr(const any ptr, (@ctx->cells(0) + ((shift_bits \ 8)))), sizeof((range)))
 		return cast(SnakeCell, ((((range shr ((shift_bits mod 8)))) and ((not (((not 0u) shl 3u)))))))
 	end scope
@@ -580,36 +580,36 @@ function SDL_AppEvent cdecl(byval appstate as any ptr, byval event as SDL_Event 
 			return handle_hat_event_(ctx, event->jhat.value)
 		end scope
 		switch_case_37:
-		scope
-			return handle_key_event_(ctx, event->key.scancode)
-		end scope
+		Scope
+			Return handle_key_event_(ctx, event->key.scancode)
+		End Scope
 		switch_case_38:
-		scope
-			goto switch_done_39
-		end scope
+		Scope
+			Goto switch_done_39
+		End Scope
 		switch_done_39:
-		return SDL_APP_CONTINUE
-	end scope
-end function
+		Return SDL_APP_CONTINUE
+	End Scope
+End Function
 
-sub SDL_AppQuit cdecl(byval appstate as any ptr, byval result as SDL_AppResult)
-	scope
-		if joystick then
-			scope
+Sub SDL_AppQuit cdecl(ByVal appstate As Any Ptr, ByVal result As SDL_AppResult)
+	Scope
+		If joystick Then
+			Scope
 				SDL_CloseJoystick(joystick)
-			end scope
-		end if
-		if (appstate <> (cptr(any ptr, 0))) then
-			scope
-				dim as_ as AppState ptr = cptr(AppState ptr, appstate)
+			End Scope
+		End If
+		If (appstate <> (CPtr(Any Ptr, 0))) Then
+			Scope
+				Dim as_ As AppState Ptr = CPtr(appstate Ptr, appstate)
 				SDL_DestroyRenderer(as_->renderer)
 				SDL_DestroyWindow(as_->window_)
-				SDL_free(cptr(any ptr, as_))
-			end scope
-		end if
-	end scope
-end sub
+				SDL_free(CPtr(Any Ptr, as_))
+			End Scope
+		End If
+	End Scope
+End Sub
 
-#include once "callback-main.bi"
+#include once "../../../callback-main.bi"
 
 '' end of snake.bas
